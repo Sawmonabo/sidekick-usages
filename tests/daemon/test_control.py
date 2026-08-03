@@ -206,6 +206,7 @@ def _assert_reused_operation_follows_current_events(
     )
     events = OperationEventHub()
     completion = SchedulerCompletion(
+        provider_id=native.provider_id,
         operation_id=native.operation_id,
         operation_kind=native.kind,
         state=OperationState.SCHEDULED,

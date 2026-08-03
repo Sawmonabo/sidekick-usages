@@ -68,13 +68,7 @@ class SelectionRecovery:
         operation = self._journal.load(provider_id).active
         if operation is None:
             return False
-        self._participants.restore_admission(
-            provider_id,
-            operation.operation_id,
-            operation.pending_epoch,
-            operation.target_account_id,
-            operation.required_participant_ids,
-        )
+        self._restore_gate(operation)
         return True
 
     def restore_all(self) -> tuple[ProviderId, ...]:
@@ -94,16 +88,9 @@ class SelectionRecovery:
         operation = self._journal.load(provider_id).active
         if operation is None:
             return None
-        self._participants.restore_admission(
-            provider_id,
-            operation.operation_id,
-            operation.pending_epoch,
-            operation.target_account_id,
-            operation.required_participant_ids,
-        )
+        self._restore_gate(operation)
         self._reconcile_unresolved(provider_id)
         if operation.phase in {
-            SelectionPhase.PREVALIDATING,
             SelectionPhase.PREPARING,
             SelectionPhase.WAITING_OLD_TURNS,
         }:
@@ -131,7 +118,6 @@ class SelectionRecovery:
                 if operation is None:
                     continue
                 if operation.phase in {
-                    SelectionPhase.PREVALIDATING,
                     SelectionPhase.PREPARING,
                     SelectionPhase.WAITING_OLD_TURNS,
                 }:
@@ -150,16 +136,27 @@ class SelectionRecovery:
 
     def complete_readback(self, completion: SchedulerCompletion) -> None:
         """Apply one safe orphan readback completion to durable recovery."""
-        provider_id = self._completion_provider(completion)
-        if provider_id is None:
-            return
+        provider_id = completion.provider_id
         with self._provider_locks[provider_id]:
             operation = self._journal.load(provider_id).active
-            if operation is None:
+            if (
+                operation is None
+                or operation.operation_id != completion.operation_id
+            ):
                 return
             try:
                 observation = self._observation(operation, completion)
-                self._recover_committed(operation, observation)
+                if operation.phase is SelectionPhase.PREVALIDATING:
+                    baseline = self._selected.load(provider_id)
+                    if not self._baseline_proven(
+                        operation,
+                        baseline,
+                        observation,
+                    ):
+                        raise ValueError("Selection baseline is unproven.")
+                    self._recover_baseline(operation)
+                else:
+                    self._recover_committed(operation, observation)
             except Exception:
                 self._publish_recovery_required(operation)
 
@@ -172,9 +169,31 @@ class SelectionRecovery:
             active = self._journal.load(operation.provider_id).active
             if (
                 active is not None
-                and active.operation_id == operation.operation_id
+                and active.operation_id
+                == operation.required_selection_operation_id
             ):
                 self._publish_recovery_required(active)
+
+    def worker_released(self, completion: SchedulerCompletion) -> None:
+        """Resume only after an orphan phase releases provider authority."""
+        if completion.operation_kind is OperationKind.SELECTION_READBACK:
+            self.complete_readback(completion)
+            return
+        provider_id = completion.provider_id
+        with self._provider_locks[provider_id]:
+            operation = self._journal.load(provider_id).active
+            if (
+                operation is None
+                or operation.operation_id != completion.operation_id
+            ):
+                return
+            if (
+                completion.operation_kind
+                is OperationKind.SELECTION_PREVALIDATE
+            ):
+                self._recover_baseline(operation)
+            elif completion.operation_kind is OperationKind.SELECTION_COMMIT:
+                self._workers.enqueue_recovery_readback(operation)
 
     def _recover_committed(
         self,
@@ -208,6 +227,18 @@ class SelectionRecovery:
     def close(self) -> None:
         """Release live phase waiters without cancelling provider work."""
         self._workers.close()
+
+    def _restore_gate(self, operation: OpenSelectionOperation) -> None:
+        """Restore admission only after PREVALIDATE closed the baseline."""
+        if operation.phase is SelectionPhase.PREVALIDATING:
+            return
+        self._participants.restore_admission(
+            operation.provider_id,
+            operation.operation_id,
+            operation.pending_epoch,
+            operation.target_account_id,
+            operation.required_participant_ids,
+        )
 
     def _recover_target(
         self,
@@ -463,23 +494,6 @@ class SelectionRecovery:
             and observation.provider_id is operation.provider_id
             and observation.account_id == baseline.account_id
             and observation.generation == baseline.generation
-        )
-
-    def _completion_provider(
-        self,
-        completion: SchedulerCompletion,
-    ) -> ProviderId | None:
-        if completion.selection is not None:
-            return completion.selection.provider_id
-        return next(
-            (
-                provider_id
-                for provider_id in ProviderId
-                if (active := self._journal.load(provider_id).active)
-                is not None
-                and active.operation_id == completion.operation_id
-            ),
-            None,
         )
 
     @staticmethod

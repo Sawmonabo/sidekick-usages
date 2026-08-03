@@ -331,6 +331,9 @@ class WorkerPool:
                     raise WorkerExchangeError
                 exchange.worker_started()
         except Exception:
+            if operation.kind.is_selection_worker:
+                self._abort_exchange(operation.operation_id)
+                return handle
             if not self._terminate_launched(handle):
                 self._quarantine_worker(
                     operation,
@@ -444,15 +447,23 @@ class WorkerPool:
                 completed.append(worker_exit)
         return tuple(completed)
 
-    def expire(self, monotonic_now: float) -> tuple[WorkerExit, ...]:
-        """Terminate and reap every worker whose hard deadline elapsed."""
+    def expire(
+        self,
+        monotonic_now: float,
+    ) -> tuple[tuple[WorkerExit, ...], tuple[DueOperation, ...]]:
+        """Stop ordinary deadlines and retain selection authority owners."""
         expired = tuple(
             active
             for active in self._active.values()
-            if active.deadline <= monotonic_now
+            if active.deadline <= monotonic_now and not active.timeout_reported
         )
         exits: list[WorkerExit] = []
+        retained: list[DueOperation] = []
         for active in expired:
+            if active.operation.kind.is_selection_worker:
+                active.timeout_reported = True
+                retained.append(active.operation)
+                continue
             try:
                 exits.append(
                     self._stop(
@@ -463,20 +474,56 @@ class WorkerPool:
                 )
             except WorkerLaunchError:
                 continue
-        return tuple(exits)
+        for quarantined in self._quarantine.values():
+            if (
+                quarantined.operation.kind.is_selection_worker
+                and quarantined.deadline is not None
+                and quarantined.deadline <= monotonic_now
+                and not quarantined.timeout_reported
+            ):
+                quarantined.timeout_reported = True
+                retained.append(quarantined.operation)
+        return tuple(exits), tuple(retained)
 
     def next_deadline(self) -> float | None:
         """Return the nearest active monotonic deadline."""
-        deadlines = [active.deadline for active in self._active.values()]
+        deadlines = [
+            active.deadline
+            for active in self._active.values()
+            if not active.timeout_reported
+        ]
         deadlines.extend(
             quarantined.retry_at for quarantined in self._quarantine.values()
+        )
+        deadlines.extend(
+            quarantined.deadline
+            for quarantined in self._quarantine.values()
+            if quarantined.deadline is not None
+            and not quarantined.timeout_reported
         )
         return min(deadlines) if deadlines else None
 
     def shutdown(self) -> tuple[WorkerExit, ...]:
-        """Terminate and reap all remaining workers."""
+        """Stop ordinary workers and naturally reap selection workers."""
+        exits = list(self._shutdown_active())
+        exits.extend(self._shutdown_quarantined())
+        if self._quarantine:
+            raise WorkerLaunchError(WorkerLaunchFailureCode.TERMINATION_FAILED)
+        return tuple(exits)
+
+    def _shutdown_active(self) -> tuple[WorkerExit, ...]:
         exits: list[WorkerExit] = []
         for active in tuple(self._active.values()):
+            if active.operation.kind.is_selection_worker:
+                exit_code = active.handle.wait(None)
+                if exit_code is None:
+                    raise WorkerLaunchError(
+                        WorkerLaunchFailureCode.TERMINATION_FAILED
+                    )
+                worker_exit = self._finish_natural_exit(active, exit_code)
+                if worker_exit is not None:
+                    exits.append(worker_exit)
+                continue
             try:
                 exits.append(
                     self._stop(
@@ -487,16 +534,30 @@ class WorkerPool:
                 )
             except WorkerLaunchError:
                 continue
+        return tuple(exits)
+
+    def _shutdown_quarantined(self) -> tuple[WorkerExit, ...]:
+        exits: list[WorkerExit] = []
         for quarantined in tuple(self._quarantine.values()):
-            _cleaned, completed = self._cleanup_quarantined(
-                quarantined,
-                self._monotonic(),
-                force=True,
-            )
-            if completed is not None:
-                exits.append(completed)
-        if self._quarantine:
-            raise WorkerLaunchError(WorkerLaunchFailureCode.TERMINATION_FAILED)
+            while quarantined.operation.kind.is_selection_worker:
+                cleaned, completed = self._cleanup_quarantined(
+                    quarantined,
+                    self._monotonic(),
+                    force=True,
+                )
+                if cleaned:
+                    if completed is not None:
+                        exits.append(completed)
+                    break
+                time.sleep(QUARANTINE_INITIAL_RETRY_SECONDS)
+            else:
+                _cleaned, completed = self._cleanup_quarantined(
+                    quarantined,
+                    self._monotonic(),
+                    force=True,
+                )
+                if completed is not None:
+                    exits.append(completed)
         return tuple(exits)
 
     def _stop(
@@ -542,6 +603,18 @@ class WorkerPool:
         exit_code: int,
     ) -> WorkerExit | None:
         self._active.pop(active.operation.operation_id, None)
+        if active.operation.kind.is_selection_worker:
+            if active.handle.group_alive():
+                self._quarantine_worker(
+                    active.operation,
+                    active.handle,
+                    completion_pending=True,
+                    deadline=active.deadline,
+                    timeout_reported=active.timeout_reported,
+                    leader_exit_code=exit_code,
+                )
+                return None
+            return WorkerExit(active.operation, exit_code)
         if not self._clear_residual_group(active.handle):
             self._quarantine_worker(
                 active.operation,
@@ -578,6 +651,9 @@ class WorkerPool:
         completion_pending: bool,
         timed_out: bool = False,
         preempted: bool = False,
+        deadline: float | None = None,
+        timeout_reported: bool = False,
+        leader_exit_code: int | None = None,
     ) -> None:
         self._quarantine[operation.operation_id] = QuarantinedWorker(
             operation=operation,
@@ -587,6 +663,9 @@ class WorkerPool:
             completion_pending=completion_pending,
             timed_out=timed_out,
             preempted=preempted,
+            deadline=deadline,
+            timeout_reported=timeout_reported,
+            leader_exit_code=leader_exit_code,
         )
 
     def _reap_quarantine(
@@ -613,6 +692,11 @@ class WorkerPool:
     ) -> tuple[bool, WorkerExit | None]:
         if not force and quarantined.retry_at > monotonic_now:
             return False, None
+        if quarantined.operation.kind.is_selection_worker:
+            return self._release_retained_selection(
+                quarantined,
+                monotonic_now,
+            )
         exit_code = self._terminate_handle(quarantined.handle)
         if exit_code is None:
             quarantined.attempts += 1
@@ -631,6 +715,27 @@ class WorkerPool:
             exit_code,
             timed_out=quarantined.timed_out,
             preempted=quarantined.preempted,
+        )
+
+    def _release_retained_selection(
+        self,
+        quarantined: QuarantinedWorker[WorkerHandle],
+        monotonic_now: float,
+    ) -> tuple[bool, WorkerExit | None]:
+        if quarantined.handle.group_alive():
+            quarantined.attempts += 1
+            quarantined.retry_at = monotonic_now + _quarantine_retry_seconds(
+                quarantined.attempts
+            )
+            return False, None
+        self._quarantine.pop(quarantined.operation.operation_id, None)
+        exit_code = quarantined.leader_exit_code
+        if quarantined.completion_pending and exit_code is None:
+            raise RuntimeError("Selection leader exit code is unavailable.")
+        return (
+            (True, WorkerExit(quarantined.operation, exit_code))
+            if quarantined.completion_pending
+            else (True, None)
         )
 
 

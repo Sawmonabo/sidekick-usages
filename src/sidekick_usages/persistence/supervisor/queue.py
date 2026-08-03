@@ -23,8 +23,9 @@ from sidekick_usages.persistence.locking import PersistenceLock
 from sidekick_usages.persistence.models.artifact import FileSnapshot
 from sidekick_usages.persistence.models.selection import (
     OperationQueueDocument,
+    operation_queue_slot,
 )
-from sidekick_usages.persistence.schema.selection import (
+from sidekick_usages.persistence.schema.worker import (
     decode_operation_queue,
     encode_operation_queue,
 )
@@ -102,18 +103,10 @@ class OperationQueueStore:
             snapshot = self._filesystem.read_opaque_private()
             document = self._document(snapshot)
             slots = {
-                (
-                    current.provider_id,
-                    current.account_id,
-                    current.kind,
-                ): current
+                operation_queue_slot(current): current
                 for current in document.operations
             }
-            key = (
-                operation.provider_id,
-                operation.account_id,
-                operation.kind,
-            )
+            key = operation_queue_slot(operation)
             current = slots.get(key)
             effective = (
                 operation
@@ -216,8 +209,8 @@ class OperationQueueStore:
             self._commit(recovered, snapshot)
             return recovered
 
-    def discard_orphan_workers(self) -> tuple[DueOperation, ...]:
-        """Remove work whose in-memory callback or phase owner is gone."""
+    def discard_orphan_callbacks(self) -> tuple[DueOperation, ...]:
+        """Remove callbacks whose in-memory response owner is gone."""
         with self._lock.hold() as transaction:
             recover_state_file(self._filesystem, transaction)
             snapshot = self._filesystem.read_opaque_private()
@@ -226,7 +219,6 @@ class OperationQueueStore:
                 operation
                 for operation in document.operations
                 if operation.kind is OperationKind.CODEX_CALLBACK
-                or operation.kind.is_selection_worker
             )
             if not discarded:
                 return ()

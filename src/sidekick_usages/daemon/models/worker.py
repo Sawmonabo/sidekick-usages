@@ -104,11 +104,6 @@ class WorkerResult:
         if not succeeded and self.selection is not None:
             raise ValueError("Failed worker results cannot carry selection.")
         if (
-            self.selection is not None
-            and self.selection.operation_id != self.operation_id
-        ):
-            raise ValueError("Worker result selection identity changed.")
-        if (
             self.related_runtime_authority is not None
             and self.selection is not None
         ):
@@ -190,6 +185,7 @@ class ActiveWorker[HandleT]:
     operation: DueOperation
     handle: HandleT
     deadline: float
+    timeout_reported: bool = False
 
 
 @dataclass(slots=True)
@@ -203,10 +199,29 @@ class QuarantinedWorker[HandleT]:
     completion_pending: bool
     timed_out: bool = False
     preempted: bool = False
+    deadline: float | None = None
+    timeout_reported: bool = False
+    leader_exit_code: int | None = None
 
     def __post_init__(self) -> None:
         """Require explicit positive cleanup scheduling state."""
-        if self.attempts < 1 or self.retry_at < 0:
+        if (
+            self.attempts < 1
+            or self.retry_at < 0
+            or (self.deadline is not None and self.deadline < 0)
+            or self.operation.kind.is_selection_worker
+            != (self.deadline is not None)
+            or (self.timeout_reported and self.deadline is None)
+            or (
+                self.operation.kind.is_selection_worker
+                and self.completion_pending
+                and self.leader_exit_code is None
+            )
+            or (
+                not self.operation.kind.is_selection_worker
+                and self.leader_exit_code is not None
+            )
+        ):
             raise ValueError("Worker quarantine state is invalid.")
 
 

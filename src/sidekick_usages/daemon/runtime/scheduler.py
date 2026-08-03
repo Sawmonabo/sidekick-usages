@@ -84,11 +84,19 @@ class DurableScheduler:
     def recover(self) -> tuple[SchedulerCompletion, ...]:
         """Recover committed results before retrying interrupted workers."""
         self._queue.recover()
-        for orphan in self._queue.discard_orphan_workers():
+        for orphan in self._queue.discard_orphan_callbacks():
             self._results.delete(orphan.operation_id)
         recovered: list[SchedulerCompletion] = []
         now = self._clock.now()
         for operation in self._queue.load():
+            if operation.kind.is_selection_worker:
+                if operation.state is not OperationState.RUNNING:
+                    self._results.delete(operation.operation_id)
+                    self._queue.remove(
+                        operation.operation_id,
+                        expected_state=operation.state,
+                    )
+                continue
             if operation.state is not OperationState.RUNNING:
                 continue
             result = self._safe_result(operation)
@@ -174,10 +182,14 @@ class DurableScheduler:
     def collect(self) -> tuple[SchedulerCompletion, ...]:
         """Reap completions and hard timeouts without coupling accounts."""
         monotonic_now = self._monotonic()
-        exits = (
-            *self._workers.reap_completed(monotonic_now),
-            *self._workers.expire(monotonic_now),
-        )
+        reaped = self._workers.reap_completed(monotonic_now)
+        expired, retained = self._workers.expire(monotonic_now)
+        exits = (*reaped, *expired)
+        for operation in retained:
+            self._events.failed(
+                operation,
+                "selection_recovery_required",
+            )
         completed: list[SchedulerCompletion] = []
         for worker_exit in exits:
             completion = self._finalize_exit(worker_exit)
@@ -204,7 +216,7 @@ class DurableScheduler:
         return min(waits) if waits else None
 
     def shutdown(self) -> tuple[SchedulerCompletion, ...]:
-        """Terminate workers and durably reschedule their operations."""
+        """Stop workers under their policy and finalize released work."""
         completed = list(self.collect())
         try:
             exits = self._workers.shutdown()
@@ -338,10 +350,17 @@ class DurableScheduler:
         result: WorkerResult,
         now: datetime,
     ) -> SchedulerCompletion:
-        if (
-            operation.kind is OperationKind.CODEX_CALLBACK
-            or operation.kind.is_selection_worker
-        ):
+        if operation.kind.is_selection_worker:
+            try:
+                self._queue.remove(
+                    operation.operation_id,
+                    expected_state=OperationState.RUNNING,
+                )
+            except ManagedStateConflictError:
+                if self._queue.find(operation.operation_id) is not None:
+                    raise
+            state: OperationState | None = None
+        elif operation.kind is OperationKind.CODEX_CALLBACK:
             self._queue.remove(
                 operation.operation_id,
                 expected_state=OperationState.RUNNING,
@@ -400,7 +419,12 @@ class DurableScheduler:
             state = updated.state
         self._results.delete(operation.operation_id)
         return SchedulerCompletion(
-            operation_id=operation.operation_id,
+            provider_id=operation.provider_id,
+            operation_id=(
+                operation.required_selection_operation_id
+                if operation.kind.is_selection_worker
+                else operation.operation_id
+            ),
             operation_kind=operation.kind,
             state=state,
             outcome=result.outcome,
@@ -423,6 +447,7 @@ class DurableScheduler:
         for superseded in stale:
             self._events.completed(
                 SchedulerCompletion(
+                    provider_id=provider_id,
                     operation_id=superseded.operation_id,
                     operation_kind=superseded.kind,
                     state=None,

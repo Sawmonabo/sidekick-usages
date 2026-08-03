@@ -28,6 +28,7 @@ from sidekick_usages.core.selection.policy import require_selection_transition
 from sidekick_usages.core.selection.types import (
     ActivationOutcome,
     ActivationPhase,
+    OperationState,
     ParticipantId,
     ProviderAuthState,
     ProviderRuntimeState,
@@ -36,15 +37,21 @@ from sidekick_usages.core.selection.types import (
     SelectionPhase,
 )
 from sidekick_usages.core.types import ProviderId
+from sidekick_usages.daemon.models.scheduler import SchedulerCompletion
+from sidekick_usages.daemon.models.worker import SelectionWorkerMetadata
 from sidekick_usages.daemon.selection import protocol
+from sidekick_usages.daemon.selection.coordinator import SelectionCoordinator
 from sidekick_usages.daemon.selection.models import (
     ParticipantClientKind,
     ParticipantConnectionRequest,
     ParticipantManifest,
     ParticipantNoticeKind,
 )
+from sidekick_usages.daemon.selection.recovery import SelectionRecovery
 from sidekick_usages.daemon.selection.registry import ParticipantRegistry
+from sidekick_usages.daemon.selection.worker import SelectionWorkerGateway
 from sidekick_usages.daemon.types.protocol import EventKind
+from sidekick_usages.daemon.types.worker import WorkerOutcome
 from sidekick_usages.paths import ApplicationPaths
 from sidekick_usages.persistence.models.artifact import (
     ExpectedAuthority,
@@ -241,6 +248,97 @@ def _open_selection_operation() -> OpenSelectionOperation:
         started_at=REFERENCE_TIME,
         updated_at=REFERENCE_TIME,
     )
+
+
+def test_prevalidate_waits_for_release_barrier(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Keep PREVALIDATE parent open until one baseline readback proof."""
+    paths = make_application_paths(tmp_path)
+    selected = SelectedStateStore(paths.selected_state)
+    operations = SelectionOperationStore(paths.selection_journals)
+    participants = ParticipantRegistry(selected)
+    statuses: list[SelectionCode] = []
+    monkeypatch.setattr(
+        participants,
+        "publish_status",
+        lambda _provider_id, _epoch, code: statuses.append(code),
+    )
+    queue = OperationQueueStore(paths.durable_operations)
+    gateway = SelectionWorkerGateway(queue, FixedClock(), lambda: None)
+    gateway.close()
+    handoffs: list[ProviderId] = []
+    coordinator = SelectionCoordinator(
+        selected,
+        operations,
+        participants,
+        gateway,
+        FixedClock(),
+        resume_recovery=handoffs.append,
+    )
+    result = coordinator.select(OPERATION_ID, PROVIDER_ID, TARGET_ACCOUNT_ID)
+    active = operations.load(PROVIDER_ID).active
+    assert active is not None
+    assert result.outcome is SelectionOutcome.RECOVERY_REQUIRED
+    assert active.phase is SelectionPhase.PREVALIDATING
+    assert (
+        coordinator.select(OPERATION_ID, PROVIDER_ID, TARGET_ACCOUNT_ID)
+        == result
+    )
+    assert not handoffs
+
+    restarted = SelectionWorkerGateway(queue, FixedClock(), lambda: None)
+    recovery = SelectionRecovery(
+        selected, operations, participants, restarted, FixedClock()
+    )
+    assert recovery.restore(PROVIDER_ID)
+    (barrier,) = recovery.enqueue_restored_readbacks()
+    assert recovery.enqueue_restored_readbacks() == (barrier,)
+    peer = restarted.enqueue_recovery_readback(
+        replace(active, provider_id=ProviderId.CODEX)
+    )
+    assert peer.provider_id is ProviderId.CODEX
+    metadata = SelectionWorkerMetadata(
+        operation_id=OPERATION_ID,
+        provider_id=PROVIDER_ID,
+        kind=barrier.kind,
+        pending_epoch=active.pending_epoch,
+        observed_account_id=None,
+        observed_generation=None,
+    )
+    completion = SchedulerCompletion(
+        provider_id=PROVIDER_ID,
+        operation_id=OPERATION_ID,
+        operation_kind=barrier.kind,
+        state=None,
+        outcome=WorkerOutcome.SUCCEEDED,
+        failure_code=None,
+        selection=metadata,
+    )
+    statuses.clear()
+    stale_id = barrier.operation_id
+    recovery.complete_readback(
+        replace(
+            completion,
+            operation_id=stale_id,
+            selection=replace(metadata, operation_id=stale_id),
+        )
+    )
+    assert not statuses
+    assert operations.load(PROVIDER_ID).active == active
+    recovery.complete_readback(replace(completion, selection=None))
+    assert statuses == [SelectionCode.SELECTION_RECOVERY_REQUIRED]
+    assert operations.load(PROVIDER_ID).active == active
+    queue.remove(
+        barrier.operation_id,
+        expected_state=OperationState.SCHEDULED,
+    )
+    replacement = restarted.enqueue_recovery_readback(active)
+    assert not restarted.complete_waiter(completion)
+    assert restarted.enqueue_recovery_readback(active) == replacement
+    recovery.complete_readback(completion)
+    assert operations.load(PROVIDER_ID).active is None
 
 
 def _preparing(

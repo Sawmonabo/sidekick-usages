@@ -564,6 +564,7 @@ def test_first_selection_lifecycle_uses_no_manufactured_source(
     prevalidate_due = replace(
         scenario.operation,
         kind=OperationKind.SELECTION_PREVALIDATE,
+        selection_operation_id=operation.operation_id,
     )
     prevalidated = execute_selection_worker(
         scenario,
@@ -600,6 +601,7 @@ def test_first_selection_lifecycle_uses_no_manufactured_source(
     commit_due = replace(
         scenario.operation,
         kind=OperationKind.SELECTION_COMMIT,
+        selection_operation_id=operation.operation_id,
     )
     if recovery_state is None:
         committed = execute_selection_worker(
@@ -656,6 +658,7 @@ def test_first_selection_lifecycle_uses_no_manufactured_source(
         replace(
             scenario.operation,
             kind=OperationKind.SELECTION_READBACK,
+            selection_operation_id=operation.operation_id,
         ),
         prepared_operation,
         None,

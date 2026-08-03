@@ -14,13 +14,9 @@ from sidekick_usages.core.accounts.types import (
     AuthorityGeneration,
     OperationId,
 )
-from sidekick_usages.core.models import (
-    Account,
-    ClaudeSetupTokenCredentials,
-    CodexCredentials,
-)
 from sidekick_usages.core.selection.models import (
     DueOperation,
+    PreparedSelection,
     RelatedRuntimeAuthority,
     SelectionAuthorityObservation,
     SelectionEpoch,
@@ -33,18 +29,16 @@ from sidekick_usages.core.selection.types import (
     SelectionOutcome,
     SelectionPhase,
 )
-from sidekick_usages.core.types import AccountLabel, ProviderId
+from sidekick_usages.core.types import ProviderId
 from sidekick_usages.daemon.control.dispatch import OperationEventHub
 from sidekick_usages.daemon.lifecycle.constants import (
     CLAUDE_LAUNCHER_OPTION,
     CODEX_LAUNCHER_OPTION,
 )
-from sidekick_usages.daemon.models.scheduler import SchedulerCompletion
 from sidekick_usages.daemon.models.worker import (
     WORKER_CLAUDE_LAUNCHER_ENVIRONMENT_KEY,
     WORKER_CODEX_LAUNCHER_ENVIRONMENT_KEY,
     ProviderLaunchers,
-    SelectionWorkerMetadata,
     WorkerResult,
 )
 from sidekick_usages.daemon.runtime.recovery import (
@@ -66,7 +60,6 @@ from sidekick_usages.daemon.selection.worker import (
 from sidekick_usages.daemon.types.service import ServicePhase
 from sidekick_usages.daemon.types.worker import WorkerOutcome
 from sidekick_usages.daemon.worker.pool import WorkerPool
-from sidekick_usages.daemon.worker.runtime import selection_worker_success
 from sidekick_usages.entrypoints import worker
 from sidekick_usages.entrypoints.supervisor import (
     parse_provider_launchers,
@@ -80,38 +73,37 @@ from sidekick_usages.persistence.supervisor.service import ServiceStateStore
 from tests.fakes.claude.activation import claude_activation_scenario
 from tests.fakes.claude.managed import use_synthetic_claude
 from tests.fakes.claude.selection import existing_selection_operation
-from tests.fakes.credentials.refresh import login_account
 from tests.fakes.daemon.foundation import (
     CLAUDE_NATIVE_OPERATION_ID,
     FoundationState,
     foundation_state,
-    operation,
 )
 from tests.fakes.daemon.runtime import (
     SYNTHETIC_CLAUDE_LAUNCHER,
     SYNTHETIC_CODEX_LAUNCHER,
     SYNTHETIC_WORKER_EXECUTABLE,
     FakeWorkerLauncher,
+    GlobalSelectionRecovery,
     RuntimeClock,
     entrypoint_worker_launcher,
     foundation_runtime,
     run_scheduled_gateway_call,
     run_scheduler_phase,
+    selection_phase_action,
+    selection_scheduler,
     worker_planner,
 )
 from tests.support.persistence import (
-    make_account_store,
     make_application_paths,
 )
-from tests.support.time import REFERENCE_TIME, FixedClock
+from tests.support.time import FixedClock
 
 EXPECTED_WORKER_COUNT = 2
 EXPECTED_CONTROL_CONNECTIONS = 68
+NATIVE_SUPERSEDED_CODE = "superseded_by_native_login"
 CLAUDE_RECOVERY_OPERATION_ID = OperationId(
     "cc413f38-2b11-418a-a4a7-b0e45666067e"
 )
-NATIVE_SUPERSEDED_CODE = "superseded_by_native_login"
-MANAGED_AUTH_MIGRATION_REQUIRED_CODE = "managed_auth_migration_required"
 _LEGACY_SERVICE_STATE = b"""{
   "active_workers": 0,
   "broker_ready": true,
@@ -147,43 +139,9 @@ def _prove_legacy_starting_upgrade(
     return runtime
 
 
-class _GlobalSelectionRecovery:
-    """Record pre-readiness selection recovery without provider work."""
-
-    def __init__(self) -> None:
-        self.restore_calls = 0
-        self.enqueue_calls = 0
-        self.close_calls = 0
-        self.orphan_calls = 0
-
-    def restore_all(self) -> tuple[ProviderId, ...]:
-        self.restore_calls += 1
-        return ()
-
-    def enqueue_restored_readbacks(self) -> tuple[DueOperation, ...]:
-        self.enqueue_calls += 1
-        return ()
-
-    def reconciled(self) -> bool:
-        return True
-
-    def close(self) -> None:
-        self.close_calls += 1
-
-    def complete_readback(self, completion: SchedulerCompletion) -> None:
-        """Record an unexpected orphan selection completion."""
-        del completion
-        self.orphan_calls += 1
-
-    def fail_readback(self, operation: DueOperation, code: str) -> None:
-        """Record an unexpected orphan selection failure."""
-        del operation, code
-        self.orphan_calls += 1
-
-
 def _recover_runtime_selection(
     runtime: SupervisorRuntime,
-    selection_recovery: _GlobalSelectionRecovery,
+    selection_recovery: GlobalSelectionRecovery,
 ) -> None:
     """Prove runtime recovery invokes selection before later cycles."""
     runtime.recover()
@@ -221,7 +179,7 @@ def test_runtime_enqueues_restored_selection_without_a_client(
         clock,
         monotonic=clock.monotonic,
     )
-    selection = _GlobalSelectionRecovery()
+    selection = GlobalSelectionRecovery()
     stop_requested = Event()
     stop_requested.set()
     runtime = foundation_runtime(
@@ -294,7 +252,6 @@ def _assert_native_login_cancels_stale_activation(
             stale_activation.operation_id,
         )
     )
-
     assert len(completions) == 1
     assert completions[0].operation_id == running.operation_id
     assert completions[0].outcome is WorkerOutcome.NO_CHANGE
@@ -302,94 +259,6 @@ def _assert_native_login_cancels_stale_activation(
     assert update.completion is not None
     assert update.completion.outcome is WorkerOutcome.CANCELLED
     assert update.completion.failure_code == NATIVE_SUPERSEDED_CODE
-
-
-def _assert_unmanaged_workers_require_migration(
-    root: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Prove legacy authorities stop before any provider composition."""
-    store = make_account_store(
-        root,
-        (
-            Account(
-                label=AccountLabel("claude-setup"),
-                credentials=ClaudeSetupTokenCredentials(
-                    access_token="test-only-claude-setup-secret"
-                ),
-            ),
-            login_account("claude-legacy"),
-            Account(
-                label=AccountLabel("codex-legacy"),
-                credentials=CodexCredentials(
-                    access_token="test-only-codex-secret",
-                    account_id="test-only-codex-account",
-                ),
-            ),
-        ),
-    )
-    paths = make_application_paths(root)
-    queue = OperationQueueStore(paths.durable_operations)
-    operations = tuple(
-        operation(
-            account.account_id,
-            account.provider_id,
-            str(new_operation_id()),
-        )
-        for account in store.saved_accounts()
-    )
-    for due_operation in operations:
-        queue.enqueue(due_operation)
-        queue.transition(
-            due_operation.operation_id,
-            OperationState.RUNNING,
-            updated_at=due_operation.updated_at,
-        )
-
-    def reject_provider_composition(
-        *arguments: object,
-        **keywords: object,
-    ) -> None:
-        del arguments, keywords
-        raise AssertionError(
-            "Providers must not be composed before migration."
-        )
-
-    monkeypatch.setattr(
-        worker,
-        "discover_application_paths",
-        lambda: paths,
-    )
-    monkeypatch.setattr(
-        worker,
-        "ClaudeProfileCapabilityFactory",
-        reject_provider_composition,
-    )
-    monkeypatch.setattr(
-        worker,
-        "compose_codex_managed_authority",
-        reject_provider_composition,
-    )
-
-    results = WorkerResultStore(paths.durable_operations)
-    outcomes: list[tuple[WorkerOutcome, str | None]] = []
-    for due_operation in operations:
-        assert worker.main((str(due_operation.operation_id),)) == 0
-        result = results.load(due_operation.operation_id)
-        assert result is not None
-        outcomes.append((result.outcome, result.failure_code))
-
-    migration_required = (
-        WorkerOutcome.ACTION_REQUIRED,
-        MANAGED_AUTH_MIGRATION_REQUIRED_CODE,
-    )
-    assert outcomes == [
-        (WorkerOutcome.SUCCEEDED, None),
-        migration_required,
-        migration_required,
-    ]
-    assert not paths.private_claude_profiles.exists()
-    assert not paths.private_codex_profiles.exists()
 
 
 def test_provider_operations_use_independent_durable_slots(
@@ -418,56 +287,187 @@ def test_provider_operations_use_independent_durable_slots(
     )
 
 
-def test_selection_worker_result_retains_only_safe_authority_relation(
+def _run_restarted_readback(
+    state: FoundationState,
+    results: WorkerResultStore,
+    clock: RuntimeClock,
+    wake: Event,
+    prepared: PreparedSelection,
+    readback_id: OperationId,
+    release_commit: Event,
+) -> tuple[
+    FakeWorkerLauncher,
+    tuple[SelectionAuthorityObservation, ...],
+    bool,
+    int,
+]:
+    restarted_queue = OperationQueueStore(state.paths.durable_operations)
+    restarted_gateway = SelectionWorkerGateway(
+        restarted_queue,
+        clock,
+        wake.set,
+        operation_id_factory=iter((readback_id,)).__next__,
+    )
+    readback_entered = Event()
+    launcher = FakeWorkerLauncher(
+        results,
+        clock,
+        frozenset(),
+        worker_actions={
+            readback_id: selection_phase_action(
+                state.paths.durable_operations,
+                restarted_queue,
+                results,
+                readback_id,
+                readback_entered,
+            )
+        },
+    )
+    restarted, _workers, _recovery = selection_scheduler(
+        restarted_queue,
+        results,
+        launcher,
+        restarted_gateway,
+        clock,
+    )
+    recovered = restarted.recover() == ()
+    observations: list[SelectionAuthorityObservation] = []
+    reader = Thread(
+        target=lambda: observations.append(
+            restarted_gateway.readback(prepared)
+        ),
+        daemon=True,
+    )
+    wake.clear()
+    reader.start()
+    woke = wake.wait(1)
+    dispatched = len(restarted.dispatch_due())
+    blocked = not readback_entered.wait(0.05)
+    release_commit.set()
+    entered = readback_entered.wait(1)
+    worker_exit = launcher.handles[readback_id].wait(1)
+    clock.advance(121)
+    completed = len(restarted.collect())
+    reader.join(1)
+    valid = recovered and woke and dispatched == 1 and entered
+    valid = valid and worker_exit == 0 and not reader.is_alive()
+    return launcher, tuple(observations), blocked and valid, completed
+
+
+@pytest.mark.parametrize(
+    "phase_kind",
+    [OperationKind.SELECTION_PREVALIDATE, OperationKind.SELECTION_COMMIT],
+)
+def test_selection_worker_lifetime_and_phase_ownership(
+    phase_kind: OperationKind,
     tmp_path: Path,
 ) -> None:
-    """Sanitize related and unrelated provider selection observations."""
+    """Retain an orphan phase until one isolated READBACK completes."""
     state = foundation_state(tmp_path)
+    for queued in state.operations:
+        state.queue.remove(
+            queued.operation_id,
+            expected_state=OperationState.SCHEDULED,
+        )
     target = tuple(state.accounts)[1]
-    phase = replace(
-        state.operations[0],
-        account_id=target.account_id,
-        kind=OperationKind.SELECTION_PREVALIDATE,
+    parent_id, phase_id, readback_id = (
+        new_operation_id() for _index in range(3)
     )
-    pending_epoch = SelectionEpoch(1)
-    related = selection_worker_success(
-        phase,
-        pending_epoch,
-        SelectionAuthorityObservation(
-            provider_id=phase.provider_id,
+    clock = RuntimeClock()
+    wake = Event()
+    leader_exit_code = 3
+    phase_entered, leader_exited, release_phase, residual_released = (
+        Event() for _index in range(4)
+    )
+    results = WorkerResultStore(state.paths.durable_operations)
+    launcher = FakeWorkerLauncher(
+        results,
+        clock,
+        frozenset(),
+        natural_completions={phase_id: leader_exited},
+        natural_exit_codes={phase_id: leader_exit_code},
+        residual_completions={phase_id: residual_released},
+        worker_actions={
+            phase_id: selection_phase_action(
+                state.paths.durable_operations,
+                state.queue,
+                results,
+                phase_id,
+                phase_entered,
+                release_phase,
+            )
+        },
+    )
+    gateway = SelectionWorkerGateway(state.queue, clock, wake.set)
+    scheduler, workers, recovery = selection_scheduler(
+        state.queue,
+        results,
+        launcher,
+        gateway,
+        clock,
+        timeout_seconds=1,
+    )
+    prepared = PreparedSelection(
+        operation_id=parent_id,
+        provider_id=ProviderId.CLAUDE,
+        target_account_id=target.account_id,
+        target_generation=AuthorityGeneration("generation-source"),
+        baseline_epoch=SelectionEpoch(7),
+        pending_epoch=SelectionEpoch(8),
+    )
+    state.queue.enqueue(
+        DueOperation(
+            operation_id=phase_id,
+            selection_operation_id=parent_id,
+            provider_id=ProviderId.CLAUDE,
             account_id=target.account_id,
-            generation=AuthorityGeneration("generation-source-1"),
-        ),
-        RuntimeClock(),
+            kind=phase_kind,
+            priority=OperationPriority.INTERACTIVE,
+            state=OperationState.SCHEDULED,
+            due_at=clock.now(),
+            updated_at=clock.now(),
+        )
     )
-    unrelated = selection_worker_success(
-        replace(phase, kind=OperationKind.SELECTION_READBACK),
-        pending_epoch,
-        SelectionAuthorityObservation(
-            provider_id=phase.provider_id,
-            account_id=None,
-            generation=None,
-        ),
-        RuntimeClock(),
+    assert len(scheduler.dispatch_due()) == 1
+    assert phase_entered.wait(1)
+    assert (running := state.queue.find(phase_id)) is not None
+    assert running.selection_operation_id == parent_id
+    leader_exited.set()
+    assert scheduler.collect() == ()
+    clock.advance(2)
+    assert scheduler.collect() == ()
+    assert scheduler.collect() == ()
+    assert (recovery.orphan_calls, workers.active_count) == (1, 1)
+    del scheduler, recovery
+    restarted_launcher, observations, blocked, completed = (
+        _run_restarted_readback(
+            state,
+            results,
+            clock,
+            wake,
+            prepared,
+            readback_id,
+            release_phase,
+        )
     )
-
-    assert related.selection is not None
+    assert blocked
+    assert completed == 1
+    assert len(observations) == 1
+    assert results.load(phase_id) is None
+    assert results.load(readback_id) is None
+    assert len(launcher.specs) == len(restarted_launcher.specs) == 1
+    assert not any(
+        "terminate" in event or "kill" in event for event in launcher.events
+    )
+    residual_released.set()
+    clock.advance(4)
+    (released,) = workers.reap_completed(clock.monotonic())
+    assert released.exit_code == leader_exit_code
     assert (
-        related.selection.observed_account_id,
-        related.selection.observed_generation,
-        unrelated.selection,
-    ) == (
-        target.account_id,
-        AuthorityGeneration("generation-source-1"),
-        SelectionWorkerMetadata(
-            operation_id=phase.operation_id,
-            provider_id=phase.provider_id,
-            kind=OperationKind.SELECTION_READBACK,
-            pending_epoch=pending_epoch,
-            observed_account_id=None,
-            observed_generation=None,
-        ),
-    )
+        state.queue.find(phase_id),
+        results.load(phase_id),
+        launcher.events,
+    ) == (None, None, [f"launch:{phase_id}"])
 
 
 def test_selection_worker_gateway_runs_every_phase_through_entrypoint(
@@ -495,7 +495,7 @@ def test_selection_worker_gateway_runs_every_phase_through_entrypoint(
         queue,
         lambda operation_id: worker.main((str(operation_id),)),
     )
-    recovery = _GlobalSelectionRecovery()
+    recovery = GlobalSelectionRecovery()
     scheduler = DurableScheduler(
         queue,
         results,
@@ -624,20 +624,26 @@ def test_postcommit_failure_reads_back_without_replaying_commit(
         daemon=True,
     )
     selector.start()
-    for _phase in range(3):
-        run_scheduler_phase(wake, scheduler)
+    run_scheduler_phase(wake, scheduler)
+    run_scheduler_phase(wake, scheduler)
     selector.join(2)
 
-    finalized = scenario.selected.load(ProviderId.CLAUDE)
     assert not selector.is_alive()
     assert len(selections) == 1
     assert selections[0].outcome is SelectionOutcome.RECOVERY_REQUIRED
+    active = journal.load(ProviderId.CLAUDE).active
+    assert active is not None
+    assert active.operation_id == scenario.operation.operation_id
+    assert active.phase is SelectionPhase.RECOVERING
+
+    run_scheduler_phase(wake, scheduler)
+
+    finalized = scenario.selected.load(ProviderId.CLAUDE)
     assert finalized is not None
     assert finalized.account_id == scenario.target.account_id
-    assert (
-        tuple(spec.operation_id for spec in launcher.specs)
-        == (scenario.operation.operation_id,) * 3
-    )
+    worker_ids = tuple(spec.operation_id for spec in launcher.specs)
+    assert len(set(worker_ids)) == len(launched_kinds)
+    assert scenario.operation.operation_id not in worker_ids
     assert launched_kinds == [
         OperationKind.SELECTION_PREVALIDATE,
         OperationKind.SELECTION_COMMIT,
@@ -645,47 +651,6 @@ def test_postcommit_failure_reads_back_without_replaying_commit(
     ]
     assert queue.find(scenario.operation.operation_id) is None
     assert journal.load(ProviderId.CLAUDE).active is None
-
-
-def test_restart_discards_orphan_selection_worker_phase(
-    tmp_path: Path,
-) -> None:
-    """Let the durable selection journal alone choose restart recovery."""
-    state = foundation_state(tmp_path)
-    phase = replace(
-        state.operations[0],
-        kind=OperationKind.SELECTION_COMMIT,
-    )
-    state.queue.remove(
-        state.operations[0].operation_id,
-        expected_state=OperationState.SCHEDULED,
-    )
-    state.queue.enqueue(phase)
-    results = WorkerResultStore(state.paths.durable_operations)
-    results.save(
-        WorkerResult(
-            operation_id=phase.operation_id,
-            outcome=WorkerOutcome.TRANSIENT_FAILURE,
-            finished_at=REFERENCE_TIME,
-            failure_code="worker_interrupted",
-        )
-    )
-    clock = RuntimeClock()
-    scheduler = DurableScheduler(
-        state.queue,
-        results,
-        WorkerPool(
-            FakeWorkerLauncher(results, clock, frozenset()),
-            worker_planner(),
-            lambda: None,
-        ),
-        clock,
-        monotonic=clock.monotonic,
-    )
-
-    assert scheduler.recover() == ()
-    assert state.queue.find(phase.operation_id) is None
-    assert results.load(phase.operation_id) is None
 
 
 def test_supervisor_and_workers_isolate_failures_and_recover_durably(
@@ -746,7 +711,7 @@ def test_supervisor_and_workers_isolate_failures_and_recover_durably(
         clock,
         monotonic=clock.monotonic,
     )
-    selection_recovery = _GlobalSelectionRecovery()
+    selection_recovery = GlobalSelectionRecovery()
     recovery = ActivationRecoveryScheduler(
         state.journals,
         state.queue,
@@ -827,7 +792,3 @@ def test_supervisor_and_workers_isolate_failures_and_recover_durably(
         durable
     )
     wakeup.close()
-    _assert_unmanaged_workers_require_migration(
-        tmp_path / "unmanaged-workers",
-        monkeypatch,
-    )

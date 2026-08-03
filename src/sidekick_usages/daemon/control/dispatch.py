@@ -134,6 +134,7 @@ class OperationEventHub(OperationEventSink):
         """Publish one safe terminal coordination failure."""
         self.completed(
             SchedulerCompletion(
+                provider_id=operation.provider_id,
                 operation_id=operation.operation_id,
                 operation_kind=operation.kind,
                 state=(

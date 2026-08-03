@@ -421,11 +421,18 @@ class DueOperation:
     state: OperationState
     due_at: datetime
     updated_at: datetime
+    selection_operation_id: OperationId | None = None
     attempts: int = 0
     failure_code: str | None = None
 
     def __post_init__(self) -> None:
         """Normalize wall time and validate retry state."""
+        if self.kind.is_selection_worker != (
+            self.selection_operation_id is not None
+        ):
+            raise ValueError(
+                "Only selection workers require parent correlation."
+            )
         provider_scoped = self.kind is OperationKind.RECONCILE_NATIVE
         if provider_scoped != (self.account_id is None):
             raise ValueError("Only native reconciliation is provider-scoped.")
@@ -470,6 +477,13 @@ class DueOperation:
         if self.account_id is None:
             raise ValueError("Operation does not have an account scope.")
         return self.account_id
+
+    @property
+    def required_selection_operation_id(self) -> OperationId:
+        """Return the parent selection correlation for a phase worker."""
+        if self.selection_operation_id is None:
+            raise ValueError("Operation is not global selection work.")
+        return self.selection_operation_id
 
 
 def _validate_activation_outcome(

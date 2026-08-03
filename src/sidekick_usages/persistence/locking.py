@@ -22,8 +22,6 @@ from sidekick_usages.persistence.types.error import PersistenceCode
 
 LOCK_TIMEOUT_SECONDS = 5.0
 LOCK_CHECK_INTERVAL_SECONDS = 0.1
-_EXCLUSIVE_LOCK_FLAGS = LockFlags.EXCLUSIVE | LockFlags.NON_BLOCKING
-_SHARED_LOCK_FLAGS = LockFlags.SHARED | LockFlags.NON_BLOCKING
 
 
 class LockFailurePhase(StrEnum):
@@ -253,16 +251,21 @@ class PersistenceLock:
         *,
         monotonic: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
-        timeout_seconds: float = LOCK_TIMEOUT_SECONDS,
+        timeout_seconds: float | None = LOCK_TIMEOUT_SECONDS,
         shared: bool = False,
     ) -> None:
-        if timeout_seconds < 0:
+        if timeout_seconds is not None and timeout_seconds < 0:
             raise ValueError("Lock timeout must not be negative.")
         self._filesystem = filesystem
         self._monotonic = monotonic
         self._sleep = sleep
         self._timeout_seconds = timeout_seconds
-        self._flags = _SHARED_LOCK_FLAGS if shared else _EXCLUSIVE_LOCK_FLAGS
+        flags = LockFlags.SHARED if shared else LockFlags.EXCLUSIVE
+        self._flags = (
+            flags
+            if timeout_seconds is None
+            else flags | LockFlags.NON_BLOCKING
+        )
 
     def hold(self) -> _HeldPersistenceLock:
         """Build a context that acquires only when it is entered."""
@@ -271,14 +274,17 @@ class PersistenceLock:
     def _acquire(self) -> IO[bytes]:
         sidecar = self._filesystem._open_lock_sidecar()
         try:
-            deadline = self._monotonic() + self._timeout_seconds
-            _wait_for_lock(
-                sidecar,
-                deadline,
-                self._monotonic,
-                self._sleep,
-                self._flags,
-            )
+            if self._timeout_seconds is None:
+                portalocker.lock(sidecar, self._flags)
+            else:
+                deadline = self._monotonic() + self._timeout_seconds
+                _wait_for_lock(
+                    sidecar,
+                    deadline,
+                    self._monotonic,
+                    self._sleep,
+                    self._flags,
+                )
         except StoreLockedError:
             if not _close_sidecar(sidecar):
                 raise LockUnavailableError(handle_closed=False) from None

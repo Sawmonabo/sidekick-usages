@@ -5,7 +5,13 @@ from pathlib import Path
 
 import pytest
 
+from sidekick_usages.core.accounts.identifiers import new_operation_id
 from sidekick_usages.core.accounts.types import OperationId
+from sidekick_usages.core.models import (
+    Account,
+    ClaudeSetupTokenCredentials,
+    CodexCredentials,
+)
 from sidekick_usages.core.selection.models import DueOperation
 from sidekick_usages.core.selection.types import (
     OperationKind,
@@ -13,12 +19,21 @@ from sidekick_usages.core.selection.types import (
     OperationState,
 )
 from sidekick_usages.core.types import AccountLabel, ProviderId
+from sidekick_usages.daemon.types.worker import WorkerOutcome
+from sidekick_usages.entrypoints import worker
 from sidekick_usages.persistence.errors import InvalidSchemaError
-from sidekick_usages.persistence.schema.selection import decode_operation_queue
+from sidekick_usages.persistence.schema.worker import decode_operation_queue
+from sidekick_usages.persistence.supervisor.queue import OperationQueueStore
+from sidekick_usages.persistence.supervisor.results import WorkerResultStore
+from tests.fakes.credentials.refresh import login_account
 from tests.fakes.daemon.foundation import (
     foundation_state,
     operation,
     selected,
+)
+from tests.support.persistence import (
+    make_account_store,
+    make_application_paths,
 )
 from tests.support.time import REFERENCE_TIME
 
@@ -28,6 +43,91 @@ PENDING_SWITCH_OPERATION_ID = OperationId(
 APPROVED_SWITCH_OPERATION_ID = OperationId(
     "e16508f9-aea0-4c51-9d16-1b4168b3411a"
 )
+MANAGED_AUTH_MIGRATION_REQUIRED_CODE = "managed_auth_migration_required"
+
+
+def test_unmanaged_workers_require_migration_before_composition(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Prove legacy authorities stop before any provider composition."""
+    root = tmp_path / "unmanaged-workers"
+    store = make_account_store(
+        root,
+        (
+            Account(
+                label=AccountLabel("claude-setup"),
+                credentials=ClaudeSetupTokenCredentials(
+                    access_token="test-only-claude-setup-secret"
+                ),
+            ),
+            login_account("claude-legacy"),
+            Account(
+                label=AccountLabel("codex-legacy"),
+                credentials=CodexCredentials(
+                    access_token="test-only-codex-secret",
+                    account_id="test-only-codex-account",
+                ),
+            ),
+        ),
+    )
+    paths = make_application_paths(root)
+    queue = OperationQueueStore(paths.durable_operations)
+    operations = tuple(
+        operation(
+            account.account_id,
+            account.provider_id,
+            str(new_operation_id()),
+        )
+        for account in store.saved_accounts()
+    )
+    for due_operation in operations:
+        queue.enqueue(due_operation)
+        queue.transition(
+            due_operation.operation_id,
+            OperationState.RUNNING,
+            updated_at=due_operation.updated_at,
+        )
+
+    def reject_provider_composition(
+        *arguments: object,
+        **keywords: object,
+    ) -> None:
+        del arguments, keywords
+        raise AssertionError(
+            "Providers must not be composed before migration."
+        )
+
+    monkeypatch.setattr(worker, "discover_application_paths", lambda: paths)
+    monkeypatch.setattr(
+        worker,
+        "ClaudeProfileCapabilityFactory",
+        reject_provider_composition,
+    )
+    monkeypatch.setattr(
+        worker,
+        "compose_codex_managed_authority",
+        reject_provider_composition,
+    )
+    results = WorkerResultStore(paths.durable_operations)
+    outcomes: list[tuple[WorkerOutcome, str | None]] = []
+    for due_operation in operations:
+        assert worker.main((str(due_operation.operation_id),)) == 0
+        result = results.load(due_operation.operation_id)
+        assert result is not None
+        outcomes.append((result.outcome, result.failure_code))
+
+    migration_required = (
+        WorkerOutcome.ACTION_REQUIRED,
+        MANAGED_AUTH_MIGRATION_REQUIRED_CODE,
+    )
+    assert outcomes == [
+        (WorkerOutcome.SUCCEEDED, None),
+        migration_required,
+        migration_required,
+    ]
+    assert not paths.private_claude_profiles.exists()
+    assert not paths.private_codex_profiles.exists()
 
 
 def test_selection_and_queue_preserve_stable_independent_state(
@@ -129,3 +229,54 @@ def test_selection_and_queue_preserve_stable_independent_state(
         decode_operation_queue(
             payload.replace(b'"attempts":', legacy_field + b'"attempts":', 1)
         )
+    phase_id = new_operation_id()
+    phase = replace(
+        pending_switch,
+        operation_id=phase_id,
+        kind=OperationKind.SELECTION_READBACK,
+        selection_operation_id=phase_id,
+    )
+    state.queue.enqueue(phase)
+    current = state.queue.path.read_bytes()
+    child_slot = (
+        f"account:{target.account_id}:selection_readback:{phase_id}"
+    ).encode()
+    parent_slot = (f"account:{target.account_id}:selection_readback").encode()
+    parent = current.replace(
+        b'"schema_version": 6',
+        b'"schema_version": 5',
+    ).replace(child_slot, parent_slot)
+    assert (
+        parent == current,
+        b'"schema_version": 5' in parent,
+        child_slot in parent,
+    ) == (False, True, False)
+    assert (
+        next(
+            operation
+            for operation in decode_operation_queue(parent).operations
+            if operation.kind is OperationKind.SELECTION_READBACK
+        ).required_selection_operation_id
+        == phase_id
+    )
+    previous = (
+        parent.replace(b'"schema_version": 5', b'"schema_version": 4')
+        .replace(b'      "selection_operation_id": null,\n', b"")
+        .replace(
+            f'      "selection_operation_id": "{phase_id}",\n'.encode(),
+            b"",
+        )
+    )
+    assert (
+        previous == parent,
+        b'"schema_version": 4' in previous,
+        b"selection_operation_id" in previous,
+    ) == (False, True, False)
+    assert (
+        next(
+            operation
+            for operation in decode_operation_queue(previous).operations
+            if operation.kind is OperationKind.SELECTION_READBACK
+        ).required_selection_operation_id
+        == phase_id
+    )

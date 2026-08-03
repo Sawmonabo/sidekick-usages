@@ -409,6 +409,7 @@ class _ProviderOperationExecutor:
         authority: ProviderMutationAuthority,
     ) -> WorkerResult:
         """Run one journal-bound provider selection phase."""
+        self._selection.release_orphans(operation, authority)
         active, baseline = self._selection.context(operation)
         if operation.provider_id is not ProviderId.CLAUDE:
             raise ValueError("Selection worker provider is unsupported.")
@@ -542,27 +543,43 @@ def _run_provider_operation(
             paths.activation_journals,
             paths.durable_operations,
         )
+        results = WorkerResultStore(paths.durable_operations)
         selection = SelectionWorkerBoundary(
             SelectionOperationStore(paths.selection_journals),
             selected,
             journals,
+            queue,
+            results,
             clock,
+        )
+        orphans = selection.orphans(operation)
+        account_ids = tuple(
+            sorted(
+                {
+                    *_provider_account_ids(
+                        operation,
+                        store,
+                        selected,
+                        journals,
+                        selection,
+                    ),
+                    *(current.required_account_id for current in orphans),
+                }
+            )
         )
         return run_provider_worker(
             operation_id,
             queue,
-            WorkerResultStore(paths.durable_operations),
+            results,
             ProviderMutationLock(
                 paths.durable_operations,
                 operation.provider_id,
-                _provider_account_ids(
-                    operation,
-                    store,
-                    selected,
-                    journals,
-                    selection,
+                account_ids,
+                timeout_seconds=(
+                    None
+                    if operation.kind is OperationKind.SELECTION_READBACK
+                    else _PROVIDER_AUTHORITY_TIMEOUT_SECONDS
                 ),
-                timeout_seconds=_PROVIDER_AUTHORITY_TIMEOUT_SECONDS,
             ),
             _ProviderOperationExecutor(
                 paths,

@@ -709,17 +709,11 @@ def test_recovery_finalizes_forward_from_target_provider_proof(
         SelectionPhase.PREPARING,
         SelectionPhase.WAITING_OLD_TURNS,
         SelectionPhase.COMMITTING,
-        SelectionPhase.RECOVERING,
     ):
         replacement = replace(
             operation,
             phase=phase,
             prepared_generation=(AuthorityGeneration("generation-source-8")),
-            outcome_code=(
-                SelectionCode.SELECTION_RECOVERY_REQUIRED
-                if phase is SelectionPhase.RECOVERING
-                else None
-            ),
         )
         journal.compare_and_swap(operation, replacement)
         operation = replacement
@@ -735,18 +729,31 @@ def test_recovery_finalizes_forward_from_target_provider_proof(
     )
     assert recovery.restore(PROVIDER_ID)
     (readback,) = recovery.enqueue_restored_readbacks()
+    assert readback.operation_id != operation.operation_id
+    assert (
+        readback.selection_operation_id,
+        recovery.enqueue_restored_readbacks(),
+    ) == (operation.operation_id, (readback,))
+    recovery.fail_readback(readback, "selection_recovery_required")
+    active = journal.load(PROVIDER_ID).active
+    assert active is not None
+    assert (active.operation_id, active.phase) == (
+        operation.operation_id,
+        SelectionPhase.RECOVERING,
+    )
     queue.remove(
         readback.operation_id,
         expected_state=OperationState.SCHEDULED,
     )
     completion = SchedulerCompletion(
-        operation_id=readback.operation_id,
+        provider_id=PROVIDER_ID,
+        operation_id=operation.operation_id,
         operation_kind=readback.kind,
         state=None,
         outcome=WorkerOutcome.SUCCEEDED,
         failure_code=None,
         selection=SelectionWorkerMetadata(
-            operation_id=readback.operation_id,
+            operation_id=operation.operation_id,
             provider_id=PROVIDER_ID,
             kind=readback.kind,
             pending_epoch=operation.pending_epoch,
@@ -766,33 +773,53 @@ def test_recovery_finalizes_forward_from_target_provider_proof(
     ).select(REPLAY_OPERATION_ID, PROVIDER_ID, TARGET_ACCOUNT_ID)
 
     (finalized,) = selected.load_all()
-    assert finalized.account_id == TARGET_ACCOUNT_ID
-    assert finalized.epoch == baseline_epoch.next()
-    assert result == journal.load(PROVIDER_ID).history[-1]
-    assert result.operation_id == OPERATION_ID
-    assert result.outcome is SelectionOutcome.READY
-    assert journal.load(PROVIDER_ID).active is None
+    provider_journal = journal.load(PROVIDER_ID)
+    assert (
+        finalized.account_id,
+        finalized.epoch,
+        result,
+        result.operation_id,
+        result.outcome,
+        provider_journal.active,
+    ) == (
+        TARGET_ACCOUNT_ID,
+        baseline_epoch.next(),
+        provider_journal.history[-1],
+        OPERATION_ID,
+        SelectionOutcome.READY,
+        None,
+    )
     restore = partial(registry.restore_admission, PROVIDER_ID, OPERATION_ID)
     with pytest.raises(ParticipantRequestError):
         restore(finalized.epoch, CONFLICT_ACCOUNT_ID, ())
     restore(finalized.epoch, TARGET_ACCOUNT_ID, (PARTICIPANT_A,))
     missing = registry.snapshot(PROVIDER_ID)
-    assert missing.registered_count == 1
-    assert missing.reachable_count == 0
-    assert missing.unreachable_participant_ids == (PARTICIPANT_A,)
+    assert (
+        missing.registered_count,
+        missing.reachable_count,
+        missing.unreachable_participant_ids,
+    ) == (1, 0, (PARTICIPANT_A,))
     persisted_epochs: list[SelectionEpoch] = []
     registration = registry.register(
         _manifest(PARTICIPANT_A),
         _process(1),
         persist_required=persisted_epochs.append,
     )
-    assert registration.registered_epoch == baseline_epoch.next()
-    assert registration.pending_epoch == registration.registered_epoch
-    assert persisted_epochs == [registration.registered_epoch]
+    assert (
+        registration.registered_epoch,
+        registration.pending_epoch,
+        persisted_epochs,
+    ) == (
+        baseline_epoch.next(),
+        registration.registered_epoch,
+        [registration.registered_epoch],
+    )
     registry.reopen_baseline(PROVIDER_ID)
     registry.register(_manifest(PARTICIPANT_B), _process(2))
     registry.close_admission(PROVIDER_ID, OPERATION_ID, finalized.epoch.next())
     registry.confirm_dead(PARTICIPANT_A, _process(1))
     registry.reopen_baseline(PROVIDER_ID)
-    assert registry.registered_count(PROVIDER_ID) == 1
-    assert registry.snapshot(PROVIDER_ID).required_participant_ids == ()
+    assert (
+        registry.registered_count(PROVIDER_ID),
+        registry.snapshot(PROVIDER_ID).required_participant_ids,
+    ) == (1, ())

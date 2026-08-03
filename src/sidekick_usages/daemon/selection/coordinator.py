@@ -303,6 +303,11 @@ class SelectionCoordinator:
                 raise SelectionRequestError(
                     SelectionCode.UNCOORDINATED_AUTH_MUTATION
                 )
+            if active.phase is SelectionPhase.PREVALIDATING:
+                return self._result(
+                    active,
+                    SelectionOutcome.RECOVERY_REQUIRED,
+                )
             if self._resume_recovery is not None:
                 self._resume_recovery(provider_id)
                 recovered = self._completed_replay(active)
@@ -327,6 +332,9 @@ class SelectionCoordinator:
             or flight.result.outcome is not SelectionOutcome.RECOVERY_REQUIRED
             or self._resume_recovery is None
         ):
+            return
+        active = self._journal.load(provider_id).active
+        if active is not None and active.phase is SelectionPhase.PREVALIDATING:
             return
         try:
             self._resume_recovery(provider_id)
@@ -397,7 +405,9 @@ class SelectionCoordinator:
         try:
             prepared = self._adapter.prevalidate(operation, baseline)
             self._require_prepared(operation, prepared)
-        except SelectionRequestError:
+        except SelectionRequestError as error:
+            if error.code is SelectionCode.SELECTION_RECOVERY_REQUIRED:
+                return self._recovering(operation)
             self._fail_old_epoch(operation)
             raise
         except Exception:

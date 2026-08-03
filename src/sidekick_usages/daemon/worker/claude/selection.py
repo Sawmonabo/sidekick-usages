@@ -219,7 +219,7 @@ class ClaudeSelectionWorkerExecutor:
             or operation.kind not in _CLAUDE_SELECTION_WORKER_KINDS
             or operation.priority is not OperationPriority.INTERACTIVE
             or active.provider_id is not ProviderId.CLAUDE
-            or operation.operation_id != active.operation_id
+            or operation.required_selection_operation_id != active.operation_id
             or operation.required_account_id != active.target_account_id
         ):
             raise ValueError("Worker operation is not Claude selection work.")
