@@ -530,15 +530,11 @@ def exercise_dashboard_session(
             )
         )
         connector.pause_next = True
-        connector.selection_status_unavailable = True
         session.focus_next_provider()
         session.move(DashboardMove.DOWN)
         session.select_account()
         connector.wait_for_stream()
-        assert (
-            "Account change accepted; current phase is unavailable."
-            in invalidation.progress_messages
-        )
+        assert "Waiting for 0 active turns…" in invalidation.progress_messages
         invalidations_before_close = invalidation.count
     finally:
         session.close()

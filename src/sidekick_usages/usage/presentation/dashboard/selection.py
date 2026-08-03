@@ -3,7 +3,11 @@
 from datetime import datetime
 
 from sidekick_usages.core.accounts.types import MetricsFreshness
-from sidekick_usages.core.selection.types import ProviderRuntimeState
+from sidekick_usages.core.selection.models import SelectionResult
+from sidekick_usages.core.selection.types import (
+    ProviderRuntimeState,
+    SelectionOutcome,
+)
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.usage.dashboard.models import (
     DashboardAccount,
@@ -49,14 +53,14 @@ def provider_detail(provider: DashboardProvider) -> str | None:
     runtime_state = provider.status.runtime_state
     if runtime_state is None:
         return None
+    if runtime_state is ProviderRuntimeState.EXTERNAL_ACTIVE:
+        return (
+            f"The ambient {PROVIDER_NAMES[provider.provider_id]} authority "
+            "is not verified as a saved selection; saved accounts remain "
+            "selectable."
+        )
     detail = _PROVIDER_STATE_DETAILS.get(runtime_state)
     if detail is None:
-        if provider.status.unmanaged_sessions:
-            return (
-                f"{PROVIDER_NAMES[provider.provider_id]} has "
-                "an unmanaged active session; saved accounts remain "
-                "selectable."
-            )
         return None
     return f"{PROVIDER_NAMES[provider.provider_id]} {detail}"
 
@@ -64,6 +68,27 @@ def provider_detail(provider: DashboardProvider) -> str | None:
 def _selection_detail(provider: DashboardProvider) -> str | None:
     """Render active or degraded canonical participant state."""
     status = provider.status.selection
+    if isinstance(status, SelectionResult):
+        if (
+            status.outcome
+            is not SelectionOutcome.PARTICIPANT_LOST_AFTER_COMMIT
+        ):
+            return None
+        target = next(
+            (
+                row.label
+                for row in provider.rows
+                if row.account_id == status.target_account_id
+            ),
+            status.target_account_id,
+        )
+        unmanaged = _unmanaged_count(provider)
+        return (
+            f"Selected {target} for epoch {status.epoch.value} · "
+            f"{status.outcome.value} · sessions {status.required_count} "
+            f"required, {status.ready_count} ready, {status.lost_count} "
+            f"lost · unmanaged {unmanaged}."
+        )
     if status is None or status.operation_id is None:
         return None
     target = next(
@@ -88,8 +113,14 @@ def _selection_detail(provider: DashboardProvider) -> str | None:
         f"{status.ready_count} ready, {status.adopted_count} adopted, "
         f"{status.confirmed_dead_count} lost, "
         f"{status.unreachable_count} unreachable, "
-        f"{provider.status.unmanaged_sessions} unmanaged."
+        f"unmanaged {_unmanaged_count(provider)}."
     )
+
+
+def _unmanaged_count(provider: DashboardProvider) -> str:
+    """Render an exact count or admit that no owner supplies one."""
+    count = provider.status.unmanaged_sessions
+    return "unavailable" if count is None else str(count)
 
 
 def row_is_selected(

@@ -1,7 +1,7 @@
 """Provider-neutral no-interruption selection coordinator."""
 
 import socket
-from collections.abc import Callable, Generator
+from collections.abc import Callable, Generator, Iterator
 from dataclasses import dataclass, field, replace
 from threading import Event, Lock
 
@@ -66,8 +66,10 @@ PARTICIPANT_READY_TIMEOUT_SECONDS = 30.0
 
 @dataclass(slots=True)
 class _SelectionFlight:
+    operation_id: OperationId
     target_account_id: SidekickAccountId
     completed: Event = field(default_factory=Event)
+    status: SelectionStatus | None = None
     result: SelectionResult | None = None
     failure_code: SelectionCode | None = None
     recovery_pending: bool = False
@@ -310,9 +312,7 @@ class SelectionCoordinator:
             reachable_count=snapshot.reachable_count,
             required_count=len(snapshot.required_participant_ids),
             ready_count=len(snapshot.ready_participant_ids),
-            confirmed_dead_count=len(
-                snapshot.confirmed_dead_participant_ids
-            ),
+            confirmed_dead_count=len(snapshot.confirmed_dead_participant_ids),
             adopted_count=snapshot.adopted_count,
             unreachable_count=len(snapshot.unreachable_participant_ids),
             active_turn_count=snapshot.active_turn_count,
@@ -325,21 +325,72 @@ class SelectionCoordinator:
         provider_id: ProviderId,
         target_account_id: SidekickAccountId,
     ) -> SelectionResult:
-        """Select one saved target through the exact durable phase order."""
-        flight, owner = self._join_flight(provider_id, target_account_id)
+        """Drain the canonical selection stream to its terminal result."""
+        result: SelectionResult | None = None
+        _canonical_id, events = self.select_events(
+            operation_id,
+            provider_id,
+            target_account_id,
+        )
+        for event in events:
+            if isinstance(event, SelectionResult):
+                result = event
+        if result is None:
+            raise RuntimeError("Selection stream completed without a result.")
+        return result
+
+    def select_events(
+        self,
+        operation_id: OperationId,
+        provider_id: ProviderId,
+        target_account_id: SidekickAccountId,
+    ) -> tuple[
+        OperationId,
+        Iterator[SelectionStatus | SelectionResult],
+    ]:
+        """Open one canonical flight and return its correlated events."""
+        flight, owner = self._join_flight(
+            operation_id,
+            provider_id,
+            target_account_id,
+        )
+        return flight.operation_id, self._flight_events(
+            flight,
+            owner,
+            provider_id,
+        )
+
+    def _flight_events(
+        self,
+        flight: _SelectionFlight,
+        owner: bool,
+        provider_id: ProviderId,
+    ) -> Generator[SelectionStatus | SelectionResult]:
+        """Yield one owner flight or observe its exact terminal truth."""
         if not owner:
             flight.completed.wait()
             if flight.result is not None:
-                return flight.result
+                if flight.status is None:
+                    raise RuntimeError(
+                        "Selection flight completed without status."
+                    )
+                yield flight.status
+                yield flight.result
+                return
             raise SelectionRequestError(
                 flight.failure_code or SelectionCode.PROVIDER_UNAVAILABLE
             )
         try:
-            flight.result = self._select_or_resume(
-                operation_id,
+            for event in self._select_or_resume_events(
+                flight.operation_id,
                 provider_id,
-                target_account_id,
-            )
+                flight.target_account_id,
+            ):
+                if isinstance(event, SelectionStatus):
+                    flight.status = event
+                else:
+                    flight.result = event
+                yield event
         except SelectionRequestError as error:
             flight.failure_code = error.code
             raise
@@ -359,38 +410,44 @@ class SelectionCoordinator:
                 flight.completed.set()
         if flight.result is None:
             raise RuntimeError("Selection flight completed without a result.")
-        return flight.result
 
-    def _select_or_resume(
+    def _select_or_resume_events(
         self,
         operation_id: OperationId,
         provider_id: ProviderId,
         target_account_id: SidekickAccountId,
-    ) -> SelectionResult:
-        """Run a new selection or resume its exact durable replay."""
+    ) -> Generator[SelectionStatus | SelectionResult]:
+        """Yield a new selection or its exact durable replay."""
         active = self._journal.load(provider_id).active
         if active is not None:
             if active.target_account_id != target_account_id:
                 raise SelectionRequestError(
                     SelectionCode.UNCOORDINATED_AUTH_MUTATION
                 )
+            yield self._active_status(active)
             if active.phase is SelectionPhase.PREVALIDATING:
-                return self._result(
+                yield self._result(
                     active,
                     SelectionOutcome.RECOVERY_REQUIRED,
                 )
+                return
             if self._resume_recovery is not None:
                 self._resume_recovery(provider_id)
                 recovered = self._completed_replay(active)
                 if recovered is not None:
-                    return recovered
+                    yield recovered
+                    return
             raise SelectionRequestError(
                 SelectionCode.SELECTION_RECOVERY_REQUIRED
             )
         baseline = self._selected.load(provider_id)
         if baseline is not None and baseline.account_id == target_account_id:
             raise SelectionRequestError(SelectionCode.ALREADY_SELECTED)
-        return self._select(operation_id, provider_id, target_account_id)
+        yield from self._selection_events(
+            operation_id,
+            provider_id,
+            target_account_id,
+        )
 
     def _handoff_recovery(
         self,
@@ -415,6 +472,7 @@ class SelectionCoordinator:
 
     def _join_flight(
         self,
+        operation_id: OperationId,
         provider_id: ProviderId,
         target_account_id: SidekickAccountId,
     ) -> tuple[_SelectionFlight, bool]:
@@ -426,7 +484,14 @@ class SelectionCoordinator:
                         SelectionCode.UNCOORDINATED_AUTH_MUTATION
                     )
                 return current, False
-            flight = _SelectionFlight(target_account_id)
+            active = self._journal.load(provider_id).active
+            if active is not None:
+                if active.target_account_id != target_account_id:
+                    raise SelectionRequestError(
+                        SelectionCode.UNCOORDINATED_AUTH_MUTATION
+                    )
+                operation_id = active.operation_id
+            flight = _SelectionFlight(operation_id, target_account_id)
             self._flights[provider_id] = flight
             return flight, True
 
@@ -439,12 +504,12 @@ class SelectionCoordinator:
         if self._resume_recovery is not None:
             self._resume_recovery(provider_id)
 
-    def _select(
+    def _selection_events(
         self,
         operation_id: OperationId,
         provider_id: ProviderId,
         target_account_id: SidekickAccountId,
-    ) -> SelectionResult:
+    ) -> Generator[SelectionStatus | SelectionResult]:
         baseline = self._selected.load(provider_id)
         baseline_epoch = (
             SelectionEpoch(0) if baseline is None else baseline.epoch
@@ -473,27 +538,34 @@ class SelectionCoordinator:
                 updated_at=now,
             )
         )
+        yield self._active_status(operation)
         try:
             prepared = self._adapter.prevalidate(operation, baseline)
             self._require_prepared(operation, prepared)
         except SelectionRequestError as error:
             if error.code is SelectionCode.SELECTION_RECOVERY_REQUIRED:
-                return self._recovering(operation)
+                yield from self._terminal_events(self._recovering(operation))
+                return
             self._fail_old_epoch(operation)
             raise
         except Exception:
-            return self._fail_old_epoch(operation)
+            yield self._fail_old_epoch(operation)
+            return
         operation = self._prepare_gate(operation, prepared)
+        yield self._active_status(operation)
         commit_state = self._enter_commit(operation)
         if isinstance(commit_state, SelectionResult):
-            return commit_state
+            yield commit_state
+            return
         operation = commit_state
+        yield self._active_status(operation)
 
         try:
             proof = self._adapter.commit(prepared)
             self._require_proof(prepared, proof)
         except Exception:
-            return self._recovering(operation)
+            yield from self._terminal_events(self._recovering(operation))
+            return
         self._participants.prepare_target(operation.operation_id, proof)
         snapshot = self._participants.snapshot(provider_id)
         operation = self._persist(
@@ -506,7 +578,36 @@ class SelectionCoordinator:
                 updated_at=self._clock.now(),
             ),
         )
-        return self._finalize_ready(operation, prepared, baseline)
+        yield self._active_status(operation)
+        yield from self._terminal_events(
+            self._finalize_ready(operation, prepared, baseline)
+        )
+
+    def _terminal_events(
+        self,
+        result: SelectionResult,
+    ) -> Generator[SelectionStatus | SelectionResult]:
+        """Yield durable recovery truth before one terminal result."""
+        if result.outcome is SelectionOutcome.RECOVERY_REQUIRED:
+            active = self._journal.load(result.provider_id).active
+            if active is not None:
+                yield self._active_status(active)
+        yield result
+
+    def _active_status(
+        self,
+        operation: OpenSelectionOperation,
+    ) -> SelectionStatus:
+        """Return the canonical snapshot for one durable active phase."""
+        status = self.status(operation.provider_id)
+        if (
+            status.operation_id != operation.operation_id
+            or status.target_account_id != operation.target_account_id
+            or status.pending_epoch != operation.pending_epoch
+            or status.phase is not operation.phase
+        ):
+            raise RuntimeError("selection_status_changed")
+        return status
 
     def _prepare_gate(
         self,

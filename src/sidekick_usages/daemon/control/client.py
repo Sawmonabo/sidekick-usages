@@ -11,8 +11,16 @@ from sidekick_usages.core.accounts.types import (
     OperationId,
     SidekickAccountId,
 )
-from sidekick_usages.core.selection.models import SelectionResult
-from sidekick_usages.core.selection.types import ParticipantId, TurnId
+from sidekick_usages.core.selection.models import (
+    SelectionEpoch,
+    SelectionResult,
+)
+from sidekick_usages.core.selection.types import (
+    ParticipantId,
+    SelectionOutcome,
+    SelectionPhase,
+    TurnId,
+)
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.daemon.control.endpoint import control_endpoint_state
 from sidekick_usages.daemon.control.protocol import (
@@ -44,6 +52,7 @@ from sidekick_usages.daemon.selection.models import (
     ParticipantManifest,
     ParticipantReadyProof,
     ParticipantReadyRequest,
+    SelectionStatus,
     TurnBeginRequest,
     TurnEndRequest,
 )
@@ -133,7 +142,7 @@ def consume_selection_action(
     *,
     provider_id: ProviderId,
     account_id: SidekickAccountId,
-    accepted: Callable[[OperationId], None] | None = None,
+    status: Callable[[SelectionStatus], None] | None = None,
 ) -> (
     SelectionResult
     | FailedPayload
@@ -150,20 +159,95 @@ def consume_selection_action(
     if first.kind is not EventKind.ACCEPTED:
         return _unaccepted_selection(first)
     operation_id = _selection_operation(first)
-    if accepted is not None:
-        accepted(operation_id)
-    try:
-        terminal = next(events)
-    except StopIteration:
-        raise UnexpectedServiceEventError(
-            "The service returned no selection result."
-        ) from None
-    return _selection_terminal(
-        terminal,
-        operation_id=operation_id,
-        provider_id=provider_id,
-        account_id=account_id,
+    previous_status: SelectionStatus | None = None
+    for event in events:
+        if event.kind is EventKind.SELECTION_STATUS:
+            current_status = _selection_status(
+                event,
+                operation_id=operation_id,
+                provider_id=provider_id,
+                account_id=account_id,
+                previous_status=previous_status,
+            )
+            previous_status = current_status
+            if status is not None:
+                status(current_status)
+            continue
+        return _selection_terminal(
+            event,
+            operation_id=operation_id,
+            provider_id=provider_id,
+            account_id=account_id,
+            pending_epoch=(
+                None
+                if previous_status is None
+                else previous_status.pending_epoch
+            ),
+        )
+    raise UnexpectedServiceEventError(
+        "The service returned no selection result."
     )
+
+
+def _selection_status(
+    event: ControlEvent,
+    *,
+    operation_id: OperationId,
+    provider_id: ProviderId,
+    account_id: SidekickAccountId,
+    previous_status: SelectionStatus | None,
+) -> SelectionStatus:
+    """Return one correlated, causally ordered phase snapshot."""
+    status = event.payload
+    if (
+        not isinstance(status, SelectionStatus)
+        or status.operation_id != operation_id
+        or status.provider_id is not provider_id
+        or status.target_account_id != account_id
+        or status.phase is None
+    ):
+        raise UnexpectedServiceEventError(
+            "The service returned unrelated selection status."
+        )
+    previous_phase = None if previous_status is None else previous_status.phase
+    allowed = {
+        None: {
+            SelectionPhase.PREVALIDATING,
+            SelectionPhase.PREPARING,
+            SelectionPhase.WAITING_OLD_TURNS,
+            SelectionPhase.COMMITTING,
+            SelectionPhase.AWAITING_READY,
+            SelectionPhase.RECOVERING,
+        },
+        SelectionPhase.PREVALIDATING: {
+            SelectionPhase.WAITING_OLD_TURNS,
+            SelectionPhase.RECOVERING,
+        },
+        SelectionPhase.PREPARING: {
+            SelectionPhase.WAITING_OLD_TURNS,
+            SelectionPhase.RECOVERING,
+        },
+        SelectionPhase.WAITING_OLD_TURNS: {SelectionPhase.COMMITTING},
+        SelectionPhase.COMMITTING: {
+            SelectionPhase.AWAITING_READY,
+            SelectionPhase.RECOVERING,
+        },
+        SelectionPhase.AWAITING_READY: {SelectionPhase.RECOVERING},
+        SelectionPhase.RECOVERING: set(),
+    }
+    if status.phase not in allowed.get(previous_phase, set()):
+        raise UnexpectedServiceEventError(
+            "The service returned out-of-order selection status."
+        )
+    if previous_status is not None and (
+        status.pending_epoch != previous_status.pending_epoch
+        or status.finalized_epoch != previous_status.finalized_epoch
+        or status.finalized_account_id != previous_status.finalized_account_id
+    ):
+        raise UnexpectedServiceEventError(
+            "The service changed selection epochs within one stream."
+        )
+    return status
 
 
 def _unaccepted_selection(
@@ -200,6 +284,7 @@ def _selection_terminal(
     operation_id: OperationId,
     provider_id: ProviderId,
     account_id: SidekickAccountId,
+    pending_epoch: SelectionEpoch | None,
 ) -> (
     SelectionResult
     | FailedPayload
@@ -209,10 +294,22 @@ def _selection_terminal(
     """Return one terminal result bound to the accepted selection."""
     result = event.payload
     if isinstance(result, SelectionResult):
+        if pending_epoch is None:
+            raise UnexpectedServiceEventError(
+                "The service omitted selection epoch status."
+            )
+        expected_epoch = pending_epoch
         if (
-            result.operation_id != operation_id
+            result.outcome is SelectionOutcome.FAILED_OLD_EPOCH
+            and pending_epoch is not None
+        ):
+            expected_epoch = SelectionEpoch(pending_epoch.value - 1)
+        if (
+            event.kind is not EventKind.SELECTION_RESULT
+            or result.operation_id != operation_id
             or result.provider_id is not provider_id
             or result.target_account_id != account_id
+            or (expected_epoch is not None and result.epoch != expected_epoch)
         ):
             raise UnexpectedServiceEventError(
                 "The service returned an unrelated selection result."
@@ -612,8 +709,10 @@ class ControlClient:
                     EventKind.PARTICIPANT_REGISTERED,
                     EventKind.TURN_ADMISSION,
                     EventKind.SELECTION_RESULT,
-                    EventKind.SELECTION_STATUS,
-                }:
+                } or (
+                    event.kind is EventKind.SELECTION_STATUS
+                    and request.kind is RequestKind.SELECTION_STATUS
+                ):
                     terminal = True
                     return
         finally:

@@ -420,7 +420,7 @@ def test_json_reports_current_auth_state_without_secrets(
         "healthy",
         "integrated",
         "claude",
-        1,
+        None,
         "observed",
         "unavailable",
     )

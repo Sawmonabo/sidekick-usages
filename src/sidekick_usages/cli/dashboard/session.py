@@ -7,7 +7,11 @@ from pathlib import Path
 from queue import Full, Queue
 from threading import Event, Lock, Thread
 
-from sidekick_usages.cli.dashboard.actions import DashboardActionExecutor
+from sidekick_usages.cli.dashboard.actions import (
+    DashboardActionExecutor,
+    selection_code_message,
+    selection_ready_message,
+)
 from sidekick_usages.cli.dashboard.controller import DashboardController
 from sidekick_usages.cli.dashboard.lookup import DashboardLookupCoordinator
 from sidekick_usages.cli.dashboard.models.controller import (
@@ -525,21 +529,26 @@ class InteractiveDashboardSession:
             and terminal.code == SelectionCode.ALREADY_SELECTED.value
         )
         selection_terminal = selection_result is not None or already_selected
-        if isinstance(intent, SelectAccountIntent) and isinstance(
-            terminal,
-            FailedPayload,
-        ) and not already_selected:
-            self.action_error(
-                intent,
-                _selection_code_message(terminal.code),
+        if (
+            isinstance(intent, SelectAccountIntent)
+            and isinstance(
+                terminal,
+                FailedPayload,
             )
-            return
-        if selection_result is not None and (
-            selection_result.outcome is not SelectionOutcome.READY
+            and not already_selected
         ):
             self.action_error(
                 intent,
-                _selection_code_message(selection_result.safe_code.value),
+                selection_code_message(terminal.code),
+            )
+            return
+        if selection_result is not None and selection_result.outcome not in {
+            SelectionOutcome.READY,
+            SelectionOutcome.PARTICIPANT_LOST_AFTER_COMMIT,
+        }:
+            self.action_error(
+                intent,
+                selection_code_message(selection_result.safe_code.value),
             )
             return
         if not selection_terminal and (
@@ -568,7 +577,8 @@ class InteractiveDashboardSession:
                                 DashboardSelectionProof(
                                     provider_id=intent.provider_id,
                                     account_id=intent.account_id,
-                                )
+                                ),
+                                selection_result,
                             )
                         except ValueError:
                             controller = self._controller().rebase(
@@ -586,7 +596,7 @@ class InteractiveDashboardSession:
                         footer = (
                             self._status_footer(
                                 DashboardStatusKind.PROGRESS,
-                                _selection_ready_message(selection_result),
+                                selection_ready_message(selection_result),
                             )
                             if selection_terminal
                             else self._navigation_footer(
@@ -651,6 +661,7 @@ class InteractiveDashboardSession:
             controller = controller.rebase(
                 source,
                 restore_provider=restore_provider,
+                retain_selection=False,
             )
             self._view = replace(
                 self._view,
@@ -703,7 +714,7 @@ class InteractiveDashboardSession:
     def publish_selection_status(
         self,
         provider_id: ProviderId,
-        status: SelectionStatus | None,
+        status: SelectionStatus | SelectionResult | None,
     ) -> None:
         """Publish one canonical provider status without persisting it."""
         if status is not None and status.provider_id is not provider_id:
@@ -719,7 +730,11 @@ class InteractiveDashboardSession:
                         finalized_epoch=(
                             provider.finalized_epoch
                             if status is None
-                            else status.finalized_epoch
+                            else (
+                                status.epoch
+                                if isinstance(status, SelectionResult)
+                                else status.finalized_epoch
+                            )
                         ),
                         selection=status,
                     )
@@ -775,25 +790,3 @@ def dashboard_cursor(view: DashboardSessionView) -> DashboardCursor:
 def _selection_refusal_message(intent: DashboardSelectionRefusal) -> str:
     """Render one sanitized refusal without hiding the focused account."""
     return f"Saved account selection is unavailable: {intent.code.value}."
-
-
-def _selection_code_message(code: str) -> str:
-    """Render one sanitized coordinator refusal code visibly."""
-    if code == "already_selected":
-        return "This saved account is already selected."
-    return f"Saved account selection is unavailable: {code}."
-
-
-def _selection_ready_message(result: SelectionResult | None) -> str:
-    """Render truthful participant readiness without claiming adoption."""
-    if result is None:
-        return _selection_code_message(
-            SelectionCode.ALREADY_SELECTED.value
-        )
-    if result.ready_count == 0:
-        return "Account ready; next requests use it."
-    suffix = "session" if result.ready_count == 1 else "sessions"
-    return (
-        f"Account ready in {result.ready_count} {suffix}; "
-        "next requests use it."
-    )

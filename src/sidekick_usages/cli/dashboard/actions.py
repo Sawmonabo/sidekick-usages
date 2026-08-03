@@ -27,12 +27,11 @@ from sidekick_usages.cli.dashboard.ports import (
     DashboardControlConnector,
 )
 from sidekick_usages.cli.dashboard.setup import GuidedServiceSetup
-from sidekick_usages.core.accounts.types import (
-    OperationId,
-    SidekickAccountId,
-)
 from sidekick_usages.core.selection.models import SelectionResult
-from sidekick_usages.core.selection.types import SelectionPhase
+from sidekick_usages.core.selection.types import (
+    SelectionCode,
+    SelectionPhase,
+)
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.daemon.control.client import (
     UnexpectedServiceEventError,
@@ -85,7 +84,6 @@ class DashboardActionExecutor:
         self._sink = sink
         self._client_lock = Lock()
         self._active_client: DashboardControlClient | None = None
-        self._status_client: DashboardControlClient | None = None
 
     def execute(self, request: DashboardActionRequest) -> None:
         """Prepare and dispatch one exact request at most once per approval."""
@@ -160,13 +158,9 @@ class DashboardActionExecutor:
         self._setup.close()
         with self._client_lock:
             client = self._active_client
-            status_client = self._status_client
             self._active_client = None
-            self._status_client = None
         if client is not None:
             client.close()
-        if status_client is not None:
-            status_client.close()
 
     def _prepare_service(
         self,
@@ -242,27 +236,18 @@ class DashboardActionExecutor:
     ) -> ControlActionTerminalPayload:
         intent = request.intent
         if isinstance(intent, SelectAccountIntent):
-            terminal = consume_selection_action(
+            return consume_selection_action(
                 client.select_account(
                     intent.provider_id,
                     intent.account_id,
                 ),
                 provider_id=intent.provider_id,
                 account_id=intent.account_id,
-                accepted=lambda operation_id: self._observe_selection(
-                    operation_id,
+                status=lambda status: self._publish_selection_status(
                     intent.provider_id,
-                    intent.account_id,
+                    status,
                 ),
             )
-            if isinstance(terminal, SelectionResult):
-                self._observe_selection(
-                    terminal.operation_id,
-                    intent.provider_id,
-                    intent.account_id,
-                    terminal=terminal,
-                )
-            return terminal
         if isinstance(intent, RefreshAccountIntent):
             events = client.refresh_account(
                 intent.provider_id,
@@ -280,72 +265,14 @@ class DashboardActionExecutor:
             progress=self._publish_progress,
         )
 
-    def _observe_selection(
+    def _publish_selection_status(
         self,
-        operation_id: OperationId,
         provider_id: ProviderId,
-        account_id: SidekickAccountId,
-        *,
-        terminal: SelectionResult | None = None,
+        status: SelectionStatus,
     ) -> None:
-        """Publish one truthful phase snapshot after durable acceptance."""
-        client: DashboardControlClient | None = None
-        try:
-            client = self._connector(self._socket_path)
-            with self._client_lock:
-                if self._sink.stopping:
-                    client.close()
-                    return
-                self._status_client = client
-            events = tuple(client.selection_status(provider_id))
-            if len(events) != 1:
-                raise UnexpectedServiceEventError(
-                    "The service returned an invalid selection status."
-                )
-            event = events[0]
-            status = event.payload
-            if (
-                event.kind is not EventKind.SELECTION_STATUS
-                or not isinstance(status, SelectionStatus)
-            ):
-                raise UnexpectedServiceEventError(
-                    "The service returned unrelated selection status."
-                )
-            related_active = (
-                status.operation_id == operation_id
-                and status.provider_id is provider_id
-                and status.target_account_id == account_id
-            )
-            related_final = (
-                terminal is not None
-                and status.operation_id is None
-                and status.provider_id is provider_id
-                and status.finalized_account_id == account_id
-                and status.finalized_epoch == terminal.epoch
-            )
-            if not related_active and not related_final:
-                raise UnexpectedServiceEventError(
-                    "The service returned unrelated selection status."
-                )
-            self._sink.publish_selection_status(provider_id, status)
-            if terminal is None:
-                self._sink.publish_progress(_selection_progress(status))
-        except (
-            UnexpectedServiceEventError,
-            OSError,
-            ProtocolFailureError,
-        ):
-            self._sink.publish_selection_status(provider_id, None)
-            if terminal is None:
-                self._sink.publish_progress(
-                    "Account change accepted; current phase is unavailable."
-                )
-        finally:
-            if client is not None:
-                client.close()
-                with self._client_lock:
-                    if self._status_client is client:
-                        self._status_client = None
+        """Publish one validated causal selection phase."""
+        self._sink.publish_selection_status(provider_id, status)
+        self._sink.publish_progress(_selection_progress(status))
 
     def _dispatch_ready(
         self,
@@ -448,3 +375,28 @@ def _selection_progress(status: SelectionStatus) -> str:
     if status.phase is SelectionPhase.RECOVERING:
         return "Account change requires recovery."
     return "Preparing account change…"
+
+
+def selection_code_message(code: str) -> str:
+    """Render one sanitized coordinator refusal code visibly."""
+    if code == SelectionCode.ALREADY_SELECTED.value:
+        return "This saved account is already selected."
+    return f"Saved account selection is unavailable: {code}."
+
+
+def selection_ready_message(result: SelectionResult | None) -> str:
+    """Render truthful participant readiness without claiming adoption."""
+    if result is None:
+        return selection_code_message(SelectionCode.ALREADY_SELECTED.value)
+    if result.lost_count:
+        return (
+            f"Account changed; {result.ready_count} ready, "
+            f"{result.lost_count} lost of {result.required_count} sessions."
+        )
+    if result.ready_count == 0:
+        return "Account ready; next requests use it."
+    suffix = "session" if result.ready_count == 1 else "sessions"
+    return (
+        f"Account ready in {result.ready_count} {suffix}; "
+        "next requests use it."
+    )

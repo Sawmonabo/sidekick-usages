@@ -243,6 +243,17 @@ class ParticipantControlPort(Protocol):
 class SelectionControlPort(Protocol):
     """Provider-neutral account selection and status boundary."""
 
+    def select_events(
+        self,
+        operation_id: OperationId,
+        provider_id: ProviderId,
+        target_account_id: SidekickAccountId,
+    ) -> tuple[
+        OperationId,
+        Iterator[SelectionStatus | SelectionResult],
+    ]:
+        """Open one canonical flight and return its phase stream."""
+
     def select(
         self,
         operation_id: OperationId,

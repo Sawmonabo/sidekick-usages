@@ -43,6 +43,7 @@ from sidekick_usages.daemon.selection.models import (
     ParticipantReadyRequest,
     ParticipantRequestError,
     SelectionRequestError,
+    SelectionStatus,
     TurnBeginRequest,
     TurnEndRequest,
 )
@@ -481,21 +482,26 @@ class SupervisorDispatcher:
     ) -> Iterator[ControlEvent]:
         payload = request.payload
         if isinstance(payload, AccountPayload):
-            operation_id = self._operation_id_factory()
+            operation_id, updates = selection.select_events(
+                self._operation_id_factory(),
+                payload.provider_id,
+                payload.account_id,
+            )
             yield self._event(
                 request,
                 EventKind.ACCEPTED,
                 AcceptedPayload(operation_id),
             )
-            yield self._event(
-                request,
-                EventKind.SELECTION_RESULT,
-                selection.select(
-                    operation_id,
-                    payload.provider_id,
-                    payload.account_id,
-                ),
-            )
+            for update in updates:
+                yield self._event(
+                    request,
+                    (
+                        EventKind.SELECTION_STATUS
+                        if isinstance(update, SelectionStatus)
+                        else EventKind.SELECTION_RESULT
+                    ),
+                    update,
+                )
             return
         if isinstance(payload, ProviderPayload):
             yield self._event(

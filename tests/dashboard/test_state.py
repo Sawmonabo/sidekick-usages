@@ -23,20 +23,28 @@ from sidekick_usages.core.accounts.models import (
     SavedAccount,
 )
 from sidekick_usages.core.accounts.types import (
+    AuthorityGeneration,
     CredentialHealth,
     MetricsFreshness,
+    OperationId,
 )
-from sidekick_usages.core.selection.models import SelectionEpoch
+from sidekick_usages.core.selection.models import (
+    SelectionEpoch,
+    SelectionResult,
+)
 from sidekick_usages.core.selection.types import (
     AuthorityGenerationRelation,
     ProviderAuthState,
     ProviderRuntimeState,
     SelectionCode,
+    SelectionOutcome,
+    SelectionPhase,
 )
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.daemon.control.client import (
     CONTROL_ACTION_TIMEOUT_SECONDS,
 )
+from sidekick_usages.daemon.selection.models import SelectionStatus
 from sidekick_usages.daemon.types.service import ServicePhase
 from sidekick_usages.paths import ApplicationPaths
 from sidekick_usages.persistence.accounts.reader import AccountIndexReader
@@ -235,7 +243,7 @@ def test_cached_dashboard_joins_stable_ids_without_credentials(
     )
     claude, codex = dashboard.providers
     assert claude.runtime_state is ProviderRuntimeState.EXTERNAL_ACTIVE
-    assert claude.status.unmanaged_sessions == 1
+    assert claude.status.unmanaged_sessions is None
     assert not claude.actions_enabled
     assert claude.rows == ()
     assert claude.activity is not None
@@ -258,7 +266,7 @@ def test_cached_dashboard_joins_stable_ids_without_credentials(
     ) == (
         renamed.account_id,
         AuthorityGenerationRelation.NEWER,
-        0,
+        None,
         (renamed.account_id, conflicted.account_id),
     )
     assert not codex.actions_enabled
@@ -456,19 +464,26 @@ def test_dashboard_controller_journey_preserves_verified_truth(
     rows = tuple(
         row for provider in snapshot.providers for row in provider.rows
     )
-    assert [row.account_id for row in rows] == [
-        CLAUDE_PREVIEW_ACCOUNT_ID,
+    assert (
+        [row.account_id for row in rows],
+        [len(provider.rows) for provider in snapshot.providers],
+        controller.state.account_id,
+        controller.select_account(),
+    ) == (
+        [
+            CLAUDE_PREVIEW_ACCOUNT_ID,
+            CLAUDE_ACTIVE_ACCOUNT_ID,
+            CLAUDE_REPAIR_ACCOUNT_ID,
+            CLAUDE_SAVED_ACCOUNT_ID,
+            CODEX_SAVED_ACCOUNT_ID,
+            CODEX_RECONCILIATION_ACCOUNT_ID,
+        ],
+        [4, 2],
         CLAUDE_ACTIVE_ACCOUNT_ID,
-        CLAUDE_REPAIR_ACCOUNT_ID,
-        CLAUDE_SAVED_ACCOUNT_ID,
-        CODEX_SAVED_ACCOUNT_ID,
-        CODEX_RECONCILIATION_ACCOUNT_ID,
-    ]
-    assert [len(provider.rows) for provider in snapshot.providers] == [4, 2]
-    assert controller.state.account_id == CLAUDE_ACTIVE_ACCOUNT_ID
-    assert controller.select_account() == SelectAccountIntent(
-        provider_id=ProviderId.CLAUDE,
-        account_id=CLAUDE_ACTIVE_ACCOUNT_ID,
+        SelectAccountIntent(
+            provider_id=ProviderId.CLAUDE,
+            account_id=CLAUDE_ACTIVE_ACCOUNT_ID,
+        ),
     )
     changed_anchor = controller.rebase(
         replace(
@@ -481,8 +496,7 @@ def test_dashboard_controller_journey_preserves_verified_truth(
                         replace(
                             row,
                             active=(
-                                row.account_id
-                                == CLAUDE_PREVIEW_ACCOUNT_ID
+                                row.account_id == CLAUDE_PREVIEW_ACCOUNT_ID
                             ),
                         )
                         for row in claude.rows
@@ -492,7 +506,100 @@ def test_dashboard_controller_journey_preserves_verified_truth(
             ),
         )
     )
-    assert changed_anchor.state.account_id == CLAUDE_ACTIVE_ACCOUNT_ID
+    lost = SelectionResult(
+        operation_id=OperationId("88888888-8888-4888-8888-888888888888"),
+        provider_id=ProviderId.CLAUDE,
+        target_account_id=CLAUDE_PREVIEW_ACCOUNT_ID,
+        target_generation=AuthorityGeneration("degraded-generation"),
+        epoch=SelectionEpoch(2),
+        outcome=SelectionOutcome.PARTICIPANT_LOST_AFTER_COMMIT,
+        safe_code=SelectionCode.PARTICIPANT_LOST_AFTER_COMMIT,
+        required_count=3,
+        ready_count=2,
+        adopted_count=0,
+        lost_count=1,
+        started_at=REFERENCE_TIME,
+        completed_at=REFERENCE_TIME,
+    )
+    active_selection = replace(
+        snapshot,
+        providers=(
+            replace(
+                claude,
+                finalized_epoch=SelectionEpoch(1),
+                selection=SelectionStatus(
+                    provider_id=ProviderId.CLAUDE,
+                    operation_id=OperationId(
+                        "77777777-7777-4777-8777-777777777777"
+                    ),
+                    finalized_account_id=CLAUDE_ACTIVE_ACCOUNT_ID,
+                    finalized_epoch=SelectionEpoch(1),
+                    target_account_id=CLAUDE_PREVIEW_ACCOUNT_ID,
+                    pending_epoch=SelectionEpoch(2),
+                    phase=SelectionPhase.WAITING_OLD_TURNS,
+                    code=None,
+                    registered_count=1,
+                    reachable_count=1,
+                    required_count=1,
+                ),
+            ),
+            codex,
+        ),
+    )
+    target_snapshot = replace(
+        snapshot,
+        providers=(
+            replace(
+                claude,
+                active_account_id=CLAUDE_PREVIEW_ACCOUNT_ID,
+                finalized_epoch=SelectionEpoch(2),
+                rows=tuple(
+                    replace(
+                        row,
+                        active=(row.account_id == CLAUDE_PREVIEW_ACCOUNT_ID),
+                    )
+                    for row in claude.rows
+                ),
+            ),
+            codex,
+        ),
+    )
+    newer = DashboardController.start(active_selection).rebase(
+        replace(
+            snapshot,
+            providers=(
+                replace(claude, finalized_epoch=SelectionEpoch(2)),
+                codex,
+            ),
+        )
+    )
+    degraded = DashboardController.start(
+        replace(
+            active_selection,
+            providers=(replace(claude, selection=lost), codex),
+        )
+    ).rebase(snapshot)
+    assert degraded.snapshot.providers[0].selection is None
+    degraded = degraded.rebase(target_snapshot).selection_succeeded(
+        DashboardSelectionProof(
+            provider_id=ProviderId.CLAUDE,
+            account_id=CLAUDE_PREVIEW_ACCOUNT_ID,
+        ),
+        lost,
+    )
+    assert (
+        newer.snapshot.providers[0].finalized_epoch,
+        newer.snapshot.providers[0].selection,
+        degraded.state.account_id,
+        degraded.snapshot.providers[0].selection,
+        changed_anchor.state.account_id,
+    ) == (
+        SelectionEpoch(2),
+        None,
+        CLAUDE_PREVIEW_ACCOUNT_ID,
+        lost,
+        CLAUDE_ACTIVE_ACCOUNT_ID,
+    )
 
     assert (
         controller.state.focused_provider,
@@ -504,17 +611,25 @@ def test_dashboard_controller_journey_preserves_verified_truth(
     verified_anchors = controller.state.anchors
 
     controller = controller.move(DashboardMove.UP)
-    assert controller.state.account_id == CLAUDE_PREVIEW_ACCOUNT_ID
-    assert controller.state.anchors == verified_anchors
-    assert controller.select_account() == SelectAccountIntent(
-        provider_id=ProviderId.CLAUDE,
-        account_id=CLAUDE_PREVIEW_ACCOUNT_ID,
+    assert (
+        controller.state.account_id,
+        controller.state.anchors,
+        controller.select_account(),
+        controller.refresh_account(),
+        controller.refresh_due_accounts(),
+    ) == (
+        CLAUDE_PREVIEW_ACCOUNT_ID,
+        verified_anchors,
+        SelectAccountIntent(
+            provider_id=ProviderId.CLAUDE,
+            account_id=CLAUDE_PREVIEW_ACCOUNT_ID,
+        ),
+        RefreshAccountIntent(
+            provider_id=ProviderId.CLAUDE,
+            account_id=CLAUDE_PREVIEW_ACCOUNT_ID,
+        ),
+        RefreshDueAccountsIntent(),
     )
-    assert controller.refresh_account() == RefreshAccountIntent(
-        provider_id=ProviderId.CLAUDE,
-        account_id=CLAUDE_PREVIEW_ACCOUNT_ID,
-    )
-    assert controller.refresh_due_accounts() == RefreshDueAccountsIntent()
 
     controller = controller.move(DashboardMove.UP)
     assert controller.state.account_id == CLAUDE_PREVIEW_ACCOUNT_ID
@@ -542,8 +657,10 @@ def test_dashboard_controller_journey_preserves_verified_truth(
     assert controller.restore().state.account_id == CODEX_SAVED_ACCOUNT_ID
 
     controller = controller.toggle_help()
-    assert controller.state.help_visible
-    assert not controller.toggle_help().state.help_visible
+    assert (
+        controller.state.help_visible,
+        controller.toggle_help().state.help_visible,
+    ) == (True, False)
 
     due_account = claude.rows[0]
     assert isinstance(due_account, DashboardAccount)
@@ -853,6 +970,6 @@ def test_dashboard_controller_journey_preserves_verified_truth(
         lookup_cancelled=True,
         daemon_cancelled=True,
         stream_released=True,
-        closed_clients=10,
+        closed_clients=4,
         post_close_invalidations=0,
     )

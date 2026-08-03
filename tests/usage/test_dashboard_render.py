@@ -8,10 +8,18 @@ from prompt_toolkit.formatted_text import (
     to_formatted_text,
 )
 
-from sidekick_usages.core.accounts.types import OperationId
-from sidekick_usages.core.selection.models import SelectionEpoch
+from sidekick_usages.core.accounts.types import (
+    AuthorityGeneration,
+    OperationId,
+)
+from sidekick_usages.core.selection.models import (
+    SelectionEpoch,
+    SelectionResult,
+)
 from sidekick_usages.core.selection.types import (
     ProviderRuntimeState,
+    SelectionCode,
+    SelectionOutcome,
     SelectionPhase,
 )
 from sidekick_usages.core.types import AccountLabel
@@ -89,11 +97,28 @@ _EXPECTED_THEME_COLORS = {
 def _render_interactive(
     width: int,
     runtime_state: ProviderRuntimeState,
-) -> tuple[str, str, str, str]:
+) -> tuple[str, str, str, str, str]:
     snapshot, cursor, footer = interactive_dashboard_state(REFERENCE_TIME)
     provider = snapshot.providers[0]
     warning_account = provider.rows[1]
     assert isinstance(warning_account, DashboardAccount)
+    active_account_id = provider.active_account_id
+    assert active_account_id is not None
+    ready = SelectionResult(
+        operation_id=OperationId("66666666-6666-4666-8666-666666666666"),
+        provider_id=provider.provider_id,
+        target_account_id=active_account_id,
+        target_generation=AuthorityGeneration("ready-generation"),
+        epoch=SelectionEpoch(1),
+        outcome=SelectionOutcome.READY,
+        safe_code=SelectionCode.SELECTION_SUCCEEDED,
+        required_count=1,
+        ready_count=1,
+        adopted_count=0,
+        lost_count=0,
+        started_at=REFERENCE_TIME,
+        completed_at=REFERENCE_TIME,
+    )
     priority_snapshot = replace(
         snapshot,
         providers=(
@@ -160,9 +185,43 @@ def _render_interactive(
             *snapshot.providers[1:],
         ),
     )
+    lost_snapshot = replace(
+        snapshot,
+        providers=(
+            replace(
+                provider,
+                active_account_id=warning_account.account_id,
+                finalized_epoch=SelectionEpoch(2),
+                selection=replace(
+                    ready,
+                    target_account_id=warning_account.account_id,
+                    epoch=SelectionEpoch(2),
+                    outcome=SelectionOutcome.PARTICIPANT_LOST_AFTER_COMMIT,
+                    safe_code=SelectionCode.PARTICIPANT_LOST_AFTER_COMMIT,
+                    required_count=3,
+                    ready_count=2,
+                    lost_count=1,
+                ),
+                rows=tuple(
+                    replace(
+                        row,
+                        active=row.account_id == warning_account.account_id,
+                    )
+                    for row in provider.rows
+                ),
+            ),
+            *snapshot.providers[1:],
+        ),
+    )
     return (
         render_dashboard(
-            snapshot,
+            replace(
+                snapshot,
+                providers=(
+                    replace(provider, selection=ready),
+                    *snapshot.providers[1:],
+                ),
+            ),
             width=width,
             cursor=cursor,
             footer=footer,
@@ -189,6 +248,13 @@ def _render_interactive(
             footer=DashboardFooter(),
             color=False,
         ),
+        render_dashboard(
+            lost_snapshot,
+            width=width,
+            cursor=warning_cursor,
+            footer=DashboardFooter(),
+            color=False,
+        ),
     )
 
 
@@ -201,7 +267,7 @@ def _assert_theme_palette() -> None:
 
 
 def test_interactive_wide_render_preserves_dashboard_contract() -> None:
-    out, unavailable, setup, degraded = _render_interactive(
+    out, unavailable, setup, degraded, _lost = _render_interactive(
         _INTERACTIVE_WIDE_WIDTH,
         ProviderRuntimeState.UNREADABLE,
     )
@@ -224,7 +290,7 @@ def test_interactive_wide_render_preserves_dashboard_contract() -> None:
     ) == (1, 1, 0)
     assert (
         "This external login is not saved in Sidekick." not in out,
-        "unmanaged active session" in out,
+        "ambient Codex CLI authority" in out,
     ) == (True, True)
     assert (
         out.count(PROGRESS_COPY),
@@ -362,7 +428,7 @@ def test_interactive_wide_render_preserves_dashboard_contract() -> None:
 
 
 def test_interactive_narrow_render_preserves_dashboard_contract() -> None:
-    out, unavailable, setup, degraded = _render_interactive(
+    out, unavailable, setup, degraded, lost = _render_interactive(
         _INTERACTIVE_NARROW_WIDTH,
         ProviderRuntimeState.UNSUPPORTED,
     )
@@ -371,6 +437,7 @@ def test_interactive_narrow_render_preserves_dashboard_contract() -> None:
         line.strip() for line in degraded.splitlines()
     )
     semantic_setup = " ".join(line.strip() for line in setup.splitlines())
+    semantic_lost = " ".join(line.strip() for line in lost.splitlines())
 
     assert "╭─ CLAUDE" not in out
     assert ".--┴-┴--.  sidekick usages" in out
@@ -406,8 +473,13 @@ def test_interactive_narrow_render_preserves_dashboard_contract() -> None:
     assert (
         "Selecting personal@example.test for epoch 2 · "
         "waiting_old_turns · finalized epoch 1 · sessions 2 required, "
-        "0 ready, 1 adopted, 0 lost, 1 unreachable, 0 unmanaged."
+        "0 ready, 1 adopted, 0 lost, 1 unreachable, unmanaged unavailable."
     ) in semantic_setup
+    assert (
+        "Selected personal@example.test for epoch 2 · "
+        "participant_lost_after_commit · sessions 3 required, "
+        "2 ready, 1 lost · unmanaged unavailable."
+    ) in semantic_lost
     assert not any(label in out for label in FORBIDDEN_SELECTION_LABELS)
     assert (
         semantic_degraded.count(_CLAUDE_UNSUPPORTED_DETAIL),

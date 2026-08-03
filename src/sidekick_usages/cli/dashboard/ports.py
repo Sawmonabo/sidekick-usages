@@ -16,6 +16,7 @@ from sidekick_usages.cli.dashboard.models.session import (
 from sidekick_usages.cli.dashboard.models.setup import ServiceSetupDecision
 from sidekick_usages.cli.dashboard.models.use import UseSelectionResult
 from sidekick_usages.core.accounts.types import SidekickAccountId
+from sidekick_usages.core.selection.models import SelectionResult
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.daemon.models.protocol import (
     ControlActionTerminalPayload,
@@ -81,13 +82,6 @@ class DashboardControlClient(Protocol):
     ) -> Iterator[ControlEvent]:
         """Select one stable account through global coordination."""
 
-    def selection_status(
-        self,
-        provider_id: ProviderId,
-    ) -> Iterator[ControlEvent]:
-        """Read one provider's secret-free selection status."""
-        ...
-
     def refresh_account(
         self,
         provider_id: ProviderId,
@@ -140,7 +134,7 @@ class DashboardActionSink(Protocol):
     def publish_selection_status(
         self,
         provider_id: ProviderId,
-        status: SelectionStatus | None,
+        status: SelectionStatus | SelectionResult | None,
     ) -> None:
         """Publish or clear one canonical provider selection snapshot."""
         ...

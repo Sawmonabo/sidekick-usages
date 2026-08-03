@@ -76,7 +76,6 @@ class SessionControlConnector:
         self.selection_epoch: SelectionEpoch | None = None
         self.closed_clients = 0
         self.skip_readback_next = False
-        self.selection_status_unavailable = False
         self.snapshot_ready = True
         self.pause_next = False
         self.allow_degraded = False
@@ -138,16 +137,6 @@ class SessionControlClient:
             EventKind.ACCEPTED,
             AcceptedPayload(SESSION_OPERATION_ID),
         )
-        if self._owner.pause_next:
-            self._owner.pause_next = False
-            self._paused = True
-            self._owner.stream_started.set()
-            if not self._owner.stream_released.wait(SESSION_WAIT_SECONDS):
-                raise AssertionError(
-                    "Synthetic control stream was not released."
-                )
-            if self._closed:
-                return
         if provider.active_account_id == account_id:
             yield _event(
                 EventKind.FAILED,
@@ -157,10 +146,56 @@ class SessionControlClient:
                 ),
             )
             return
+        baseline = self._owner.selection_baseline
+        for phase in (
+            SelectionPhase.WAITING_OLD_TURNS,
+            SelectionPhase.COMMITTING,
+            SelectionPhase.AWAITING_READY,
+        ):
+            yield _event(
+                EventKind.SELECTION_STATUS,
+                SelectionStatus(
+                    provider_id=provider_id,
+                    operation_id=SESSION_OPERATION_ID,
+                    finalized_account_id=baseline,
+                    finalized_epoch=(
+                        None if baseline is None else SelectionEpoch(1)
+                    ),
+                    target_account_id=account_id,
+                    pending_epoch=_required_selection_epoch(self._owner),
+                    phase=phase,
+                    code=None,
+                    registered_count=3,
+                    reachable_count=3,
+                    required_count=3,
+                    active_turn_count=(
+                        1
+                        if baseline is not None
+                        and phase is SelectionPhase.WAITING_OLD_TURNS
+                        else 0
+                    ),
+                ),
+            )
+            if phase is not SelectionPhase.WAITING_OLD_TURNS:
+                continue
+            if self._owner.pause_next:
+                self._owner.pause_next = False
+                self._paused = True
+                self._owner.stream_started.set()
+                if not self._owner.stream_released.wait(SESSION_WAIT_SECONDS):
+                    raise AssertionError(
+                        "Synthetic control stream was not released."
+                    )
+                if self._closed:
+                    return
         if self._owner.skip_readback_next:
             self._owner.skip_readback_next = False
         else:
-            self._owner.snapshots.select_account(provider_id, account_id)
+            self._owner.snapshots.select_account(
+                provider_id,
+                account_id,
+                _required_selection_epoch(self._owner),
+            )
         yield _event(
             EventKind.SELECTION_RESULT,
             SelectionResult(
@@ -179,60 +214,6 @@ class SessionControlClient:
                 lost_count=0,
                 started_at=datetime(2026, 8, 1, tzinfo=UTC),
                 completed_at=datetime(2026, 8, 1, tzinfo=UTC),
-            ),
-        )
-
-    def selection_status(
-        self,
-        provider_id: ProviderId,
-    ) -> Iterator[ControlEvent]:
-        """Return one active-turn wait snapshot for accepted selection."""
-        if self._owner.selection_status_unavailable:
-            self._owner.selection_status_unavailable = False
-            raise OSError("Synthetic selection status failed.")
-        target = self._owner.selection_target
-        if target is None or target[0] is not provider_id:
-            raise AssertionError("Synthetic selection was not accepted.")
-        baseline = self._owner.selection_baseline
-        provider = next(
-            candidate
-            for candidate in self._owner.snapshots.snapshot.providers
-            if candidate.provider_id is provider_id
-        )
-        if provider.active_account_id == target[1]:
-            yield _event(
-                EventKind.SELECTION_STATUS,
-                SelectionStatus(
-                    provider_id=provider_id,
-                    operation_id=None,
-                    finalized_account_id=target[1],
-                    finalized_epoch=_required_selection_epoch(self._owner),
-                    target_account_id=None,
-                    pending_epoch=None,
-                    phase=None,
-                    code=None,
-                    registered_count=3,
-                    reachable_count=3,
-                ),
-            )
-            return
-        yield _event(
-            EventKind.SELECTION_STATUS,
-            SelectionStatus(
-                provider_id=provider_id,
-                operation_id=SESSION_OPERATION_ID,
-                finalized_account_id=baseline,
-                finalized_epoch=(
-                    None if baseline is None else SelectionEpoch(1)
-                ),
-                target_account_id=target[1],
-                pending_epoch=_required_selection_epoch(self._owner),
-                phase=SelectionPhase.WAITING_OLD_TURNS,
-                code=None,
-                registered_count=3,
-                reachable_count=3,
-                required_count=3,
-                active_turn_count=0 if baseline is None else 1,
             ),
         )
 

@@ -226,7 +226,8 @@ class _SelectionAdapter:
         assert self._protected is not None
         channels, _registry, protected_hosts, _scheduler = self._protected
         targets = (
-            tuple(protected_hosts) if participant_ids is None
+            tuple(protected_hosts)
+            if participant_ids is None
             else participant_ids
         )
         receivers: list[Thread] = []
@@ -465,8 +466,16 @@ def _build_journey(tmp_path: Path) -> _Journey:
         ),
     )
     return _Journey(
-        other, selected, operations, registry, adapter, process_inspector,
-        recovery_handoffs, coordinator, subscriptions[:-1], protected_hosts
+        other,
+        selected,
+        operations,
+        registry,
+        adapter,
+        process_inspector,
+        recovery_handoffs,
+        coordinator,
+        subscriptions[:-1],
+        protected_hosts,
     )
 
 
@@ -668,26 +677,40 @@ def _arm_postcommit_loss(
 
 @pytest.mark.parametrize(
     (
-        "loss_state", "expected_outcome", "opens_target",
-        "expected_participant_count", "expected_ready_participants",
+        "loss_state",
+        "expected_outcome",
+        "opens_target",
+        "expected_participant_count",
+        "expected_ready_participants",
     ),
     [
         (
-            "dead_before_commit", SelectionOutcome.READY, True,
-            INITIAL_PARTICIPANT_COUNT, (PARTICIPANT_B, PARTICIPANT_C),
+            "dead_before_commit",
+            SelectionOutcome.READY,
+            True,
+            INITIAL_PARTICIPANT_COUNT,
+            (PARTICIPANT_B, PARTICIPANT_C),
         ),
         (
-            "live_unreachable", SelectionOutcome.RECOVERY_REQUIRED, False, 3,
+            "live_unreachable",
+            SelectionOutcome.RECOVERY_REQUIRED,
+            False,
+            3,
             (),
         ),
         (
             "dead_after_commit",
             SelectionOutcome.PARTICIPANT_LOST_AFTER_COMMIT,
-            True, INITIAL_PARTICIPANT_COUNT, (PARTICIPANT_A, PARTICIPANT_B),
+            True,
+            INITIAL_PARTICIPANT_COUNT,
+            (PARTICIPANT_A, PARTICIPANT_B),
         ),
         (
-            "final_snapshot_failure", SelectionOutcome.RECOVERY_REQUIRED,
-            False, 3, (PARTICIPANT_A, PARTICIPANT_B, PARTICIPANT_C),
+            "final_snapshot_failure",
+            SelectionOutcome.RECOVERY_REQUIRED,
+            False,
+            3,
+            (PARTICIPANT_A, PARTICIPANT_B, PARTICIPANT_C),
         ),
     ],
 )
@@ -709,25 +732,29 @@ def test_three_participants_switch_without_interrupting_turns(
     )
     adapter.crash_after_install = loss_state == "live_unreachable"
 
-    def select(operation_id: OperationId) -> SelectionResult:
-        return coordinator.select(
-            operation_id,
-            PROVIDER_ID,
-            TARGET_ACCOUNT_ID,
-        )
-
     results: list[SelectionResult] = []
     selector = Thread(
-        target=lambda: results.append(select(OPERATION_ID)),
+        target=lambda: results.append(
+            coordinator.select(
+                OPERATION_ID,
+                PROVIDER_ID,
+                TARGET_ACCOUNT_ID,
+            )
+        ),
         daemon=True,
     )
     selector.start()
     assert adapter.prevalidation_started.wait(1)
-    replay_results: list[SelectionResult] = []
     replay: Thread | None = None
     if loss_state == "dead_after_commit":
         replay = Thread(
-            target=lambda: replay_results.append(select(REPLAY_OPERATION_ID)),
+            target=lambda: results.append(
+                coordinator.select(
+                    REPLAY_OPERATION_ID,
+                    PROVIDER_ID,
+                    TARGET_ACCOUNT_ID,
+                )
+            ),
             daemon=True,
         )
         replay.start()
@@ -737,7 +764,10 @@ def test_three_participants_switch_without_interrupting_turns(
             )
         assert conflict.value.code is SelectionCode.UNCOORDINATED_AUTH_MUTATION
     adapter.allow_prevalidation.set()
-    assert operations.preparing.wait(1)
+    assert (
+        operations.preparing.wait(1),
+        adapter.committed.is_set(),
+    ) == (True, False)
 
     queued = registry.begin_turn(TurnBeginRequest(PARTICIPANT_B, 1, TURN_B))
     late = _register_late(journey)
@@ -781,7 +811,7 @@ def test_three_participants_switch_without_interrupting_turns(
     if replay is not None:
         replay.join(timeout=2)
         assert not replay.is_alive()
-        assert replay_results == results
+        assert results == [results[0], results[0]]
 
     assert not selector.is_alive()
     _assert_journey_result(
@@ -853,11 +883,11 @@ def test_recovery_finalizes_forward_from_target_provider_proof(
     )
     assert recovery.restore(PROVIDER_ID)
     (readback,) = recovery.enqueue_restored_readbacks()
-    assert readback.operation_id != operation.operation_id
     assert (
+        readback.operation_id != operation.operation_id,
         readback.selection_operation_id,
         recovery.enqueue_restored_readbacks(),
-    ) == (operation.operation_id, (readback,))
+    ) == (True, operation.operation_id, (readback,))
     recovery.fail_readback(readback, "selection_recovery_required")
     active = journal.load(PROVIDER_ID).active
     assert active is not None
@@ -885,7 +915,7 @@ def test_recovery_finalizes_forward_from_target_provider_proof(
             observed_generation=TARGET_GENERATION,
         ),
     )
-    result = SelectionCoordinator(
+    coordinator = SelectionCoordinator(
         selected,
         journal,
         registry,
@@ -894,13 +924,28 @@ def test_recovery_finalizes_forward_from_target_provider_proof(
         resume_recovery=lambda provider_id: recovery.complete_readback(
             completion
         ),
-    ).select(REPLAY_OPERATION_ID, PROVIDER_ID, TARGET_ACCOUNT_ID)
+    )
+    with pytest.raises(SelectionRequestError) as conflict:
+        coordinator.select_events(
+            CONFLICT_OPERATION_ID,
+            PROVIDER_ID,
+            CONFLICT_ACCOUNT_ID,
+        )
+    assert conflict.value.code is SelectionCode.UNCOORDINATED_AUTH_MUTATION
+    canonical_id, stream = coordinator.select_events(
+        REPLAY_OPERATION_ID,
+        PROVIDER_ID,
+        TARGET_ACCOUNT_ID,
+    )
+    *_, result = stream
+    assert isinstance(result, SelectionResult)
 
     (finalized,) = selected.load_all()
     provider_journal = journal.load(PROVIDER_ID)
     assert (
         finalized.account_id,
         finalized.epoch,
+        canonical_id,
         result,
         result.operation_id,
         result.outcome,
@@ -908,6 +953,7 @@ def test_recovery_finalizes_forward_from_target_provider_proof(
     ) == (
         TARGET_ACCOUNT_ID,
         baseline_epoch.next(),
+        OPERATION_ID,
         provider_journal.history[-1],
         OPERATION_ID,
         SelectionOutcome.READY,

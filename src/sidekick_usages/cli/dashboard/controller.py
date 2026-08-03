@@ -13,11 +13,14 @@ from sidekick_usages.cli.dashboard.models.controller import (
     SelectAccountIntent,
 )
 from sidekick_usages.core.accounts.types import CredentialHealth
+from sidekick_usages.core.selection.models import SelectionResult
 from sidekick_usages.core.selection.types import (
     ProviderRuntimeState,
     SelectionCode,
+    SelectionOutcome,
 )
 from sidekick_usages.core.types import ProviderId
+from sidekick_usages.daemon.selection.models import SelectionStatus
 from sidekick_usages.usage.dashboard.focus import (
     initial_dashboard_cursor,
     provider_focus,
@@ -173,6 +176,7 @@ class DashboardController:
     def selection_succeeded(
         self,
         proof: DashboardSelectionProof,
+        result: SelectionResult | None = None,
     ) -> DashboardController:
         """Adopt only a service-proven saved account as the restore target."""
         provider = self._provider(proof.provider_id)
@@ -194,6 +198,20 @@ class DashboardController:
             or not account.active
         ):
             raise ValueError("Selection proof contradicts provider read-back.")
+        degraded = (
+            result is not None
+            and result.outcome
+            is SelectionOutcome.PARTICIPANT_LOST_AFTER_COMMIT
+        )
+        if result is not None and (
+            result.provider_id is not proof.provider_id
+            or result.target_account_id != proof.account_id
+            or result.epoch != provider.finalized_epoch
+            or (result.outcome is not SelectionOutcome.READY and not degraded)
+        ):
+            raise ValueError(
+                "Selection result contradicts provider read-back."
+            )
         proven_anchor = DashboardProviderAnchor(
             provider_id=proof.provider_id,
             account_id=proof.account_id,
@@ -206,12 +224,26 @@ class DashboardController:
             )
             for anchor in self.state.anchors
         )
-        return self._with_state(
+        controller = self._with_state(
             _state_at_anchor(
                 anchors,
                 proven_anchor,
                 help_visible=self.state.help_visible,
             )
+        )
+        if not degraded:
+            return controller
+        return replace(
+            controller,
+            snapshot=replace(
+                controller.snapshot,
+                providers=tuple(
+                    replace(candidate, selection=result)
+                    if candidate.provider_id is proof.provider_id
+                    else candidate
+                    for candidate in controller.snapshot.providers
+                ),
+            ),
         )
 
     def rebase(
@@ -219,9 +251,11 @@ class DashboardController:
         snapshot: DashboardSnapshot,
         *,
         restore_provider: ProviderId | None = None,
+        retain_selection: bool = True,
     ) -> DashboardController:
         """Adopt fresh cached truth while preserving one valid preview."""
-        snapshot = _retain_selection_status(self.snapshot, snapshot)
+        if retain_selection:
+            snapshot = _retain_selection_status(self.snapshot, snapshot)
         verified = DashboardController.start(snapshot)
         anchors = verified.state.anchors
         if restore_provider is not None:
@@ -321,7 +355,7 @@ def _retain_selection_status(
     current: DashboardSnapshot,
     replacement: DashboardSnapshot,
 ) -> DashboardSnapshot:
-    """Carry canonical live selection across a passive cache refresh."""
+    """Carry only a selection projection matching fresh cache truth."""
     selections = {
         provider.provider_id: provider
         for provider in current.providers
@@ -334,14 +368,37 @@ def _retain_selection_status(
         providers=tuple(
             replace(
                 provider,
-                finalized_epoch=selected.finalized_epoch,
                 selection=selected.selection,
             )
-            if (selected := selections.get(provider.provider_id)) is not None
+            if (
+                (selected := selections.get(provider.provider_id)) is not None
+                and _selection_matches_cache(selected, provider)
+            )
             else provider
             for provider in replacement.providers
         ),
     )
+
+
+def _selection_matches_cache(
+    selected: DashboardProvider,
+    replacement: DashboardProvider,
+) -> bool:
+    """Return whether fresh finalized truth still owns the projection."""
+    selection = selected.selection
+    if isinstance(selection, SelectionStatus):
+        return (
+            selection.operation_id is not None
+            and selection.finalized_epoch == replacement.finalized_epoch
+            and selection.finalized_account_id == replacement.active_account_id
+        )
+    if isinstance(selection, SelectionResult):
+        return (
+            selection.outcome is SelectionOutcome.PARTICIPANT_LOST_AFTER_COMMIT
+            and selection.epoch == replacement.finalized_epoch
+            and selection.target_account_id == replacement.active_account_id
+        )
+    return False
 
 
 def _provider_anchor(

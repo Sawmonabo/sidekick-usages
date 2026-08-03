@@ -10,7 +10,10 @@ from sidekick_usages.core.accounts.types import (
     SidekickAccountId,
 )
 from sidekick_usages.core.models import TokenActivitySummary, UsageReport
-from sidekick_usages.core.selection.models import SelectionEpoch
+from sidekick_usages.core.selection.models import (
+    SelectionEpoch,
+    SelectionResult,
+)
 from sidekick_usages.core.selection.types import ProviderRuntimeState
 from sidekick_usages.core.time import as_utc
 from sidekick_usages.core.types import (
@@ -181,14 +184,17 @@ class DashboardProviderStatus:
     runtime_state: ProviderRuntimeState | None
     observed_at: datetime | None
     finalized_epoch: SelectionEpoch | None = None
-    selection: SelectionStatus | None = field(default=None, repr=False)
-    unmanaged_sessions: int = 0
+    selection: SelectionStatus | SelectionResult | None = field(
+        default=None,
+        repr=False,
+    )
+    unmanaged_sessions: int | None = None
 
     def __post_init__(self) -> None:
         """Normalize observation time and validate the session count."""
         if self.observed_at is not None:
             object.__setattr__(self, "observed_at", as_utc(self.observed_at))
-        if self.unmanaged_sessions < 0:
+        if self.unmanaged_sessions is not None and self.unmanaged_sessions < 0:
             raise ValueError(
                 "Dashboard unmanaged sessions cannot be negative."
             )
@@ -205,7 +211,10 @@ class DashboardProvider:
     actions_enabled: bool
     rows: tuple[DashboardRow, ...]
     finalized_epoch: SelectionEpoch | None = None
-    selection: SelectionStatus | None = field(default=None, repr=False)
+    selection: SelectionStatus | SelectionResult | None = field(
+        default=None,
+        repr=False,
+    )
     activity: DashboardActivity | None = None
     status: DashboardProviderStatus = field(init=False)
 
@@ -235,9 +244,7 @@ class DashboardProvider:
                 observed_at=self.verified_at,
                 finalized_epoch=self.finalized_epoch,
                 selection=self.selection,
-                unmanaged_sessions=int(
-                    self.runtime_state is ProviderRuntimeState.EXTERNAL_ACTIVE
-                ),
+                unmanaged_sessions=None,
             ),
         )
         if (

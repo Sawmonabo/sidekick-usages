@@ -7,7 +7,7 @@ import socket
 import stat
 import sys
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -466,8 +466,9 @@ class ControlConnection:
             protected_endpoint,
         )
         subscription: ControlSubscription | None = None
+        events = self._dispatcher.dispatch(context)
         try:
-            for event in self._dispatcher.dispatch(context):
+            for event in events:
                 terminal, accepted = self._send_dispatch_event(
                     transport,
                     request,
@@ -487,6 +488,10 @@ class ControlConnection:
         except _InvalidDispatchEventError:
             return False
         except BrokenPipeError, ConnectionResetError:
+            self._drain_disconnected_selection(
+                request.kind,
+                events,
+            )
             monitor = self._subscription_monitor
             if subscription is not None and monitor is not None:
                 monitor.cancel(subscription)
@@ -508,6 +513,17 @@ class ControlConnection:
                 and self._subscription_monitor is not None
             ):
                 self._subscription_monitor.unregister(subscription)
+
+    @staticmethod
+    def _drain_disconnected_selection(
+        kind: RequestKind,
+        events: Iterator[ControlEvent],
+    ) -> None:
+        """Finish server-accepted selection after display disconnects."""
+        if kind is not RequestKind.SELECT_ACCOUNT:
+            return
+        for _event in events:
+            pass
 
     def _attachment_matches(
         self,
@@ -565,8 +581,10 @@ class ControlConnection:
             EventKind.PARTICIPANT_REGISTERED,
             EventKind.TURN_ADMISSION,
             EventKind.SELECTION_RESULT,
-            EventKind.SELECTION_STATUS,
-        }
+        } or (
+            event.kind is EventKind.SELECTION_STATUS
+            and request.kind is RequestKind.SELECTION_STATUS
+        )
         return terminal, subscription
 
     def _accepted_subscription(

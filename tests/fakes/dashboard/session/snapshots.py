@@ -11,6 +11,7 @@ from sidekick_usages.cli.dashboard.session import (
 )
 from sidekick_usages.clock import Clock
 from sidekick_usages.core.accounts.types import SidekickAccountId
+from sidekick_usages.core.selection.models import SelectionEpoch
 from sidekick_usages.core.selection.types import ProviderRuntimeState
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.daemon.types.service import ServicePhase
@@ -71,6 +72,7 @@ class SessionSnapshotSource:
         self,
         provider_id: ProviderId,
         account_id: SidekickAccountId,
+        epoch: SelectionEpoch | None = None,
     ) -> None:
         """Publish one provider-verified selected account."""
         providers = tuple(
@@ -81,6 +83,9 @@ class SessionSnapshotSource:
                     provider,
                     runtime_state=ProviderRuntimeState.SAVED_ACTIVE,
                     active_account_id=account_id,
+                    finalized_epoch=(
+                        provider.finalized_epoch if epoch is None else epoch
+                    ),
                     actions_enabled=True,
                     rows=tuple(
                         (

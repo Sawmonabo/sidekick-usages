@@ -3,6 +3,7 @@
 import os
 import socket
 import sys
+from collections.abc import Iterator
 from dataclasses import replace
 from pathlib import Path
 from threading import Event, Thread
@@ -32,7 +33,11 @@ from sidekick_usages.core.selection.types import (
     TurnId,
 )
 from sidekick_usages.core.types import ProviderId
-from sidekick_usages.daemon.control.client import ControlClient
+from sidekick_usages.daemon.control.client import (
+    ControlClient,
+    UnexpectedServiceEventError,
+    consume_selection_action,
+)
 from sidekick_usages.daemon.control.dispatch import (
     OperationEventHub,
     SupervisorDispatcher,
@@ -85,7 +90,6 @@ from sidekick_usages.daemon.selection.models import (
     TurnEndRequest,
 )
 from sidekick_usages.daemon.selection.ports import SelectionSupervisorPort
-from sidekick_usages.daemon.types.control import ControlFailurePhase
 from sidekick_usages.daemon.types.lifecycle import (
     ServiceBackendId,
     ServiceComponentState,
@@ -111,7 +115,6 @@ from sidekick_usages.platform.peer import (
 )
 from sidekick_usages.platform.types import PeerFailureCode, PeerVerifier
 from tests.fakes.daemon.control import (
-    FailingControlReporter,
     FragmentingSocket,
     RecordingDispatcher,
     RegistryMonitorScenario,
@@ -140,6 +143,10 @@ class _OperatorSelection(SelectionSupervisorPort):
     def __init__(self) -> None:
         self.operation_id: OperationId | None = None
         self.unsupported_target: SidekickAccountId | None = None
+        self.block_after_waiting = False
+        self.waiting = Event()
+        self.allow_completion = Event()
+        self.completed = Event()
 
     def select(
         self,
@@ -147,29 +154,87 @@ class _OperatorSelection(SelectionSupervisorPort):
         provider_id: ProviderId,
         target_account_id: SidekickAccountId,
     ) -> SelectionResult:
-        """Record and complete one exact synthetic selection."""
+        """Drain the same synthetic stream used by control dispatch."""
+        _canonical_id, stream = self.select_events(
+            operation_id,
+            provider_id,
+            target_account_id,
+        )
+        events = tuple(stream)
+        result = events[-1]
+        if not isinstance(result, SelectionResult):
+            raise AssertionError("Synthetic selection lost its result.")
+        return result
+
+    def select_events(
+        self,
+        operation_id: OperationId,
+        provider_id: ProviderId,
+        target_account_id: SidekickAccountId,
+    ) -> tuple[
+        OperationId,
+        Iterator[SelectionStatus | SelectionResult],
+    ]:
+        """Record canonical phase order before synthetic completion."""
         if target_account_id == self.unsupported_target:
             raise SelectionRequestError(
                 SelectionCode.UNSUPPORTED_SESSION_CAPABILITY
             )
-        if self.operation_id is not None:
-            raise ValueError("synthetic fault")
-        self.operation_id = operation_id
-        return SelectionResult(
-            operation_id=operation_id,
-            provider_id=provider_id,
-            target_account_id=target_account_id,
-            target_generation=AuthorityGeneration("generation-target-1"),
-            epoch=SelectionEpoch(1),
-            outcome=SelectionOutcome.READY,
-            safe_code=SelectionCode.SELECTION_SUCCEEDED,
-            required_count=0,
-            ready_count=0,
-            adopted_count=0,
-            lost_count=0,
-            started_at=REFERENCE_TIME,
-            completed_at=REFERENCE_TIME,
-        )
+        canonical_id = self.operation_id or operation_id
+        self.operation_id = canonical_id
+
+        def events() -> Iterator[SelectionStatus | SelectionResult]:
+            for phase in (
+                SelectionPhase.PREVALIDATING,
+                SelectionPhase.WAITING_OLD_TURNS,
+                SelectionPhase.COMMITTING,
+                SelectionPhase.AWAITING_READY,
+            ):
+                yield SelectionStatus(
+                    provider_id=provider_id,
+                    operation_id=canonical_id,
+                    finalized_account_id=None,
+                    finalized_epoch=None,
+                    target_account_id=target_account_id,
+                    pending_epoch=SelectionEpoch(1),
+                    phase=phase,
+                    code=None,
+                    registered_count=1,
+                    reachable_count=1,
+                    required_count=(
+                        0 if phase is SelectionPhase.PREVALIDATING else 1
+                    ),
+                    ready_count=(
+                        1 if phase is SelectionPhase.AWAITING_READY else 0
+                    ),
+                )
+                if phase is SelectionPhase.WAITING_OLD_TURNS:
+                    self.waiting.set()
+                    if (
+                        self.block_after_waiting
+                        and not self.allow_completion.wait(2)
+                    ):
+                        raise AssertionError(
+                            "Synthetic selection stayed blocked."
+                        )
+            self.completed.set()
+            yield SelectionResult(
+                operation_id=canonical_id,
+                provider_id=provider_id,
+                target_account_id=target_account_id,
+                target_generation=AuthorityGeneration("generation-target-1"),
+                epoch=SelectionEpoch(1),
+                outcome=SelectionOutcome.READY,
+                safe_code=SelectionCode.SELECTION_SUCCEEDED,
+                required_count=0,
+                ready_count=0,
+                adopted_count=0,
+                lost_count=0,
+                started_at=REFERENCE_TIME,
+                completed_at=REFERENCE_TIME,
+            )
+
+        return canonical_id, events()
 
 
 def _verified(request: ControlRequest) -> VerifiedControlRequest:
@@ -515,17 +580,22 @@ def test_select_accepts_with_the_correlated_operation_id(
     operation_id = OperationId("9265897c-7881-47af-b69e-575823b33c3f")
     target = SidekickAccountId("2999e642-0299-4f73-9187-01b3d240e3d8")
     selection = _OperatorSelection()
-    events = OperationEventHub(FailingControlReporter())
     state = foundation_state(tmp_path)
     dispatcher = SupervisorDispatcher(
         state.queue,
         ServiceStateStore(state.paths.service_state),
-        events,
+        OperationEventHub(),
         RuntimeClock(),
         Event().set,
         Event().set,
         selection=selection,
-        operation_id_factory=lambda: operation_id,
+        operation_id_factory=iter(
+            (
+                operation_id,
+                OperationId("77777777-7777-4777-8777-777777777777"),
+                OperationId("88888888-8888-4888-8888-888888888888"),
+            )
+        ).__next__,
     )
     request = ControlRequest(
         PROTOCOL_VERSION,
@@ -534,14 +604,97 @@ def test_select_accepts_with_the_correlated_operation_id(
         AccountPayload(ProviderId.CLAUDE, target),
         __version__,
     )
-
-    accepted, completed = tuple(dispatcher.dispatch(_verified(request)))
-
+    dispatched = tuple(dispatcher.dispatch(_verified(request)))
+    accepted, completed = dispatched[0], dispatched[-1]
     assert isinstance(accepted.payload, AcceptedPayload)
-    assert accepted.payload.operation_id == operation_id
+    observed: list[SelectionStatus] = []
+    result = consume_selection_action(
+        iter(dispatched),
+        provider_id=ProviderId.CLAUDE,
+        account_id=target,
+        status=observed.append,
+    )
+    assert (
+        accepted.payload.operation_id,
+        tuple(status.phase for status in observed),
+        tuple(event.kind for event in dispatched),
+    ) == (
+        operation_id,
+        (
+            SelectionPhase.PREVALIDATING,
+            SelectionPhase.WAITING_OLD_TURNS,
+            SelectionPhase.COMMITTING,
+            SelectionPhase.AWAITING_READY,
+        ),
+        (
+            EventKind.ACCEPTED,
+            *((EventKind.SELECTION_STATUS,) * 4),
+            EventKind.SELECTION_RESULT,
+        ),
+    )
     assert isinstance(completed.payload, SelectionResult)
-    assert completed.payload.operation_id == operation_id
-    assert selection.operation_id == operation_id
+    assert (
+        result,
+        completed.payload.operation_id,
+        selection.operation_id,
+    ) == (completed.payload, operation_id, operation_id)
+    mismatched = (
+        *dispatched[:-1],
+        replace(
+            completed,
+            payload=replace(
+                completed.payload,
+                epoch=SelectionEpoch(2),
+            ),
+        ),
+    )
+    with pytest.raises(UnexpectedServiceEventError, match="unrelated"):
+        consume_selection_action(
+            iter(mismatched),
+            provider_id=ProviderId.CLAUDE,
+            account_id=target,
+        )
+    commit_status = dispatched[3].payload
+    assert isinstance(commit_status, SelectionStatus)
+    changed_epoch = (
+        *dispatched[:3],
+        replace(
+            dispatched[3],
+            payload=replace(
+                commit_status,
+                finalized_account_id=SidekickAccountId(
+                    "3b094d2e-1075-4c79-b59c-4295111028ab"
+                ),
+                finalized_epoch=SelectionEpoch(1),
+                pending_epoch=SelectionEpoch(2),
+            ),
+        ),
+        *dispatched[4:],
+    )
+    with pytest.raises(UnexpectedServiceEventError, match="changed"):
+        consume_selection_action(
+            iter(changed_epoch),
+            provider_id=ProviderId.CLAUDE,
+            account_id=target,
+        )
+    replayed = tuple(
+        dispatcher.dispatch(
+            _verified(replace(request, request_id=new_request_id()))
+        )
+    )
+    replay_accepted = replayed[0].payload
+    assert isinstance(replay_accepted, AcceptedPayload)
+    assert (
+        replay_accepted.operation_id,
+        consume_selection_action(
+            iter(replayed),
+            provider_id=ProviderId.CLAUDE,
+            account_id=target,
+        ),
+    ) == (
+        operation_id,
+        completed.payload,
+    )
     selection.unsupported_target = SidekickAccountId(
         "3b094d2e-1075-4c79-b59c-4295111028ab"
     )
@@ -554,14 +707,39 @@ def test_select_accepts_with_the_correlated_operation_id(
     )
     refused = tuple(dispatcher.dispatch(_verified(setup_request)))[-1]
     assert isinstance(refused.payload, FailedPayload)
-    assert (
-        refused.payload.code
-        == SelectionCode.UNSUPPORTED_SESSION_CAPABILITY.value
+    assert refused.payload.code == "unsupported_session_capability"
+    disconnected = _OperatorSelection()
+    disconnected.block_after_waiting = True
+    disconnected_state = foundation_state(tmp_path / "selection-stream")
+    disconnected_dispatcher = SupervisorDispatcher(
+        disconnected_state.queue,
+        ServiceStateStore(disconnected_state.paths.service_state),
+        OperationEventHub(),
+        RuntimeClock(),
+        Event().set,
+        Event().set,
+        selection=disconnected,
     )
-    failed = tuple(dispatcher.dispatch(_verified(request)))[-1]
-    assert isinstance(failed.payload, FailedPayload)
-    assert failed.payload.code == ProtocolErrorCode.DISPATCH_FAILED.value
-    assert events.degraded_phases == (ControlFailurePhase.DISPATCH,)
+    server_socket, client_socket = socket.socketpair()
+    server = Thread(
+        target=serve_protocol_connection,
+        args=(server_socket, VerifiedPeer(), disconnected_dispatcher),
+    )
+    server.start()
+    client = ControlClient(client_socket)
+    stream = client.select_account(ProviderId.CLAUDE, target)
+    assert tuple(next(stream).kind for _ in range(3)) == (
+        EventKind.ACCEPTED,
+        EventKind.SELECTION_STATUS,
+        EventKind.SELECTION_STATUS,
+    )
+    assert disconnected.waiting.wait(1)
+    client_socket.shutdown(socket.SHUT_RDWR)
+    client.close()
+    disconnected.allow_completion.set()
+    server.join(timeout=2)
+    assert disconnected.completed.is_set()
+    assert not server.is_alive()
 
 
 def _dispatch_failure_code(
