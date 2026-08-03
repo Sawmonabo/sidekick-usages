@@ -593,13 +593,13 @@ class ParticipantRegistry:
             return project_notice(
                 request.participant_id,
                 participant,
-                self._gates.get(provider_id),
+                (gate := self._gates.get(provider_id)),
                 self._selected.load(provider_id),
-                attachment_required=self.requires_finalized_attachment(
-                    provider_id
+                attachment_required=(
+                    gate is not None
+                    or self.requires_finalized_attachment(provider_id)
                 ),
             )
-
         with self._condition:
             if request_id in self._cancelled_subscriptions:
                 self._cancelled_subscriptions.discard(request_id)

@@ -684,6 +684,24 @@ class CodexSelectionBroker:
                 reply,
                 instruction,
             )
+            if (
+                observed_account_id == reply.binding.account_id
+                and observed_generation == reply.binding.generation
+                and observed_generation is not None
+            ):
+                try:
+                    self._participant_proofs.bind_after_readback(
+                        reply.binding.operation_id,
+                        CodexRelayAuthority(
+                            account_id=reply.binding.account_id,
+                            generation=observed_generation,
+                            epoch=reply.binding.pending_epoch,
+                        ),
+                    )
+                except CodexParticipantProofError:
+                    raise CodexBrokerError(
+                        CodexBrokerFailure.PROTOCOL_UNSUPPORTED
+                    ) from None
         exchange.acknowledge(
             encode_codex_selection_acknowledgement(
                 CodexSelectionAcknowledgement(

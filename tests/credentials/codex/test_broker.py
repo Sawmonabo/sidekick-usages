@@ -5,6 +5,7 @@ import time
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import pytest
 
@@ -177,6 +178,122 @@ def _assert_callback_rejection(
     assert daemon.installed_account_ids == installed_before
     assert saved_generation(paths, account_id) == generation_before
     supervisor.wait_until_callback_workers_collected()
+
+
+def _prove_postcommit_late_participant_recovery(
+    tmp_path: Path,
+    short_socket_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Recover one late Codex participant without replaying provider commit."""
+    late_root = tmp_path / "late-participant"
+    late_root.mkdir()
+    fixture = activation_source_fixture(
+        late_root,
+        short_socket_root,
+        monkeypatch,
+    )
+    paths = fixture.paths
+    initial = _finalized_codex_selection(paths)
+
+    with FakeCodexDaemon(
+        fixture.session_home,
+        app_server_version="0.146.0",
+    ) as daemon:
+        configure_codex_daemon_lifecycle(
+            fixture.provider_root,
+            fixture.session_home,
+            daemon.socket_path,
+            app_server_version="0.146.0",
+        )
+        session = CodexSessionRuntime.create(
+            fixture.executable,
+            fixture.session_home,
+            short_socket_root / "initial-participant.sock",
+            paths.supervisor_socket,
+            environment=fixture.environment,
+        )
+        late_session = CodexSessionRuntime.create(
+            fixture.executable,
+            fixture.session_home,
+            short_socket_root / "late-participant.sock",
+            paths.supervisor_socket,
+            environment=fixture.environment,
+        )
+        with FakeCodexSupervisor(
+            paths,
+            fixture.executable,
+            fixture.session_home,
+            fixture.environment,
+            real_worker_executable(),
+        ) as supervisor:
+            supervisor.wait_until_ready()
+            session.open()
+            initial_tui = daemon.connect_tui(session.socket_path)
+            initial_tui.send_request(
+                1, "thread/resume", {"threadId": "thread-initial"}
+            )
+            assert initial_tui.receive().get("id") == 1
+            supervisor.reject_final_selection_snapshot_once()
+
+            events = _select_codex_account(paths, MANAGED_ACCOUNT_ID)
+            result = events[-1].payload
+            assert isinstance(result, SelectionResult), events
+            assert (result.outcome, result.safe_code) == (
+                SelectionOutcome.RECOVERY_REQUIRED,
+                SelectionCode.SELECTION_RECOVERY_REQUIRED,
+            )
+            active = (
+                SelectionOperationStore(paths.selection_journals)
+                .load(ProviderId.CODEX)
+                .active
+            )
+            assert active is not None
+            assert (
+                _finalized_codex_selection(paths),
+                active.target_account_id,
+                active.target_generation,
+            ) == (
+                initial,
+                MANAGED_ACCOUNT_ID,
+                AuthorityGeneration(NEXT_GENERATION),
+            )
+
+            late_session.open()
+            late_tui = daemon.connect_tui(late_session.socket_path)
+            supervisor.wait_until_selection_workers_collected()
+            finalized = _finalized_codex_selection(paths)
+            initial_tui.send_request(
+                2,
+                "turn/start",
+                {"input": [], "threadId": "thread-initial"},
+            )
+            for _message_index in range(3):
+                initial_tui.receive()
+            late_tui.send_request(
+                3,
+                "turn/start",
+                {"input": [], "threadId": "thread-late"},
+            )
+            for _message_index in range(3):
+                late_tui.receive()
+            assert (
+                finalized.account_id,
+                finalized.epoch,
+                finalized.generation,
+                daemon.relay_start_request_ids[-2:],
+            ) == (
+                MANAGED_ACCOUNT_ID,
+                initial.epoch.next(),
+                AuthorityGeneration(NEXT_GENERATION),
+                (2, 3),
+            )
+            late_tui.close()
+            initial_tui.close()
+            late_session.close()
+            session.close()
+
+    assert fixture.native_auth.read_bytes() == NATIVE_AUTH_SENTINEL
 
 
 def _finalize_projected_generation(
@@ -778,6 +895,12 @@ def test_selection_worker_binds_codex_broker_journey(
 
         observer.close()
     assert fixture.native_auth.read_bytes() == NATIVE_AUTH_SENTINEL
+    with TemporaryDirectory(prefix="skl-") as late_socket_root:
+        _prove_postcommit_late_participant_recovery(
+            tmp_path,
+            Path(late_socket_root),
+            monkeypatch,
+        )
 
 
 def test_callback_preempts_stubborn_same_home_maintenance(

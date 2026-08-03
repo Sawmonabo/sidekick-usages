@@ -224,12 +224,15 @@ class SelectionWorkerGateway:
 
     def bind_participant(self, operation: OpenSelectionOperation) -> None:
         """Enqueue one protected bind without blocking registration I/O."""
-        if (
-            operation.provider_id is not ProviderId.CLAUDE
-            or operation.target_generation is None
-            or operation.phase
-            not in {SelectionPhase.AWAITING_READY, SelectionPhase.RECOVERING}
-        ):
+        if operation.target_generation is None or operation.phase not in {
+            SelectionPhase.AWAITING_READY,
+            SelectionPhase.RECOVERING,
+        }:
+            raise SelectionRequestError(SelectionCode.AUTHORITY_PROOF_FAILED)
+        if operation.provider_id is ProviderId.CODEX:
+            self.enqueue_recovery_readback(operation)
+            return
+        if operation.provider_id is not ProviderId.CLAUDE:
             raise SelectionRequestError(SelectionCode.AUTHORITY_PROOF_FAILED)
         due = self._operation(
             operation.operation_id,

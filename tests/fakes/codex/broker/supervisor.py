@@ -16,8 +16,14 @@ from sidekick_usages.core.accounts.types import (
     OperationId,
     SidekickAccountId,
 )
-from sidekick_usages.core.selection.models import SelectionEpoch
-from sidekick_usages.core.selection.types import OperationKind
+from sidekick_usages.core.selection.models import (
+    OpenSelectionOperation,
+    SelectionEpoch,
+)
+from sidekick_usages.core.selection.types import (
+    OperationKind,
+    SelectionPhase,
+)
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.daemon.control.dispatch import (
     OperationEventHub,
@@ -55,6 +61,7 @@ from sidekick_usages.daemon.worker.pool import (
 )
 from sidekick_usages.paths import ApplicationPaths
 from sidekick_usages.persistence.accounts.store import AccountStore
+from sidekick_usages.persistence.errors import ReplaceFailedError
 from sidekick_usages.persistence.private.credentials import (
     PrivateCredentialTree,
 )
@@ -89,6 +96,30 @@ from sidekick_usages.providers.codex.broker.service import CodexSharedRuntime
 _READINESS_TIMEOUT_SECONDS = 10.0
 _SUPERVISOR_JOIN_SECONDS = 10.0
 _WAIT_INTERVAL_SECONDS = 0.01
+
+
+class _JourneySelectionOperationStore(SelectionOperationStore):
+    """Inject one post-commit snapshot failure into a full journey."""
+
+    def __init__(self, root: Path) -> None:
+        super().__init__(root)
+        self.reject_final_snapshot_once = False
+
+    def advance_with_required_additions(
+        self,
+        expected: OpenSelectionOperation,
+        replacement: OpenSelectionOperation,
+    ) -> OpenSelectionOperation:
+        """Reject only the next ready snapshot after provider commit."""
+        if (
+            self.reject_final_snapshot_once
+            and expected.phase is SelectionPhase.AWAITING_READY
+            and replacement.phase is SelectionPhase.AWAITING_READY
+            and replacement.ready_participant_ids
+        ):
+            self.reject_final_snapshot_once = False
+            raise ReplaceFailedError
+        return super().advance_with_required_additions(expected, replacement)
 
 
 class _JourneyWorkerExchangeRegistry(WorkerExchangeRegistry):
@@ -411,7 +442,9 @@ class FakeCodexSupervisor:
         )
         observations = RuntimeAuthObservationStore(paths.durable_operations)
         selected = SelectedStateStore(paths.selected_state)
-        selection_journals = SelectionOperationStore(paths.selection_journals)
+        selection_journals = _JourneySelectionOperationStore(
+            paths.selection_journals
+        )
         self._selection_journals = selection_journals
         participants = ParticipantRegistry(selected)
         selection_workers = SelectionWorkerGateway(
@@ -633,6 +666,10 @@ class FakeCodexSupervisor:
     ) -> None:
         """Schedule one full-journey selection boundary action."""
         self._exchanges.schedule_selection_hook(kind, hook)
+
+    def reject_final_selection_snapshot_once(self) -> None:
+        """Fail one final snapshot without changing provider auth."""
+        self._selection_journals.reject_final_snapshot_once = True
 
     def schedule_stale_callback_epoch(self) -> None:
         """Dispatch one callback with an obsolete finalized epoch."""

@@ -346,6 +346,71 @@ class CodexParticipantProofSet:
         if self._abort(operation_id, epoch):
             self._distribution.release()
 
+    def bind_after_readback(
+        self,
+        operation_id: OperationId,
+        target: CodexRelayAuthority,
+    ) -> None:
+        """Bind only late channels after exact target authority readback."""
+        self._distribution.acquire()
+        pending: _PendingProof | None = None
+        try:
+            with self._lock:
+                if self._pending is not None:
+                    raise CodexParticipantProofError(
+                        "Another Codex participant proof is active."
+                    )
+                binding = operation_id, target
+                channels = tuple(
+                    (participant_id, channel)
+                    for participant_id, channel in self._channels.items()
+                    if channel.binding != binding
+                )
+                if not channels:
+                    return
+                pending = _PendingProof(
+                    operation_id,
+                    target.epoch,
+                    {},
+                    set(),
+                )
+                self._pending = pending
+            self._exchange(
+                channels,
+                operation_id,
+                target.epoch,
+                _ProofPhase.PRECOMMIT,
+                pending,
+            )
+            receipts = self._exchange(
+                channels,
+                operation_id,
+                target.epoch,
+                _ProofPhase.POSTCOMMIT,
+                pending,
+            )
+            if receipts != pending.receipts:
+                raise CodexParticipantProofError(
+                    "Codex participant state changed during selection."
+                )
+            with self._lock:
+                if any(
+                    self._channels.get(participant_id) is not channel
+                    for participant_id, channel in channels
+                ):
+                    raise CodexParticipantProofError(
+                        "Codex participant membership changed during proof."
+                    )
+                for _participant_id, channel in channels:
+                    channel.binding = binding
+                self._pending = None
+        except BaseException:
+            if pending is not None:
+                self._abort(operation_id, target.epoch)
+            raise
+        finally:
+            self._distribution.release()
+
     def matches_target(
         self,
         participant_id: ParticipantId,

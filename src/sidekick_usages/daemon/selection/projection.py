@@ -336,6 +336,16 @@ def project_notice(
         raise ParticipantRequestError(
             SelectionCode.SELECTION_RECOVERY_REQUIRED
         )
+    if (
+        attachment_required
+        and participant.attachment_ready_epoch != gate.pending_epoch
+    ):
+        return participant_notice(
+            participant_id,
+            participant,
+            kind=ParticipantNoticeKind.PREPARE,
+            epoch=gate.pending_epoch,
+        )
     if gate.status_code is not None:
         return participant_notice(
             participant_id,
