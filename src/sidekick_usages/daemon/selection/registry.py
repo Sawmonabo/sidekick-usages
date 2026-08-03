@@ -5,10 +5,13 @@ from collections import deque
 from collections.abc import Callable, Generator
 from threading import Condition
 
-from sidekick_usages.core.accounts.types import RequestId, SidekickAccountId
+from sidekick_usages.core.accounts.types import (
+    OperationId,
+    RequestId,
+    SidekickAccountId,
+)
 from sidekick_usages.core.selection.models import (
     AuthorityReadyProof,
-    FinalizedSelection,
     SelectionEpoch,
 )
 from sidekick_usages.core.selection.types import (
@@ -40,14 +43,19 @@ from sidekick_usages.daemon.selection.ports import FinalizedSelectionStore
 from sidekick_usages.daemon.selection.projection import (
     ParticipantRecord,
     ProviderGate,
+    new_gate,
+    participant_notice,
     project_notice,
+    project_ready_notices,
     project_snapshot,
     require_capacity,
     require_connection,
     require_gate,
+    require_gate_binding,
     require_gate_epoch,
     require_membership_bound,
     require_reconnect,
+    require_selected,
 )
 from sidekick_usages.platform.models import ProcessIdentity
 
@@ -178,7 +186,7 @@ class ParticipantRegistry:
                     account_id=None,
                     generation=None,
                 )
-            selected = self._require_selected(provider_id)
+            selected = require_selected(self._selected.load(provider_id))
             if (
                 self._active_turn_count(provider_id)
                 >= MAX_ACTIVE_TURNS_PER_PROVIDER
@@ -236,6 +244,7 @@ class ParticipantRegistry:
     def close_admission(
         self,
         provider_id: ProviderId,
+        operation_id: OperationId,
         pending_epoch: SelectionEpoch,
     ) -> ParticipantSnapshot:
         """Close new-turn admission and capture live required clients."""
@@ -251,7 +260,9 @@ class ParticipantRegistry:
                 if participant.manifest.provider_id is provider_id
                 and not participant.confirmed_dead
             }
-            self._gates[provider_id] = ProviderGate(pending_epoch, required)
+            self._gates[provider_id] = new_gate(
+                operation_id, pending_epoch, required
+            )
             for participant_id in required:
                 self._append_notice(
                     participant_id,
@@ -264,6 +275,7 @@ class ParticipantRegistry:
     def restore_admission(
         self,
         provider_id: ProviderId,
+        operation_id: OperationId,
         pending_epoch: SelectionEpoch,
         target_account_id: SidekickAccountId,
         required_participant_ids: tuple[ParticipantId, ...],
@@ -281,25 +293,27 @@ class ParticipantRegistry:
             )
             require_membership_bound(self._participants, provider_id, required)
             if current is not None:
-                if current.pending_epoch != pending_epoch:
-                    raise ParticipantRequestError(
-                        SelectionCode.SELECTION_RECOVERY_REQUIRED
-                    )
+                require_gate_binding(current, operation_id, pending_epoch)
                 current.required = required
                 return self._snapshot(provider_id)
-            self._gates[provider_id] = ProviderGate(pending_epoch, required)
+            self._gates[provider_id] = new_gate(
+                operation_id, pending_epoch, required
+            )
             return self._snapshot(provider_id)
 
-    def prepare_target(self, proof: AuthorityReadyProof) -> None:
+    def prepare_target(
+        self, operation_id: OperationId, proof: AuthorityReadyProof
+    ) -> None:
         """Bind participant readiness to exact provider commit proof."""
         with self._condition:
-            gate = self._require_gate(proof.provider_id)
-            if gate.pending_epoch != proof.epoch:
-                raise ParticipantRequestError(
-                    SelectionCode.AUTHORITY_PROOF_FAILED
-                )
+            gate = require_gate(self._gates, proof.provider_id)
+            notices = project_ready_notices(
+                operation_id, proof, gate, self._participants
+            )
             gate.account_id = proof.account_id
             gate.generation = proof.generation
+            for notice in notices:
+                self._retain_notice(notice)
             self._condition.notify_all()
 
     def ready(
@@ -315,7 +329,7 @@ class ParticipantRegistry:
                 participant_id,
                 connection_generation,
             )
-            gate = self._require_gate(participant.manifest.provider_id)
+            gate = require_gate(self._gates, participant.manifest.provider_id)
             if (
                 participant_id not in gate.required
                 or gate.account_id != proof.account_id
@@ -600,7 +614,7 @@ class ParticipantRegistry:
     def seal_ready(self, provider_id: ProviderId) -> ParticipantSnapshot:
         """Freeze resolved membership through the finalization write window."""
         with self._condition:
-            gate = self._require_gate(provider_id)
+            gate = require_gate(self._gates, provider_id)
             if not self._all_required_resolved(provider_id):
                 raise ParticipantRequestError(
                     SelectionCode.SELECTION_RECOVERY_REQUIRED
@@ -611,7 +625,7 @@ class ParticipantRegistry:
     def seal_precommit(self, provider_id: ProviderId) -> ParticipantSnapshot:
         """Freeze membership after old work and reachability are proven."""
         with self._condition:
-            gate = self._require_gate(provider_id)
+            gate = require_gate(self._gates, provider_id)
             snapshot = self._snapshot(provider_id)
             if snapshot.active_turn_count or (
                 snapshot.unreachable_participant_ids
@@ -625,7 +639,7 @@ class ParticipantRegistry:
     def unseal(self, provider_id: ProviderId) -> None:
         """Allow late registration after failed finalization stays gated."""
         with self._condition:
-            gate = self._require_gate(provider_id)
+            gate = require_gate(self._gates, provider_id)
             gate.sealed = False
             self._condition.notify_all()
 
@@ -636,7 +650,7 @@ class ParticipantRegistry:
     ) -> tuple[ParticipantId, ...]:
         """Open one finalized epoch without transmitting queued prompts."""
         with self._condition:
-            gate = self._require_gate(provider_id)
+            gate = require_gate(self._gates, provider_id)
             if gate.pending_epoch != epoch or not self._all_required_resolved(
                 provider_id
             ):
@@ -735,19 +749,15 @@ class ParticipantRegistry:
         code: SelectionCode | None = None,
     ) -> None:
         participant = self._participants[participant_id]
-        self._notice_sequence += 1
-        self._notices.append(
-            (
-                self._notice_sequence,
-                ParticipantNotice(
-                    participant_id=participant_id,
-                    provider_id=participant.manifest.provider_id,
-                    kind=kind,
-                    epoch=epoch,
-                    code=code,
-                ),
-            )
+        notice = participant_notice(
+            participant_id, participant, kind=kind, epoch=epoch, code=code
         )
+        self._retain_notice(notice)
+
+    def _retain_notice(self, notice: ParticipantNotice) -> None:
+        """Append one already-projected notice to the bounded queue."""
+        self._notice_sequence += 1
+        self._notices.append((self._notice_sequence, notice))
 
     def _current_notice(
         self,
@@ -786,14 +796,3 @@ class ParticipantRegistry:
             participant_id,
             connection_generation,
         )
-
-    def _require_gate(self, provider_id: ProviderId) -> ProviderGate:
-        return require_gate(self._gates, provider_id)
-
-    def _require_selected(self, provider_id: ProviderId) -> FinalizedSelection:
-        selected = self._selected.load(provider_id)
-        if selected is None:
-            raise ParticipantRequestError(
-                SelectionCode.SESSION_CONFIGURATION_REQUIRED
-            )
-        return selected

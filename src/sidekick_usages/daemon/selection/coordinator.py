@@ -413,7 +413,7 @@ class SelectionCoordinator:
             self._require_proof(prepared, proof)
         except Exception:
             return self._recovering(operation)
-        self._participants.prepare_target(proof)
+        self._participants.prepare_target(operation.operation_id, proof)
         snapshot = self._participants.snapshot(provider_id)
         operation = self._persist(
             operation,
@@ -443,6 +443,7 @@ class SelectionCoordinator:
         )
         snapshot = self._participants.close_admission(
             operation.provider_id,
+            operation.operation_id,
             prepared.pending_epoch,
         )
         operation = self._persist(

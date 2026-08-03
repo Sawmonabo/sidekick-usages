@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from sidekick_usages.core.accounts.identifiers import new_request_id
 from sidekick_usages.core.accounts.types import (
     AuthorityGeneration,
     OperationId,
@@ -14,6 +15,7 @@ from sidekick_usages.core.accounts.types import (
 )
 from sidekick_usages.core.selection.models import (
     ActivationRecord,
+    AuthorityReadyProof,
     FinalizedSelection,
     OpenSelectionOperation,
     ProviderAuthObservation,
@@ -34,6 +36,15 @@ from sidekick_usages.core.selection.types import (
     SelectionPhase,
 )
 from sidekick_usages.core.types import ProviderId
+from sidekick_usages.daemon.selection import protocol
+from sidekick_usages.daemon.selection.models import (
+    ParticipantClientKind,
+    ParticipantConnectionRequest,
+    ParticipantManifest,
+    ParticipantNoticeKind,
+)
+from sidekick_usages.daemon.selection.registry import ParticipantRegistry
+from sidekick_usages.daemon.types.protocol import EventKind
 from sidekick_usages.paths import ApplicationPaths
 from sidekick_usages.persistence.models.artifact import (
     ExpectedAuthority,
@@ -61,6 +72,7 @@ from sidekick_usages.persistence.supervisor.selection import (
     SelectedStateStore,
     SelectionOperationStore,
 )
+from sidekick_usages.platform.models import ProcessIdentity
 from tests.support.persistence import (
     make_application_paths,
     seed_finalized_selections,
@@ -148,6 +160,64 @@ def test_selection_epoch_is_bounded_and_monotonic() -> None:
     for invalid in (-1, MAX_SELECTION_EPOCH + 1, True):
         with pytest.raises(ValueError, match="outside"):
             SelectionEpoch(invalid)
+
+
+def test_committed_target_notice_precedes_readiness(tmp_path: Path) -> None:
+    """Ready notices bind live and late clients to one committed target."""
+    paths = make_application_paths(tmp_path)
+    baseline = FinalizedSelection(
+        provider_id=PROVIDER_ID,
+        account_id=SidekickAccountId("4d95b1fb-1ba4-4837-b6b7-452cd8aff462"),
+        epoch=SelectionEpoch(7),
+        generation=AuthorityGeneration("generation-baseline-7"),
+        finalized_at=REFERENCE_TIME,
+    )
+    seed_finalized_selections(paths, baseline)
+    registry = ParticipantRegistry(SelectedStateStore(paths.selected_state))
+    manifest = ParticipantManifest(
+        participant_id=PARTICIPANT_A,
+        provider_id=PROVIDER_ID,
+        client_kind=ParticipantClientKind.CLAUDE_CODE,
+        capability_version=1,
+        connection_generation=1,
+    )
+    registry.register(manifest, ProcessIdentity(1001, 1))
+    notices = registry.subscribe(
+        new_request_id(), ParticipantConnectionRequest(PARTICIPANT_A, 1)
+    )
+    assert next(notices).kind is ParticipantNoticeKind.OPEN
+    registry.close_admission(PROVIDER_ID, OPERATION_ID, SelectionEpoch(8))
+    assert next(notices).kind is ParticipantNoticeKind.PREPARE
+    proof = AuthorityReadyProof(
+        provider_id=PROVIDER_ID,
+        account_id=TARGET_ACCOUNT_ID,
+        generation=AuthorityGeneration("generation-target-8"),
+        epoch=SelectionEpoch(8),
+        safe_code=SelectionCode.SELECTION_SUCCEEDED,
+    )
+    registry.prepare_target(OPERATION_ID, proof)
+    ready = next(notices)
+    assert ready.operation_id == OPERATION_ID
+    assert ready.target_account_id == TARGET_ACCOUNT_ID
+    assert ready.target_generation == proof.generation
+    assert ready.epoch == proof.epoch
+    encoded = protocol.encode_selection_event(ready)
+    decoded = protocol.decode_selection_event(
+        EventKind.PARTICIPANT_NOTICE, encoded
+    )
+    assert decoded == ready
+    registry.register(
+        replace(manifest, participant_id=PARTICIPANT_B),
+        ProcessIdentity(1002, 2),
+    )
+    late = registry.subscribe(
+        new_request_id(), ParticipantConnectionRequest(PARTICIPANT_B, 1)
+    )
+    assert next(late) == replace(ready, participant_id=PARTICIPANT_B)
+    assert isinstance(encoded, dict)
+    encoded.pop("target_generation")
+    with pytest.raises(ValueError, match="malformed"):
+        protocol.decode_selection_event(EventKind.PARTICIPANT_NOTICE, encoded)
 
 
 def _open_selection_operation() -> OpenSelectionOperation:

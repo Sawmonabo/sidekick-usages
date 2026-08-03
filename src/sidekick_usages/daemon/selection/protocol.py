@@ -205,13 +205,22 @@ def encode_selection_event(payload: EventPayload) -> JsonValue:
             "turn_id": str(payload.turn_id),
         }
     if isinstance(payload, ParticipantNotice):
-        return {
+        encoded: dict[str, JsonValue] = {
             "code": None if payload.code is None else payload.code.value,
             "epoch": payload.epoch.value,
             "kind": payload.kind.value,
             "participant_id": str(payload.participant_id),
             "provider": payload.provider_id.value,
         }
+        if payload.kind is ParticipantNoticeKind.READY:
+            encoded.update(
+                {
+                    "operation_id": str(payload.operation_id),
+                    "target_account_id": str(payload.target_account_id),
+                    "target_generation": str(payload.target_generation),
+                }
+            )
+        return encoded
     if isinstance(payload, SelectionResult):
         return {
             "adopted_count": payload.adopted_count,
@@ -313,16 +322,39 @@ def _decode_selection_event(
             ),
         )
     if kind is EventKind.PARTICIPANT_NOTICE:
+        notice_kind = ParticipantNoticeKind(require_string(root.get("kind")))
+        keys = {"code", "epoch", "kind", "participant_id", "provider"}
+        if notice_kind is ParticipantNoticeKind.READY:
+            keys |= {
+                "operation_id",
+                "target_account_id",
+                "target_generation",
+            }
         require_exact_keys(
             root,
-            {"code", "epoch", "kind", "participant_id", "provider"},
+            keys,
         )
         return ParticipantNotice(
             participant_id=_participant(root),
             provider_id=ProviderId(require_string(root["provider"])),
-            kind=ParticipantNoticeKind(require_string(root["kind"])),
+            kind=notice_kind,
             epoch=SelectionEpoch(require_integer(root["epoch"])),
             code=_decode_optional_code(root["code"]),
+            operation_id=(
+                OperationId(require_string(root["operation_id"]))
+                if notice_kind is ParticipantNoticeKind.READY
+                else None
+            ),
+            target_account_id=(
+                _account(root["target_account_id"])
+                if notice_kind is ParticipantNoticeKind.READY
+                else None
+            ),
+            target_generation=(
+                _authority(root["target_generation"])
+                if notice_kind is ParticipantNoticeKind.READY
+                else None
+            ),
         )
     if kind is EventKind.SELECTION_RESULT:
         return _decode_result(root)
