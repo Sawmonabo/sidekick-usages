@@ -26,6 +26,7 @@ from sidekick_usages.core.selection.policy import require_selection_transition
 from sidekick_usages.core.selection.types import (
     ActivationOutcome,
     ActivationPhase,
+    OperationState,
     ParticipantId,
     ProviderAuthState,
     ProviderRuntimeState,
@@ -260,6 +261,13 @@ def test_prevalidate_waits_for_release_barrier(
     recovery.complete_readback(replace(completion, selection=None))
     assert statuses == [SelectionCode.SELECTION_RECOVERY_REQUIRED]
     assert operations.load(PROVIDER_ID).active == active
+    queue.remove(
+        barrier.operation_id,
+        expected_state=OperationState.SCHEDULED,
+    )
+    replacement = restarted.enqueue_recovery_readback(active)
+    assert not restarted.complete_waiter(completion)
+    assert restarted.enqueue_recovery_readback(active) == replacement
     recovery.complete_readback(completion)
     assert operations.load(PROVIDER_ID).active is None
 

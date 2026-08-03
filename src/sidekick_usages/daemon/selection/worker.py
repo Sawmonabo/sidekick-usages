@@ -204,10 +204,13 @@ class SelectionWorkerGateway:
         )
         with self._condition:
             if completion.operation_kind is OperationKind.SELECTION_READBACK:
-                self._readbacks.pop(
-                    (completion.provider_id, completion.operation_id),
-                    None,
+                readback_key = (
+                    completion.provider_id,
+                    completion.operation_id,
                 )
+                child_id = self._readbacks.get(readback_key)
+                if child_id is not None and self._queue.find(child_id) is None:
+                    self._readbacks.pop(readback_key)
             waiter = self._waiters.get(key)
             if waiter is None:
                 return False
