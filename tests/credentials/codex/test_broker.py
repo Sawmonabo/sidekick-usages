@@ -34,7 +34,7 @@ from sidekick_usages.credentials.codex.managed.service import (
 )
 from sidekick_usages.daemon.control.client import ControlClient
 from sidekick_usages.daemon.models.protocol import ControlEvent
-from sidekick_usages.paths import ApplicationPaths
+from sidekick_usages.paths import ApplicationPaths, managed_codex_home
 from sidekick_usages.persistence.supervisor.activation import (
     ActivationJournalStore,
 )
@@ -55,7 +55,10 @@ from sidekick_usages.providers.codex.app_server.capabilities import (
 from sidekick_usages.providers.codex.app_server.executable import (
     discover_codex_executable,
 )
-from sidekick_usages.providers.codex.auth.storage import observe_native_auth
+from sidekick_usages.providers.codex.auth.storage import (
+    CODEX_AUTH_FILE,
+    observe_native_auth,
+)
 from sidekick_usages.providers.codex.broker.external_auth.refresh import (
     CODEX_REFRESH_ERROR_CODE,
 )
@@ -669,7 +672,13 @@ def test_selection_worker_binds_codex_broker_journey(
                 OperationKind.SELECTION_COMMIT,
                 daemon.replace_socket_listener,
             )
-            supervisor.schedule_unavailable_readback()
+            target_auth = (
+                managed_codex_home(paths, MANAGED_ACCOUNT_ID) / CODEX_AUTH_FILE
+            )
+            supervisor.schedule_selection_hook(
+                OperationKind.SELECTION_READBACK,
+                target_auth.unlink,
+            )
             rejected_events = _select_codex_account(
                 paths,
                 MANAGED_ACCOUNT_ID,

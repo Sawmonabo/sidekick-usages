@@ -81,53 +81,16 @@ from sidekick_usages.providers.codex.broker.external_auth.refresh import (
 )
 from sidekick_usages.providers.codex.broker.external_auth.selection import (
     decode_codex_selection_instruction,
-    decode_codex_selection_reply,
-    encode_codex_selection_reply,
 )
 from sidekick_usages.providers.codex.broker.responder import CodexRuntimeBroker
 from sidekick_usages.providers.codex.broker.service import CodexSharedRuntime
 from sidekick_usages.providers.codex.session.models import (
     CodexLoadedThreadSnapshot,
 )
-from sidekick_usages.serialization.framing import clear_mutable_buffer
 
 _READINESS_TIMEOUT_SECONDS = 10.0
 _SUPERVISOR_JOIN_SECONDS = 10.0
 _WAIT_INTERVAL_SECONDS = 0.01
-
-
-class _JourneySupervisorWorkerExchange(SupervisorWorkerExchange):
-    """Run one deterministic fault after a worker submits its response."""
-
-    def __init__(
-        self,
-        exchange: SupervisorWorkerExchange,
-        after_response: Callable[[bytearray], bytearray],
-    ) -> None:
-        self._exchange = exchange
-        self._after_response = after_response
-
-    @property
-    def launched(self) -> bool:
-        """Return the underlying worker launch state."""
-        return self._exchange.launched
-
-    def response_available(self) -> bool:
-        """Return whether the underlying worker submitted a response."""
-        return self._exchange.response_available()
-
-    def receive_response(self) -> bytearray:
-        """Read the response before applying the scheduled boundary fault."""
-        response = self._exchange.receive_response()
-        return self._after_response(response)
-
-    def acknowledge(self, payload: bytes | bytearray) -> None:
-        """Forward one broker acknowledgement to the worker."""
-        self._exchange.acknowledge(payload)
-
-    def wait_for_completion(self) -> bool:
-        """Wait for the underlying scheduler-confirmed completion."""
-        return self._exchange.wait_for_completion()
 
 
 class _JourneyWorkerExchangeRegistry(WorkerExchangeRegistry):
@@ -137,7 +100,6 @@ class _JourneyWorkerExchangeRegistry(WorkerExchangeRegistry):
         super().__init__(time.monotonic)
         self._selection_hooks: dict[OperationKind, Callable[[], None]] = {}
         self._callback_fault: str | None = None
-        self._unavailable_readback = False
         self._operations: _JourneyCodexOperationDispatcher | None = None
 
     def schedule_selection_hook(
@@ -154,10 +116,6 @@ class _JourneyWorkerExchangeRegistry(WorkerExchangeRegistry):
     ) -> None:
         """Corrupt one callback only after durable broker dispatch."""
         self._callback_fault = fault
-
-    def schedule_unavailable_readback(self) -> None:
-        """Remove only target authority from the next READBACK reply."""
-        self._unavailable_readback = True
 
     def bind_operations(
         self,
@@ -209,43 +167,12 @@ class _JourneyWorkerExchangeRegistry(WorkerExchangeRegistry):
                 else:
                     raise AssertionError("Unknown callback journey fault.")
                 adjusted = encode_codex_callback_instruction(callback)
-        exchange = super().create(
+        return super().create(
             operation_id,
             adjusted,
             response_deadline,
             completion_deadline,
         )
-        with suppress(CodexBrokerError):
-            selection = decode_codex_selection_instruction(adjusted)
-            if (
-                selection.kind is OperationKind.SELECTION_READBACK
-                and self._unavailable_readback
-            ):
-
-                def remove_target(response: bytearray) -> bytearray:
-                    self._unavailable_readback = False
-                    try:
-                        reply = decode_codex_selection_reply(
-                            response,
-                            selection,
-                        )
-                    finally:
-                        clear_mutable_buffer(response)
-                    return encode_codex_selection_reply(
-                        selection,
-                        replace(
-                            reply.binding,
-                            provider_identity=None,
-                            generation=None,
-                        ),
-                        baseline=reply.baseline,
-                    )
-
-                return _JourneySupervisorWorkerExchange(
-                    exchange,
-                    remove_target,
-                )
-        return exchange
 
 
 class _JourneyCodexOperationDispatcher(DurableCodexOperationDispatcher):
@@ -717,10 +644,6 @@ class FakeCodexSupervisor:
     ) -> None:
         """Schedule one full-journey selection boundary action."""
         self._exchanges.schedule_selection_hook(kind, hook)
-
-    def schedule_unavailable_readback(self) -> None:
-        """Remove target authority from the next READBACK response."""
-        self._exchanges.schedule_unavailable_readback()
 
     def schedule_stale_callback_epoch(self) -> None:
         """Dispatch one callback with an obsolete finalized epoch."""
