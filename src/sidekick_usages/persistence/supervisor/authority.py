@@ -13,7 +13,10 @@ from sidekick_usages.core.types import ProviderId
 from sidekick_usages.persistence.filesystem.transaction import (
     PersistenceTransaction,
 )
-from sidekick_usages.persistence.locking import PersistenceLock
+from sidekick_usages.persistence.locking import (
+    LOCK_TIMEOUT_SECONDS,
+    PersistenceLock,
+)
 from sidekick_usages.persistence.private.filesystem import PrivateFilesystem
 
 _ACCOUNT_LOCK_DIRECTORY = "account-locks"
@@ -129,6 +132,8 @@ class OperationAuthorityLock:
         self,
         operations_root: Path,
         account_id: SidekickAccountId,
+        *,
+        timeout_seconds: float | None = LOCK_TIMEOUT_SECONDS,
     ) -> None:
         if not operations_root.is_absolute():
             raise ValueError("Durable-operation root must be absolute.")
@@ -136,7 +141,10 @@ class OperationAuthorityLock:
             operations_root / _ACCOUNT_LOCK_DIRECTORY / f"{account_id}.state"
         )
         self._account_id = account_id
-        self._lock = PersistenceLock(filesystem)
+        self._lock = PersistenceLock(
+            filesystem,
+            timeout_seconds=timeout_seconds,
+        )
 
     def hold(self) -> AbstractContextManager[OperationAuthority]:
         """Return a single-use account-bound operation capability."""
@@ -213,13 +221,14 @@ class ProviderMutationLock:
         provider_id: ProviderId,
         account_ids: tuple[SidekickAccountId, ...],
         *,
-        timeout_seconds: float,
+        timeout_seconds: float | None,
     ) -> None:
         if not operations_root.is_absolute():
             raise ValueError("Durable-operation root must be absolute.")
         self._operations_root = operations_root
         self._provider_id = provider_id
         self._account_ids = tuple(sorted(set(account_ids)))
+        self._timeout_seconds = timeout_seconds
         provider_filesystem = PrivateFilesystem(
             operations_root
             / _PROVIDER_LOCK_DIRECTORY
@@ -243,6 +252,7 @@ class ProviderMutationLock:
                     OperationAuthorityLock(
                         self._operations_root,
                         account_id,
+                        timeout_seconds=self._timeout_seconds,
                     ).hold()
                 )
                 for account_id in self._account_ids

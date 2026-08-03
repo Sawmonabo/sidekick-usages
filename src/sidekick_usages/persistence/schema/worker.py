@@ -45,7 +45,8 @@ from sidekick_usages.persistence.time_codec import (
 )
 from sidekick_usages.serialization.json import JsonObject, JsonValue
 
-OPERATION_QUEUE_SCHEMA_VERSION = 5
+OPERATION_QUEUE_SCHEMA_VERSION = 6
+_PARENT_OPERATION_QUEUE_SCHEMA_VERSION = 5
 _PREVIOUS_OPERATION_QUEUE_SCHEMA_VERSION = 4
 _LEGACY_OPERATION_QUEUE_SCHEMA_VERSION = 3
 WORKER_RESULT_SCHEMA_VERSION = 3
@@ -68,6 +69,7 @@ _OPERATION_KEYS = frozenset(
         "updated_at",
     }
 )
+_PARENT_OPERATION_KEYS = _OPERATION_KEYS
 _PREVIOUS_OPERATION_KEYS = _OPERATION_KEYS - {"selection_operation_id"}
 _LEGACY_OPERATION_KEYS = _PREVIOUS_OPERATION_KEYS | {
     "allow_remote_control_disconnect"
@@ -94,6 +96,7 @@ def decode_operation_queue(payload: bytes) -> OperationQueueDocument:
     version = require_integer(root["schema_version"])
     legacy = version == _LEGACY_OPERATION_QUEUE_SCHEMA_VERSION
     previous = version == _PREVIOUS_OPERATION_QUEUE_SCHEMA_VERSION
+    parent = version == _PARENT_OPERATION_QUEUE_SCHEMA_VERSION
     require_schema_version(
         version,
         (
@@ -102,7 +105,11 @@ def decode_operation_queue(payload: bytes) -> OperationQueueDocument:
             else (
                 _PREVIOUS_OPERATION_QUEUE_SCHEMA_VERSION
                 if previous
-                else OPERATION_QUEUE_SCHEMA_VERSION
+                else (
+                    _PARENT_OPERATION_QUEUE_SCHEMA_VERSION
+                    if parent
+                    else OPERATION_QUEUE_SCHEMA_VERSION
+                )
             )
         ),
     )
@@ -116,8 +123,12 @@ def decode_operation_queue(payload: bytes) -> OperationQueueDocument:
                 require_object(value),
                 legacy=legacy,
                 previous=previous,
+                parent=parent,
             )
-            if slot != _operation_slot(operation):
+            if slot != _operation_slot(
+                operation,
+                child_qualified=(version == OPERATION_QUEUE_SCHEMA_VERSION),
+            ):
                 raise InvalidSchemaError
             operations.append(operation)
         document = OperationQueueDocument(tuple(operations))
@@ -125,7 +136,7 @@ def decode_operation_queue(payload: bytes) -> OperationQueueDocument:
         raise InvalidSchemaError from None
     expected = (
         encode_state_object(root, MAX_OPERATION_QUEUE_BYTES)
-        if legacy or previous
+        if version != OPERATION_QUEUE_SCHEMA_VERSION
         else _operation_payload(document)
     )
     if expected != payload:
@@ -146,6 +157,7 @@ def _due_operation(
     *,
     legacy: bool,
     previous: bool,
+    parent: bool,
 ) -> DueOperation:
     require_exact_keys(
         record,
@@ -154,6 +166,8 @@ def _due_operation(
             if legacy
             else _PREVIOUS_OPERATION_KEYS
             if previous
+            else _PARENT_OPERATION_KEYS
+            if parent
             else _OPERATION_KEYS
         ),
     )
@@ -162,8 +176,8 @@ def _due_operation(
     operation_id = OperationId(require_string(record["operation_id"]))
     kind = OperationKind(require_string(record["kind"]))
     parent_id = (
-        operation_id
-        if (legacy or previous) and kind.is_selection_worker
+        (operation_id if kind.is_selection_worker else None)
+        if legacy or previous
         else _optional_operation_id(record["selection_operation_id"])
     )
     return DueOperation(
@@ -193,13 +207,22 @@ def _optional_operation_id(value: JsonValue) -> OperationId | None:
     return None if operation_id is None else OperationId(operation_id)
 
 
-def _operation_slot(operation: DueOperation) -> str:
+def _operation_slot(
+    operation: DueOperation,
+    *,
+    child_qualified: bool = True,
+) -> str:
     owner = (
         f"provider:{operation.provider_id.value}"
         if operation.account_id is None
         else f"account:{operation.account_id}"
     )
-    return f"{owner}:{operation.kind.value}"
+    child = (
+        f":{operation.operation_id}"
+        if child_qualified and operation.kind.is_selection_worker
+        else ""
+    )
+    return f"{owner}:{operation.kind.value}{child}"
 
 
 def _operation_object(operation: DueOperation) -> JsonObject:

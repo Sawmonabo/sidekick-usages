@@ -182,12 +182,18 @@ def run_provider_worker(
     if operation is None or operation.state is not OperationState.RUNNING:
         return False
     with authority_lock.hold() as provider_authority:
+        if not _operation_is_running(queue, operation):
+            return False
         provider_authority.require(operation.provider_id)
         return _execute_worker(
             operation,
             results,
             lambda: executor.execute(operation, provider_authority),
             clock,
+            publish_allowed=lambda: _operation_is_running(
+                queue,
+                operation,
+            ),
         )
 
 
@@ -196,6 +202,8 @@ def _execute_worker(
     results: WorkerResultStore,
     execute: Callable[[], WorkerResult],
     clock: Clock,
+    *,
+    publish_allowed: Callable[[], bool] | None = None,
 ) -> bool:
     try:
         result = execute()
@@ -213,5 +221,15 @@ def _execute_worker(
             finished_at=clock.now(),
             failure_code="worker_result_mismatch",
         )
+    if publish_allowed is not None and not publish_allowed():
+        return False
     results.save(result)
     return True
+
+
+def _operation_is_running(
+    queue: OperationQueueStore,
+    expected: DueOperation,
+) -> bool:
+    """Return whether the exact child still owns durable publication."""
+    return queue.find(expected.operation_id) == expected

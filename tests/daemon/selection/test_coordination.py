@@ -715,6 +715,7 @@ def test_recovery_finalizes_forward_from_target_provider_proof(
     )
     recovery.complete_readback(
         SchedulerCompletion(
+            provider_id=PROVIDER_ID,
             operation_id=operation.operation_id,
             operation_kind=readback.kind,
             state=None,

@@ -13,6 +13,7 @@ from sidekick_usages.core.selection.types import (
     ActivationPhase,
     OperationKind,
     OperationPriority,
+    OperationState,
     SelectionCode,
     SelectionPhase,
 )
@@ -23,6 +24,11 @@ from sidekick_usages.daemon.worker.runtime import worker_failure
 from sidekick_usages.persistence.supervisor.activation import (
     ActivationJournalStore,
 )
+from sidekick_usages.persistence.supervisor.authority import (
+    ProviderMutationAuthority,
+)
+from sidekick_usages.persistence.supervisor.queue import OperationQueueStore
+from sidekick_usages.persistence.supervisor.results import WorkerResultStore
 from sidekick_usages.persistence.supervisor.selection import (
     SelectedStateStore,
     SelectionOperationStore,
@@ -35,6 +41,7 @@ _LEGAL_PHASES = {
     OperationKind.SELECTION_COMMIT: frozenset({SelectionPhase.COMMITTING}),
     OperationKind.SELECTION_READBACK: frozenset(
         {
+            SelectionPhase.PREVALIDATING,
             SelectionPhase.COMMITTING,
             SelectionPhase.AWAITING_READY,
             SelectionPhase.RECOVERING,
@@ -58,12 +65,45 @@ class SelectionWorkerBoundary:
         operations: SelectionOperationStore,
         selected: SelectedStateStore,
         activations: ActivationJournalStore,
+        queue: OperationQueueStore,
+        results: WorkerResultStore,
         clock: Clock,
     ) -> None:
         self._operations = operations
         self._selected = selected
         self._activations = activations
+        self._queue = queue
+        self._results = results
         self._clock = clock
+
+    def orphans(self, operation: DueOperation) -> tuple[DueOperation, ...]:
+        """Return exact-parent recovered child reservations."""
+        if operation.kind is not OperationKind.SELECTION_READBACK:
+            return ()
+        return tuple(
+            current
+            for current in self._queue.load()
+            if current.operation_id != operation.operation_id
+            and current.provider_id is operation.provider_id
+            and current.kind.is_selection_worker
+            and current.selection_operation_id
+            == operation.selection_operation_id
+            and current.state is OperationState.RUNNING
+        )
+
+    def release_orphans(
+        self,
+        operation: DueOperation,
+        authority: ProviderMutationAuthority,
+    ) -> None:
+        """Consume recovered children under overlapping authority."""
+        for orphan in self.orphans(operation):
+            authority.account(orphan.required_account_id)
+            self._results.delete(orphan.operation_id)
+            self._queue.remove(
+                orphan.operation_id,
+                expected_state=OperationState.RUNNING,
+            )
 
     def context(
         self,

@@ -237,24 +237,46 @@ def test_selection_and_queue_preserve_stable_independent_state(
         selection_operation_id=phase_id,
     )
     state.queue.enqueue(phase)
+    current = state.queue.path.read_bytes()
+    child_slot = (
+        f"account:{target.account_id}:selection_readback:{phase_id}"
+    ).encode()
+    parent_slot = (f"account:{target.account_id}:selection_readback").encode()
+    parent = current.replace(
+        b'"schema_version": 6',
+        b'"schema_version": 5',
+    ).replace(child_slot, parent_slot)
+    assert (
+        parent == current,
+        b'"schema_version": 5' in parent,
+        child_slot in parent,
+    ) == (False, True, False)
+    assert (
+        next(
+            operation
+            for operation in decode_operation_queue(parent).operations
+            if operation.kind is OperationKind.SELECTION_READBACK
+        ).required_selection_operation_id
+        == phase_id
+    )
     previous = (
-        state.queue.path.read_bytes()
+        parent.replace(b'"schema_version": 5', b'"schema_version": 4')
+        .replace(b'      "selection_operation_id": null,\n', b"")
         .replace(
-            b'"schema_version":5',
-            b'"schema_version":4',
-        )
-        .replace(
-            b'"selection_operation_id":null,',
-            b"",
-        )
-        .replace(
-            f'"selection_operation_id":"{phase_id}",'.encode(),
+            f'      "selection_operation_id": "{phase_id}",\n'.encode(),
             b"",
         )
     )
-    restored = next(
-        operation
-        for operation in decode_operation_queue(previous).operations
-        if operation.kind is OperationKind.SELECTION_READBACK
+    assert (
+        previous == parent,
+        b'"schema_version": 4' in previous,
+        b"selection_operation_id" in previous,
+    ) == (False, True, False)
+    assert (
+        next(
+            operation
+            for operation in decode_operation_queue(previous).operations
+            if operation.kind is OperationKind.SELECTION_READBACK
+        ).required_selection_operation_id
+        == phase_id
     )
-    assert restored.required_selection_operation_id == phase_id

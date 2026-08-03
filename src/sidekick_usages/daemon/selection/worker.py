@@ -35,9 +35,11 @@ from sidekick_usages.daemon.types.ports import OperationEventSink
 from sidekick_usages.daemon.types.worker import WorkerOutcome
 from sidekick_usages.persistence.supervisor.queue import OperationQueueStore
 
-_WorkerKey = tuple[OperationId, OperationKind]
+_WorkerKey = tuple[ProviderId, OperationId, OperationKind]
+_ReadbackKey = tuple[ProviderId, OperationId]
 _RECOVERY_READBACK_PHASES = frozenset(
     {
+        SelectionPhase.PREVALIDATING,
         SelectionPhase.COMMITTING,
         SelectionPhase.AWAITING_READY,
         SelectionPhase.RECOVERING,
@@ -81,6 +83,7 @@ class SelectionWorkerGateway:
         self._operation_id_factory = operation_id_factory
         self._condition = Condition()
         self._waiters: dict[_WorkerKey, _SelectionWaiter] = {}
+        self._readbacks: dict[_ReadbackKey, OperationId] = {}
         self._closed = False
 
     def prevalidate(
@@ -174,9 +177,9 @@ class SelectionWorkerGateway:
         operation: OpenSelectionOperation,
     ) -> DueOperation:
         """Coalesce one event-driven recovery readback without waiting."""
-        if (
-            operation.phase not in _RECOVERY_READBACK_PHASES
-            or operation.prepared_generation is None
+        if operation.phase not in _RECOVERY_READBACK_PHASES or (
+            operation.phase is not SelectionPhase.PREVALIDATING
+            and operation.prepared_generation is None
         ):
             raise SelectionRequestError(
                 SelectionCode.SELECTION_RECOVERY_REQUIRED
@@ -187,24 +190,24 @@ class SelectionWorkerGateway:
             operation.target_account_id,
             OperationKind.SELECTION_READBACK,
         )
-        existing = self._queue.get(
-            due.provider_id,
-            due.account_id,
-            due.kind,
-        )
-        if existing is not None:
-            self._require_same_parent(existing, due)
-            self._wake()
-            return existing
-        effective = self._queue.enqueue(due)
-        self._require_effective(effective, due)
+        with self._condition:
+            effective = self._owned_readback(due)
         self._wake()
         return effective
 
     def complete_waiter(self, completion: SchedulerCompletion) -> bool:
         """Deliver one selector-published completion to its live waiter."""
-        key = (completion.operation_id, completion.operation_kind)
+        key = (
+            completion.provider_id,
+            completion.operation_id,
+            completion.operation_kind,
+        )
         with self._condition:
+            if completion.operation_kind is OperationKind.SELECTION_READBACK:
+                self._readbacks.pop(
+                    (completion.provider_id, completion.operation_id),
+                    None,
+                )
             waiter = self._waiters.get(key)
             if waiter is None:
                 return False
@@ -214,8 +217,17 @@ class SelectionWorkerGateway:
 
     def fail_waiter(self, operation: DueOperation, code: str) -> bool:
         """Deliver one pre-launch scheduler failure to its live waiter."""
-        key = (operation.required_selection_operation_id, operation.kind)
+        key = (
+            operation.provider_id,
+            operation.required_selection_operation_id,
+            operation.kind,
+        )
         with self._condition:
+            if operation.kind is OperationKind.SELECTION_READBACK:
+                readback_key = (operation.provider_id, key[1])
+                current = self._readbacks.get(readback_key)
+                if current == operation.operation_id:
+                    self._readbacks.pop(readback_key, None)
             waiter = self._waiters.get(key)
             if waiter is None:
                 return False
@@ -227,6 +239,7 @@ class SelectionWorkerGateway:
         """Wake live waiters without deleting durable provider work."""
         with self._condition:
             self._closed = True
+            self._readbacks.clear()
             self._condition.notify_all()
 
     def _submit(
@@ -242,7 +255,7 @@ class SelectionWorkerGateway:
             account_id,
             kind,
         )
-        key = (operation_id, kind)
+        key = (provider_id, operation_id, kind)
         waiter = _SelectionWaiter()
         with self._condition:
             if self._closed:
@@ -253,10 +266,16 @@ class SelectionWorkerGateway:
                 raise SelectionRequestError(
                     SelectionCode.SELECTION_RECOVERY_REQUIRED
                 )
+            effective = (
+                self._owned_readback(due)
+                if kind is OperationKind.SELECTION_READBACK
+                else None
+            )
             self._waiters[key] = waiter
         try:
-            effective = self._queue.enqueue(due)
-            self._require_effective(effective, due)
+            if effective is None:
+                effective = self._queue.enqueue(due)
+                self._require_effective(effective, due)
             self._wake()
             return self._wait(key, waiter)
         finally:
@@ -284,8 +303,9 @@ class SelectionWorkerGateway:
                 )
             completion = waiter.completion
         if (
-            completion.operation_id != key[0]
-            or completion.operation_kind is not key[1]
+            completion.provider_id is not key[0]
+            or completion.operation_id != key[1]
+            or completion.operation_kind is not key[2]
             or completion.state is not None
             or completion.outcome
             not in {WorkerOutcome.SUCCEEDED, WorkerOutcome.NO_CHANGE}
@@ -315,6 +335,20 @@ class SelectionWorkerGateway:
             due_at=now,
             updated_at=now,
         )
+
+    def _owned_readback(self, due: DueOperation) -> DueOperation:
+        """Return or create this gateway's exact parent READBACK child."""
+        parent_id = due.required_selection_operation_id
+        key = (due.provider_id, parent_id)
+        child_id = self._readbacks.get(key)
+        existing = None if child_id is None else self._queue.find(child_id)
+        if existing is not None:
+            self._require_same_parent(existing, due)
+            return existing
+        effective = self._queue.enqueue(due)
+        self._require_effective(effective, due)
+        self._readbacks[key] = effective.operation_id
+        return effective
 
     @staticmethod
     def _require_prevalidation(

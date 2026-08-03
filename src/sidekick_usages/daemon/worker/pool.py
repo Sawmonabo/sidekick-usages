@@ -611,6 +611,7 @@ class WorkerPool:
                     completion_pending=True,
                     deadline=active.deadline,
                     timeout_reported=active.timeout_reported,
+                    leader_exit_code=exit_code,
                 )
                 return None
             return WorkerExit(active.operation, exit_code)
@@ -652,6 +653,7 @@ class WorkerPool:
         preempted: bool = False,
         deadline: float | None = None,
         timeout_reported: bool = False,
+        leader_exit_code: int | None = None,
     ) -> None:
         self._quarantine[operation.operation_id] = QuarantinedWorker(
             operation=operation,
@@ -663,6 +665,7 @@ class WorkerPool:
             preempted=preempted,
             deadline=deadline,
             timeout_reported=timeout_reported,
+            leader_exit_code=leader_exit_code,
         )
 
     def _reap_quarantine(
@@ -726,8 +729,11 @@ class WorkerPool:
             )
             return False, None
         self._quarantine.pop(quarantined.operation.operation_id, None)
+        exit_code = quarantined.leader_exit_code
+        if quarantined.completion_pending and exit_code is None:
+            raise RuntimeError("Selection leader exit code is unavailable.")
         return (
-            (True, WorkerExit(quarantined.operation, 0))
+            (True, WorkerExit(quarantined.operation, exit_code))
             if quarantined.completion_pending
             else (True, None)
         )

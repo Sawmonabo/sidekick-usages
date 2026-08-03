@@ -122,12 +122,7 @@ class OperationQueueDocument:
         if len(self.operations) > MAX_OPERATION_RECORDS:
             raise InvalidSchemaError
         slots = {
-            (
-                operation.provider_id,
-                operation.account_id,
-                operation.kind,
-            )
-            for operation in self.operations
+            operation_queue_slot(operation) for operation in self.operations
         }
         operation_ids = {
             operation.operation_id for operation in self.operations
@@ -146,7 +141,25 @@ class OperationQueueDocument:
                         operation.provider_id.value,
                         str(operation.account_id),
                         operation.kind.value,
+                        str(operation.operation_id),
                     ),
                 )
             ),
         )
+
+
+def operation_queue_slot(
+    operation: DueOperation,
+) -> tuple[str, str, str, str]:
+    """Return one ordinary slot or distinct orphan selection tombstone."""
+    child_id = (
+        str(operation.operation_id)
+        if operation.kind.is_selection_worker
+        else ""
+    )
+    return (
+        operation.provider_id.value,
+        str(operation.account_id),
+        operation.kind.value,
+        child_id,
+    )

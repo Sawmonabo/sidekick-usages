@@ -20,6 +20,7 @@ from sidekick_usages.core.selection.models import (
 )
 from sidekick_usages.core.selection.types import (
     OperationKind,
+    OperationState,
 )
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.daemon.control.dispatch import OperationEventHub
@@ -133,6 +134,19 @@ def selection_phase_action(
             entered.set()
             if release is not None:
                 release.wait(2)
+            if operation.kind is OperationKind.SELECTION_READBACK:
+                for orphan in queue.load():
+                    if (
+                        orphan.operation_id != operation.operation_id
+                        and orphan.selection_operation_id
+                        == operation.selection_operation_id
+                        and orphan.state is OperationState.RUNNING
+                    ):
+                        results.delete(orphan.operation_id)
+                        queue.remove(
+                            orphan.operation_id,
+                            expected_state=OperationState.RUNNING,
+                        )
             results.save(
                 selection_worker_success(
                     operation,
@@ -178,6 +192,7 @@ class FakeWorkerHandle:
     events: list[str]
     initial_exit_code: int | None
     requires_kill: bool
+    natural_exit_code: int = 0
     exchange_endpoint: socket.socket | None = None
     natural_completion: Event | None = None
     residual_completion: Event | None = None
@@ -196,7 +211,7 @@ class FakeWorkerHandle:
             and self.natural_completion.is_set()
         ):
             self._close_exchange()
-            return 0
+            return self.natural_exit_code
         if self.initial_exit_code is not None:
             self._close_exchange()
         return self.initial_exit_code
@@ -206,7 +221,7 @@ class FakeWorkerHandle:
         if self.natural_completion is not None:
             if self.natural_completion.wait(timeout_seconds):
                 self._close_exchange()
-                return 0
+                return self.natural_exit_code
             return None
         if self.initial_exit_code is not None:
             self._close_exchange()
@@ -266,6 +281,7 @@ class FakeWorkerLauncher:
         natural_completions: Mapping[OperationId, Event] | None = None,
         residual_completions: Mapping[OperationId, Event] | None = None,
         worker_actions: Mapping[OperationId, Callable[[], None]] | None = None,
+        natural_exit_codes: Mapping[OperationId, int] | None = None,
     ) -> None:
         self._results = results
         self._clock = clock
@@ -278,6 +294,9 @@ class FakeWorkerLauncher:
             {} if residual_completions is None else residual_completions
         )
         self._worker_actions = {} if worker_actions is None else worker_actions
+        self._natural_exit_codes = (
+            {} if natural_exit_codes is None else natural_exit_codes
+        )
         self.specs: list[WorkerLaunchSpec] = []
         self.events: list[str] = []
         self.handles: dict[OperationId, FakeWorkerHandle] = {}
@@ -308,6 +327,7 @@ class FakeWorkerLauncher:
             self.events,
             0 if succeeded else None,
             spec.operation_id in self._requires_kill,
+            self._natural_exit_codes.get(spec.operation_id, 0),
             (
                 None
                 if spec.exchange_descriptor is None
@@ -352,6 +372,7 @@ class EntrypointWorkerLauncher:
             [],
             exit_code,
             False,
+            0,
         )
         notify_exit()
         return handle
@@ -480,6 +501,7 @@ def selection_scheduler(
         worker_planner(),
         lambda: None,
         general_timeout_seconds=timeout_seconds,
+        monotonic=clock.monotonic,
     )
     return (
         DurableScheduler(

@@ -201,6 +201,7 @@ class QuarantinedWorker[HandleT]:
     preempted: bool = False
     deadline: float | None = None
     timeout_reported: bool = False
+    leader_exit_code: int | None = None
 
     def __post_init__(self) -> None:
         """Require explicit positive cleanup scheduling state."""
@@ -211,6 +212,15 @@ class QuarantinedWorker[HandleT]:
             or self.operation.kind.is_selection_worker
             != (self.deadline is not None)
             or (self.timeout_reported and self.deadline is None)
+            or (
+                self.operation.kind.is_selection_worker
+                and self.completion_pending
+                and self.leader_exit_code is None
+            )
+            or (
+                not self.operation.kind.is_selection_worker
+                and self.leader_exit_code is not None
+            )
         ):
             raise ValueError("Worker quarantine state is invalid.")
 

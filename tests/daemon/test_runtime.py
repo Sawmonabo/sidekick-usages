@@ -26,7 +26,6 @@ from sidekick_usages.core.selection.types import (
     OperationKind,
     OperationPriority,
     OperationState,
-    SelectionCode,
     SelectionOutcome,
     SelectionPhase,
 )
@@ -52,7 +51,6 @@ from sidekick_usages.daemon.runtime.supervisor import (
     WakeupChannel,
 )
 from sidekick_usages.daemon.selection.coordinator import SelectionCoordinator
-from sidekick_usages.daemon.selection.models import SelectionRequestError
 from sidekick_usages.daemon.selection.recovery import SelectionRecovery
 from sidekick_usages.daemon.selection.registry import ParticipantRegistry
 from sidekick_usages.daemon.selection.worker import (
@@ -303,8 +301,7 @@ def _run_restarted_readback(
     bool,
     int,
 ]:
-    paths = state.paths
-    restarted_queue = OperationQueueStore(paths.durable_operations)
+    restarted_queue = OperationQueueStore(state.paths.durable_operations)
     restarted_gateway = SelectionWorkerGateway(
         restarted_queue,
         clock,
@@ -318,7 +315,7 @@ def _run_restarted_readback(
         frozenset(),
         worker_actions={
             readback_id: selection_phase_action(
-                paths.durable_operations,
+                state.paths.durable_operations,
                 restarted_queue,
                 results,
                 readback_id,
@@ -349,6 +346,7 @@ def _run_restarted_readback(
     release_commit.set()
     entered = readback_entered.wait(1)
     worker_exit = launcher.handles[readback_id].wait(1)
+    clock.advance(121)
     completed = len(restarted.collect())
     reader.join(1)
     valid = recovered and woke and dispatched == 1 and entered
@@ -356,10 +354,15 @@ def _run_restarted_readback(
     return launcher, tuple(observations), blocked and valid, completed
 
 
+@pytest.mark.parametrize(
+    "phase_kind",
+    [OperationKind.SELECTION_PREVALIDATE, OperationKind.SELECTION_COMMIT],
+)
 def test_selection_worker_lifetime_and_phase_ownership(
+    phase_kind: OperationKind,
     tmp_path: Path,
 ) -> None:
-    """Retain an orphan COMMIT until one isolated READBACK completes."""
+    """Retain an orphan phase until one isolated READBACK completes."""
     state = foundation_state(tmp_path)
     for queued in state.operations:
         state.queue.remove(
@@ -367,12 +370,13 @@ def test_selection_worker_lifetime_and_phase_ownership(
             expected_state=OperationState.SCHEDULED,
         )
     target = tuple(state.accounts)[1]
-    parent_id, commit_id, readback_id = (
+    parent_id, phase_id, readback_id = (
         new_operation_id() for _index in range(3)
     )
     clock = RuntimeClock()
     wake = Event()
-    commit_entered, leader_exited, release_commit, residual_released = (
+    leader_exit_code = 3
+    phase_entered, leader_exited, release_phase, residual_released = (
         Event() for _index in range(4)
     )
     results = WorkerResultStore(state.paths.durable_operations)
@@ -380,25 +384,21 @@ def test_selection_worker_lifetime_and_phase_ownership(
         results,
         clock,
         frozenset(),
-        natural_completions={commit_id: leader_exited},
-        residual_completions={commit_id: residual_released},
+        natural_completions={phase_id: leader_exited},
+        natural_exit_codes={phase_id: leader_exit_code},
+        residual_completions={phase_id: residual_released},
         worker_actions={
-            commit_id: selection_phase_action(
+            phase_id: selection_phase_action(
                 state.paths.durable_operations,
                 state.queue,
                 results,
-                commit_id,
-                commit_entered,
-                release_commit,
+                phase_id,
+                phase_entered,
+                release_phase,
             )
         },
     )
-    gateway = SelectionWorkerGateway(
-        state.queue,
-        clock,
-        wake.set,
-        operation_id_factory=iter((commit_id,)).__next__,
-    )
+    gateway = SelectionWorkerGateway(state.queue, clock, wake.set)
     scheduler, workers, recovery = selection_scheduler(
         state.queue,
         results,
@@ -415,33 +415,30 @@ def test_selection_worker_lifetime_and_phase_ownership(
         baseline_epoch=SelectionEpoch(7),
         pending_epoch=SelectionEpoch(8),
     )
-    failures: list[SelectionCode] = []
-
-    def commit() -> None:
-        try:
-            gateway.commit(prepared)
-        except SelectionRequestError as error:
-            failures.append(error.code)
-
-    commit_thread = Thread(target=commit, daemon=True)
-    commit_thread.start()
-    assert wake.wait(1)
+    state.queue.enqueue(
+        DueOperation(
+            operation_id=phase_id,
+            selection_operation_id=parent_id,
+            provider_id=ProviderId.CLAUDE,
+            account_id=target.account_id,
+            kind=phase_kind,
+            priority=OperationPriority.INTERACTIVE,
+            state=OperationState.SCHEDULED,
+            due_at=clock.now(),
+            updated_at=clock.now(),
+        )
+    )
     assert len(scheduler.dispatch_due()) == 1
-    assert commit_entered.wait(1)
-    assert (running := state.queue.find(commit_id)) is not None
+    assert phase_entered.wait(1)
+    assert (running := state.queue.find(phase_id)) is not None
     assert running.selection_operation_id == parent_id
     leader_exited.set()
     assert scheduler.collect() == ()
     clock.advance(2)
     assert scheduler.collect() == ()
-    commit_thread.join(1)
     assert scheduler.collect() == ()
-    assert (
-        failures,
-        recovery.orphan_calls,
-        workers.active_count,
-    ) == ([SelectionCode.SELECTION_RECOVERY_REQUIRED], 0, 1)
-    assert launcher.events == [f"launch:{commit_id}"]
+    assert (recovery.orphan_calls, workers.active_count) == (1, 1)
+    del scheduler, recovery
     restarted_launcher, observations, blocked, completed = (
         _run_restarted_readback(
             state,
@@ -450,29 +447,27 @@ def test_selection_worker_lifetime_and_phase_ownership(
             wake,
             prepared,
             readback_id,
-            release_commit,
+            release_phase,
         )
     )
     assert blocked
     assert completed == 1
     assert len(observations) == 1
-    assert results.load(commit_id) is not None
+    assert results.load(phase_id) is None
     assert results.load(readback_id) is None
     assert len(launcher.specs) == len(restarted_launcher.specs) == 1
-    shutdown = Thread(target=scheduler.shutdown, daemon=True)
-    shutdown.start()
-    shutdown.join(0.05)
-    assert shutdown.is_alive()
     assert not any(
         "terminate" in event or "kill" in event for event in launcher.events
     )
     residual_released.set()
-    shutdown.join(2)
+    clock.advance(4)
+    (released,) = workers.reap_completed(clock.monotonic())
+    assert released.exit_code == leader_exit_code
     assert (
-        shutdown.is_alive(),
-        workers.active_count,
+        state.queue.find(phase_id),
+        results.load(phase_id),
         launcher.events,
-    ) == (False, 0, [f"launch:{commit_id}"])
+    ) == (None, None, [f"launch:{phase_id}"])
 
 
 def test_selection_worker_gateway_runs_every_phase_through_entrypoint(
