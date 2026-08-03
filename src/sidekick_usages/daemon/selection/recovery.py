@@ -71,6 +71,7 @@ class SelectionRecovery:
         self._participants.restore_admission(
             provider_id,
             operation.pending_epoch,
+            operation.target_account_id,
             operation.required_participant_ids,
         )
         return True
@@ -95,6 +96,7 @@ class SelectionRecovery:
         self._participants.restore_admission(
             provider_id,
             operation.pending_epoch,
+            operation.target_account_id,
             operation.required_participant_ids,
         )
         self._reconcile_unresolved(provider_id)

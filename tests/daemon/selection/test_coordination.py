@@ -47,6 +47,7 @@ from sidekick_usages.daemon.selection.models import (
     ParticipantReadyProof,
     ParticipantReadyRequest,
     ParticipantRegistration,
+    ParticipantRequestError,
     SelectionRequestError,
     TurnAdmissionState,
     TurnBeginRequest,
@@ -60,9 +61,6 @@ from sidekick_usages.daemon.selection.registry import (
 from sidekick_usages.daemon.selection.worker import SelectionWorkerGateway
 from sidekick_usages.daemon.types.worker import WorkerOutcome
 from sidekick_usages.persistence.errors import ReplaceFailedError
-from sidekick_usages.persistence.models.selection import (
-    SelectionOperationDocument,
-)
 from sidekick_usages.persistence.supervisor.queue import OperationQueueStore
 from sidekick_usages.persistence.supervisor.selection import (
     SelectedStateStore,
@@ -89,19 +87,24 @@ PARTICIPANT_D = ParticipantId("ed416c76-24b3-4934-9486-f910376e3a71")
 TURN_A = TurnId("a99915d0-5d3a-497a-9696-c227d0903709")
 TURN_B = TurnId("0168fe43-5c83-46f4-b8ef-6cc047293957")
 INITIAL_PARTICIPANT_COUNT = 2
-DISCONNECTED_PARTICIPANT_COUNT = 3
 TEST_SELECTION_TIMEOUT_SECONDS = 0.05
 
 
-class _SelectionAdapter:
-    """Coordinate one synthetic transition without provider I/O."""
+def _baseline_selection() -> FinalizedSelection:
+    return FinalizedSelection(
+        provider_id=PROVIDER_ID,
+        account_id=SidekickAccountId("4d95b1fb-1ba4-4837-b6b7-452cd8aff462"),
+        epoch=SelectionEpoch(7),
+        generation=AuthorityGeneration("generation-baseline-7"),
+        finalized_at=REFERENCE_TIME,
+    )
 
+
+class _SelectionAdapter:
     def __init__(self) -> None:
         self.prevalidation_started = Event()
         self.allow_prevalidation = Event()
         self.committed = Event()
-        self.commit_count = 0
-        self.signals: list[str] = []
 
     def prevalidate(
         self,
@@ -121,7 +124,6 @@ class _SelectionAdapter:
         )
 
     def commit(self, prepared: PreparedSelection) -> AuthorityReadyProof:
-        self.commit_count += 1
         self.committed.set()
         return self._proof(prepared)
 
@@ -147,11 +149,9 @@ class _SelectionAdapter:
         )
 
 
-class _ObservedOperationStore:
-    """Expose one exact persisted phase to the concurrent test."""
-
-    def __init__(self, store: SelectionOperationStore) -> None:
-        self._store = store
+class _ObservedOperationStore(SelectionOperationStore):
+    def __init__(self, root: Path) -> None:
+        super().__init__(root)
         self.preparing = Event()
         self.awaiting_ready = Event()
         self.reject_required_once = False
@@ -161,22 +161,13 @@ class _ObservedOperationStore:
         self.allow_complete = Event()
         self.reject_final_snapshot_once = False
 
-    def begin(
-        self,
-        operation: OpenSelectionOperation,
-    ) -> OpenSelectionOperation:
-        return self._store.begin(operation)
-
     def compare_and_swap(
         self,
         expected: OpenSelectionOperation,
         replacement: OpenSelectionOperation,
     ) -> OpenSelectionOperation:
-        result = self._store.compare_and_swap(expected, replacement)
-        if replacement.phase is SelectionPhase.PREPARING:
-            self.preparing.set()
-        if replacement.phase is SelectionPhase.AWAITING_READY:
-            self.awaiting_ready.set()
+        result = super().compare_and_swap(expected, replacement)
+        self._observe_phase(replacement)
         return result
 
     def advance_with_required_additions(
@@ -192,18 +183,15 @@ class _ObservedOperationStore:
         ):
             self.reject_final_snapshot_once = False
             raise ReplaceFailedError
-        result = self._store.advance_with_required_additions(
+        result = super().advance_with_required_additions(
             expected,
             replacement,
         )
-        if replacement.phase is SelectionPhase.PREPARING:
-            self.preparing.set()
-        if replacement.phase is SelectionPhase.AWAITING_READY:
-            self.awaiting_ready.set()
+        self._observe_phase(replacement)
         return result
 
     def complete(self, result: SelectionResult) -> SelectionResult:
-        completed = self._store.complete(result)
+        completed = super().complete(result)
         if self.block_complete_once:
             self.block_complete_once = False
             self.complete_started.set()
@@ -226,7 +214,7 @@ class _ObservedOperationStore:
         if self.reject_required_once:
             self.reject_required_once = False
             raise RuntimeError("Synthetic late-registration write failed.")
-        return self._store.add_required(
+        return super().add_required(
             provider_id,
             operation_id,
             pending_epoch,
@@ -234,29 +222,27 @@ class _ObservedOperationStore:
             updated_at=updated_at,
         )
 
-    def load(
-        self,
-        provider_id: ProviderId,
-    ) -> SelectionOperationDocument:
-        return self._store.load(provider_id)
+    def _observe_phase(self, operation: OpenSelectionOperation) -> None:
+        if operation.phase is SelectionPhase.PREPARING:
+            self.preparing.set()
+        if operation.phase is SelectionPhase.AWAITING_READY:
+            self.awaiting_ready.set()
 
 
 class _ProcessInspector:
-    """Return configured exact process-start liveness."""
-
     def __init__(self) -> None:
         self.dead: set[ProcessIdentity] = set()
 
     def inspect(self, identity: ProcessIdentity) -> ProcessLiveness:
-        if identity in self.dead:
-            return ProcessLiveness.DEAD
-        return ProcessLiveness.UNKNOWN
+        return (
+            ProcessLiveness.DEAD
+            if identity in self.dead
+            else ProcessLiveness.UNKNOWN
+        )
 
 
 @dataclass(frozen=True, slots=True)
 class _Journey:
-    """State shared across one concurrent selection journey."""
-
     other: FinalizedSelection
     selected: SelectedStateStore
     operations: _ObservedOperationStore
@@ -265,19 +251,12 @@ class _Journey:
     process_inspector: _ProcessInspector
     recovery_handoffs: list[ProviderId]
     coordinator: SelectionCoordinator
-    first: ParticipantRegistration
     subscriptions: tuple[Generator[ParticipantNotice], ...]
 
 
 def _build_journey(tmp_path: Path) -> _Journey:
     paths = make_application_paths(tmp_path)
-    baseline = FinalizedSelection(
-        provider_id=PROVIDER_ID,
-        account_id=SidekickAccountId("4d95b1fb-1ba4-4837-b6b7-452cd8aff462"),
-        epoch=SelectionEpoch(7),
-        generation=AuthorityGeneration("generation-baseline-7"),
-        finalized_at=REFERENCE_TIME,
-    )
+    baseline = _baseline_selection()
     other = FinalizedSelection(
         provider_id=ProviderId.CODEX,
         account_id=SidekickAccountId("73a5ad0d-fba3-4d60-bc85-9c3cf7ec7b68"),
@@ -287,11 +266,9 @@ def _build_journey(tmp_path: Path) -> _Journey:
     )
     seed_finalized_selections(paths, baseline, other)
     selected = SelectedStateStore(paths.selected_state)
-    operations = _ObservedOperationStore(
-        SelectionOperationStore(paths.selection_journals)
-    )
+    operations = _ObservedOperationStore(paths.selection_journals)
     registry = ParticipantRegistry(selected)
-    first = registry.register(_manifest(PARTICIPANT_A), _process(1))
+    registry.register(_manifest(PARTICIPANT_A), _process(1))
     registry.register(_manifest(PARTICIPANT_B), _process(2))
     registry.register(_manifest(PARTICIPANT_D), _process(4))
     subscriptions = tuple(
@@ -312,19 +289,25 @@ def _build_journey(tmp_path: Path) -> _Journey:
     assert next(subscriptions[0]).kind is ParticipantNoticeKind.OPEN
     registry.disconnect(PARTICIPANT_D, 1)
     subscriptions[-1].close()
-    assert (
-        registry.registered_count(PROVIDER_ID)
-        == DISCONNECTED_PARTICIPANT_COUNT
-    )
+    assert registry.registered_count(PROVIDER_ID) == len(subscriptions)
     registry.confirm_dead(PARTICIPANT_D, _process(4))
     assert registry.registered_count(PROVIDER_ID) == INITIAL_PARTICIPANT_COUNT
     first_turn = registry.begin_turn(
         TurnBeginRequest(PARTICIPANT_A, 1, TURN_A)
     )
-    assert first_turn.epoch == SelectionEpoch(7)
     assert (
         registry.begin_turn(TurnBeginRequest(PARTICIPANT_A, 1, TURN_A))
         == first_turn
+    )
+    registry.adopt(
+        PARTICIPANT_A,
+        1,
+        ParticipantAdoptionProof(
+            turn_id=TURN_A,
+            account_id=baseline.account_id,
+            generation=baseline.generation,
+            epoch=baseline.epoch,
+        ),
     )
     adapter = _SelectionAdapter()
     process_inspector = _ProcessInspector()
@@ -349,7 +332,6 @@ def _build_journey(tmp_path: Path) -> _Journey:
         process_inspector,
         recovery_handoffs,
         coordinator,
-        first,
         subscriptions[:-1],
     )
 
@@ -365,7 +347,7 @@ def _manifest(participant_id: ParticipantId) -> ParticipantManifest:
 
 
 def _process(index: int) -> ProcessIdentity:
-    return ProcessIdentity(process_id=1000 + index, start_identity=index)
+    return ProcessIdentity(1000 + index, index)
 
 
 def _ready_request(participant_id: ParticipantId) -> ParticipantReadyRequest:
@@ -388,22 +370,20 @@ def _assert_journey_result(
     expected_participant_count: int,
     expected_ready_participants: tuple[ParticipantId, ...],
 ) -> None:
+    registry = journey.registry
     assert result.outcome is expected_outcome
-    journey.registry.disconnect(PARTICIPANT_B, 1)
+    registry.disconnect(PARTICIPANT_B, 1)
     journey.subscriptions[1].close()
-    next_turn = journey.registry.begin_turn(
-        TurnBeginRequest(PARTICIPANT_B, 1, TURN_B)
-    )
+    next_turn = registry.begin_turn(TurnBeginRequest(PARTICIPANT_B, 1, TURN_B))
     if opens_target:
+        assert registry.snapshot(PROVIDER_ID).adopted_count == 0
         assert next_turn.state is TurnAdmissionState.ADMITTED
         assert next_turn.epoch == SelectionEpoch(8)
         assert (
-            journey.registry.begin_turn(
-                TurnBeginRequest(PARTICIPANT_B, 1, TURN_B)
-            )
+            registry.begin_turn(TurnBeginRequest(PARTICIPANT_B, 1, TURN_B))
             == next_turn
         )
-        journey.registry.adopt(
+        registry.adopt(
             PARTICIPANT_B,
             1,
             ParticipantAdoptionProof(
@@ -413,20 +393,29 @@ def _assert_journey_result(
                 epoch=SelectionEpoch(8),
             ),
         )
+        assert registry.snapshot(PROVIDER_ID).adopted_count == 1
         reopened = journey.coordinator.subscribe(
             new_request_id(),
             ParticipantConnectionRequest(PARTICIPANT_B, 1),
             _process(2),
         )
         current_notice = next(reopened)
-        assert current_notice.kind is ParticipantNoticeKind.OPEN
-        assert current_notice.epoch == SelectionEpoch(8)
+        assert (current_notice.kind, current_notice.epoch) == (
+            ParticipantNoticeKind.OPEN,
+            SelectionEpoch(8),
+        )
         reopened.close()
     else:
         assert next_turn.state is TurnAdmissionState.QUEUED
-        assert result.required_count == expected_participant_count
-        assert result.ready_count == len(expected_ready_participants)
-        assert result.lost_count == 0
+        assert (
+            result.required_count,
+            result.ready_count,
+            result.lost_count,
+        ) == (
+            expected_participant_count,
+            len(expected_ready_participants),
+            0,
+        )
         active = journey.operations.load(PROVIDER_ID).active
         assert active is not None
         assert set(active.ready_participant_ids) == set(
@@ -438,35 +427,36 @@ def _assert_journey_result(
             _process(2),
         )
         current_notice = next(degraded)
-        assert current_notice.kind is ParticipantNoticeKind.STATUS
-        assert current_notice.code is SelectionCode.SELECTION_RECOVERY_REQUIRED
+        assert (current_notice.kind, current_notice.code) == (
+            ParticipantNoticeKind.STATUS,
+            SelectionCode.SELECTION_RECOVERY_REQUIRED,
+        )
         degraded.close()
-    assert journey.first.registered_epoch == SelectionEpoch(7)
     expected_epoch = SelectionEpoch(8 if opens_target else 7)
     finalized = journey.selected.load(PROVIDER_ID)
     assert finalized is not None
-    assert finalized.epoch == expected_epoch
-    assert journey.selected.load(ProviderId.CODEX) == journey.other
     assert (
-        journey.registry.registered_count(PROVIDER_ID)
-        == expected_participant_count
+        finalized.epoch,
+        journey.selected.load(ProviderId.CODEX),
+        registry.registered_count(PROVIDER_ID),
+        journey.recovery_handoffs,
+    ) == (
+        expected_epoch,
+        journey.other,
+        expected_participant_count,
+        [] if opens_target else [PROVIDER_ID],
     )
-    assert journey.adapter.signals == []
-    assert journey.recovery_handoffs == ([] if opens_target else [PROVIDER_ID])
 
 
 def _register_late(journey: _Journey) -> ParticipantRegistration:
-    """Prove durable registration failure leaves no in-memory client."""
     journey.operations.reject_required_once = True
     with pytest.raises(RuntimeError, match="late-registration write failed"):
         journey.coordinator.register(
             _manifest(PARTICIPANT_C),
             _process(3),
         )
-    assert (
-        journey.registry.registered_count(PROVIDER_ID)
-        == INITIAL_PARTICIPANT_COUNT
-    )
+    registered = journey.registry.registered_count(PROVIDER_ID)
+    assert registered == INITIAL_PARTICIPANT_COUNT
     registration = journey.coordinator.register(
         _manifest(PARTICIPANT_C),
         _process(3),
@@ -482,7 +472,6 @@ def _register_late(journey: _Journey) -> ParticipantRegistration:
 
 
 def _arm_postcommit_loss(journey: _Journey, loss_state: str) -> None:
-    """Arm durable-close failure only for the final-seal schedule."""
     if loss_state != "dead_after_commit":
         return
     journey.operations.block_complete_once = True
@@ -491,7 +480,6 @@ def _arm_postcommit_loss(journey: _Journey, loss_state: str) -> None:
 
 
 def _probe_final_seal_released(journey: _Journey, loss_state: str) -> None:
-    """Prove a failed final snapshot write cannot strand the barrier."""
     if loss_state != "final_snapshot_failure":
         return
     completed = Event()
@@ -504,11 +492,29 @@ def _probe_final_seal_released(journey: _Journey, loss_state: str) -> None:
     assert completed.wait(1)
 
 
+def _prove_initial_unselected_subscription(
+    selected: SelectedStateStore,
+) -> None:
+    registry = ParticipantRegistry(selected)
+    registry.register(_manifest(PARTICIPANT_A), _process(1))
+    request = ParticipantConnectionRequest(PARTICIPANT_A, 1)
+    failed = registry.subscribe(new_request_id(), request)
+    with pytest.raises(ParticipantRequestError):
+        next(failed)
+    snapshot = registry.snapshot(PROVIDER_ID)
+    assert snapshot.registered_count == 1
+    assert snapshot.reachable_count == snapshot.adopted_count == 0
+    assert snapshot.unreachable_participant_ids == (PARTICIPANT_A,)
+    registry.close_admission(PROVIDER_ID, SelectionEpoch(1))
+    retry = registry.subscribe(new_request_id(), request)
+    assert next(retry).kind is ParticipantNoticeKind.PREPARE
+    retry.close()
+
+
 def _disconnect_during_final_seal(
     journey: _Journey,
     loss_state: str,
 ) -> tuple[Thread, Event] | None:
-    """Prove reachability mutation waits until final publication opens."""
     if loss_state != "dead_after_commit":
         return None
     operations = journey.operations
@@ -581,15 +587,17 @@ def test_three_participants_switch_without_interrupting_turns(
         journey.adapter,
         journey.coordinator,
     )
+
+    def select(operation_id: OperationId) -> SelectionResult:
+        return coordinator.select(
+            operation_id,
+            PROVIDER_ID,
+            TARGET_ACCOUNT_ID,
+        )
+
     results: list[SelectionResult] = []
     selector = Thread(
-        target=lambda: results.append(
-            coordinator.select(
-                OPERATION_ID,
-                PROVIDER_ID,
-                TARGET_ACCOUNT_ID,
-            )
-        ),
+        target=lambda: results.append(select(OPERATION_ID)),
         daemon=True,
     )
     selector.start()
@@ -598,21 +606,13 @@ def test_three_participants_switch_without_interrupting_turns(
     replay: Thread | None = None
     if loss_state == "dead_after_commit":
         replay = Thread(
-            target=lambda: replay_results.append(
-                coordinator.select(
-                    REPLAY_OPERATION_ID,
-                    PROVIDER_ID,
-                    TARGET_ACCOUNT_ID,
-                )
-            ),
+            target=lambda: replay_results.append(select(REPLAY_OPERATION_ID)),
             daemon=True,
         )
         replay.start()
         with pytest.raises(SelectionRequestError) as conflict:
             coordinator.select(
-                CONFLICT_OPERATION_ID,
-                PROVIDER_ID,
-                CONFLICT_ACCOUNT_ID,
+                CONFLICT_OPERATION_ID, PROVIDER_ID, CONFLICT_ACCOUNT_ID
             )
         assert conflict.value.code is SelectionCode.UNCOORDINATED_AUTH_MUTATION
     adapter.allow_prevalidation.set()
@@ -676,23 +676,13 @@ def test_recovery_finalizes_forward_from_target_provider_proof(
 ) -> None:
     """Restart recovery gates admission and never restores baseline auth."""
     paths = make_application_paths(tmp_path)
-    baseline = (
-        FinalizedSelection(
-            provider_id=PROVIDER_ID,
-            account_id=SidekickAccountId(
-                "4d95b1fb-1ba4-4837-b6b7-452cd8aff462"
-            ),
-            epoch=SelectionEpoch(7),
-            generation=AuthorityGeneration("generation-baseline-7"),
-            finalized_at=REFERENCE_TIME,
-        )
-        if baseline_exists
-        else None
-    )
+    baseline = _baseline_selection() if baseline_exists else None
     if baseline is not None:
         seed_finalized_selections(paths, baseline)
     baseline_epoch = SelectionEpoch(0) if baseline is None else baseline.epoch
     selected = SelectedStateStore(paths.selected_state)
+    if not baseline_exists:
+        _prove_initial_unselected_subscription(selected)
     journal = SelectionOperationStore(paths.selection_journals)
     operation = OpenSelectionOperation(
         operation_id=OPERATION_ID,
@@ -735,12 +725,11 @@ def test_recovery_finalizes_forward_from_target_provider_proof(
 
     registry = ParticipantRegistry(selected)
     queue = OperationQueueStore(paths.durable_operations)
-    gateway = SelectionWorkerGateway(queue, FixedClock(), lambda: None)
     recovery = SelectionRecovery(
         selected,
         journal,
         registry,
-        gateway,
+        SelectionWorkerGateway(queue, FixedClock(), lambda: None),
         FixedClock(),
     )
     assert recovery.restore(PROVIDER_ID)
@@ -764,7 +753,7 @@ def test_recovery_finalizes_forward_from_target_provider_proof(
             observed_generation=AuthorityGeneration("generation-target-8"),
         ),
     )
-    coordinator = SelectionCoordinator(
+    result = SelectionCoordinator(
         selected,
         journal,
         registry,
@@ -773,24 +762,33 @@ def test_recovery_finalizes_forward_from_target_provider_proof(
         resume_recovery=lambda provider_id: recovery.complete_readback(
             completion
         ),
-    )
-    result = coordinator.select(
-        REPLAY_OPERATION_ID,
-        PROVIDER_ID,
-        TARGET_ACCOUNT_ID,
-    )
+    ).select(REPLAY_OPERATION_ID, PROVIDER_ID, TARGET_ACCOUNT_ID)
 
-    finalized = selected.load(PROVIDER_ID)
-    assert finalized is not None
+    (finalized,) = selected.load_all()
     assert finalized.account_id == TARGET_ACCOUNT_ID
     assert finalized.epoch == baseline_epoch.next()
     assert result == journal.load(PROVIDER_ID).history[-1]
     assert result.operation_id == OPERATION_ID
     assert result.outcome is SelectionOutcome.READY
     assert journal.load(PROVIDER_ID).active is None
-    registration = registry.register(_manifest(PARTICIPANT_A), _process(1))
+    restore = registry.restore_admission
+    with pytest.raises(ParticipantRequestError):
+        restore(PROVIDER_ID, finalized.epoch, CONFLICT_ACCOUNT_ID, ())
+    restore(PROVIDER_ID, finalized.epoch, TARGET_ACCOUNT_ID, (PARTICIPANT_A,))
+    missing = registry.snapshot(PROVIDER_ID)
+    assert missing.registered_count == 1
+    assert missing.reachable_count == 0
+    assert missing.unreachable_participant_ids == (PARTICIPANT_A,)
+    persisted_epochs: list[SelectionEpoch] = []
+    registration = registry.register(
+        _manifest(PARTICIPANT_A),
+        _process(1),
+        persist_required=persisted_epochs.append,
+    )
     assert registration.registered_epoch == baseline_epoch.next()
-    assert registration.pending_epoch is None
+    assert registration.pending_epoch == registration.registered_epoch
+    assert persisted_epochs == [registration.registered_epoch]
+    registry.reopen_baseline(PROVIDER_ID)
     registry.register(_manifest(PARTICIPANT_B), _process(2))
     registry.close_admission(PROVIDER_ID, baseline_epoch.next().next())
     registry.confirm_dead(PARTICIPANT_A, _process(1))

@@ -3,14 +3,9 @@
 import time
 from collections import deque
 from collections.abc import Callable, Generator
-from dataclasses import dataclass, field
 from threading import Condition
 
-from sidekick_usages.core.accounts.types import (
-    AuthorityGeneration,
-    RequestId,
-    SidekickAccountId,
-)
+from sidekick_usages.core.accounts.types import RequestId, SidekickAccountId
 from sidekick_usages.core.selection.models import (
     AuthorityReadyProof,
     FinalizedSelection,
@@ -23,6 +18,8 @@ from sidekick_usages.core.selection.types import (
 )
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.daemon.selection.models import (
+    MAX_ACTIVE_TURNS_PER_PROVIDER,
+    MAX_PENDING_BEGINS_PER_PROVIDER,
     ParticipantAdoptionProof,
     ParticipantAdoptionRequest,
     ParticipantConnectionRequest,
@@ -40,34 +37,21 @@ from sidekick_usages.daemon.selection.models import (
     TurnEndRequest,
 )
 from sidekick_usages.daemon.selection.ports import FinalizedSelectionStore
+from sidekick_usages.daemon.selection.projection import (
+    ParticipantRecord,
+    ProviderGate,
+    project_notice,
+    project_snapshot,
+    require_capacity,
+    require_connection,
+    require_gate,
+    require_gate_epoch,
+    require_membership_bound,
+    require_reconnect,
+)
 from sidekick_usages.platform.models import ProcessIdentity
 
-MAX_PARTICIPANTS_PER_PROVIDER = 16
-MAX_ACTIVE_TURNS_PER_PROVIDER = 128
-MAX_PENDING_BEGINS_PER_PROVIDER = 128
 MAX_RETAINED_PARTICIPANT_NOTICES = 256
-
-
-@dataclass(slots=True)
-class _Participant:
-    manifest: ParticipantManifest
-    process_identity: ProcessIdentity
-    registered_epoch: SelectionEpoch
-    connected: bool = False
-    confirmed_dead: bool = False
-    ready_epoch: SelectionEpoch | None = None
-    adopted_epoch: SelectionEpoch | None = None
-
-
-@dataclass(slots=True)
-class _ProviderGate:
-    pending_epoch: SelectionEpoch
-    required: set[ParticipantId]
-    account_id: SidekickAccountId | None = None
-    generation: AuthorityGeneration | None = None
-    queued: dict[TurnId, TurnBeginRequest] = field(default_factory=dict)
-    sealed: bool = False
-    status_code: SelectionCode | None = None
 
 
 class ParticipantRegistry:
@@ -80,8 +64,8 @@ class ParticipantRegistry:
     ) -> None:
         self._selected = selected
         self._condition = Condition()
-        self._participants: dict[ParticipantId, _Participant] = {}
-        self._gates: dict[ProviderId, _ProviderGate] = {}
+        self._participants: dict[ParticipantId, ParticipantRecord] = {}
+        self._gates: dict[ProviderId, ProviderGate] = {}
         self._turns: dict[TurnId, TurnAdmission] = {}
         self._monotonic = monotonic
         self._notice_sequence = 0
@@ -102,9 +86,14 @@ class ParticipantRegistry:
             self._wait_unsealed(manifest.provider_id)
             current = self._participants.get(manifest.participant_id)
             if current is not None:
-                self._require_reconnect(current, manifest, peer)
+                require_reconnect(current, manifest, peer)
             else:
-                self._require_capacity(manifest.provider_id)
+                require_capacity(
+                    self._participants,
+                    self._gates,
+                    manifest.provider_id,
+                    manifest.participant_id,
+                )
             selected = self._selected.load(manifest.provider_id)
             registered_epoch = (
                 current.registered_epoch
@@ -114,6 +103,21 @@ class ParticipantRegistry:
                 else selected.epoch
             )
             gate = self._gates.get(manifest.provider_id)
+            registration = ParticipantRegistration(
+                participant_id=manifest.participant_id,
+                provider_id=manifest.provider_id,
+                connection_generation=manifest.connection_generation,
+                registered_epoch=registered_epoch,
+                pending_epoch=None if gate is None else gate.pending_epoch,
+            )
+            required = None
+            if gate is not None:
+                required = gate.required | {manifest.participant_id}
+                require_membership_bound(
+                    self._participants,
+                    manifest.provider_id,
+                    required,
+                )
             if gate is not None and persist_required is not None:
                 persist_required(gate.pending_epoch)
             if current is not None:
@@ -121,23 +125,17 @@ class ParticipantRegistry:
                 current.confirmed_dead = False
                 current.ready_epoch = None
             else:
-                current = _Participant(manifest, peer, registered_epoch)
+                current = ParticipantRecord(manifest, peer, registered_epoch)
                 self._participants[manifest.participant_id] = current
-            if gate is not None:
-                gate.required.add(manifest.participant_id)
+            if gate is not None and required is not None:
+                gate.required = required
                 self._append_notice(
                     manifest.participant_id,
                     ParticipantNoticeKind.PREPARE,
                     gate.pending_epoch,
                 )
             self._condition.notify_all()
-            return ParticipantRegistration(
-                participant_id=manifest.participant_id,
-                provider_id=manifest.provider_id,
-                connection_generation=manifest.connection_generation,
-                registered_epoch=current.registered_epoch,
-                pending_epoch=None if gate is None else gate.pending_epoch,
-            )
+            return registration
 
     def begin_turn(self, request: TurnBeginRequest) -> TurnAdmission:
         """Admit one exact turn or retain only its bounded begin metadata."""
@@ -246,16 +244,14 @@ class ParticipantRegistry:
                 raise ParticipantRequestError(
                     SelectionCode.SELECTION_RECOVERY_REQUIRED
                 )
+            require_gate_epoch(self._selected.load(provider_id), pending_epoch)
             required = {
                 participant_id
                 for participant_id, participant in self._participants.items()
                 if participant.manifest.provider_id is provider_id
                 and not participant.confirmed_dead
             }
-            self._gates[provider_id] = _ProviderGate(
-                pending_epoch,
-                required,
-            )
+            self._gates[provider_id] = ProviderGate(pending_epoch, required)
             for participant_id in required:
                 self._append_notice(
                     participant_id,
@@ -269,22 +265,29 @@ class ParticipantRegistry:
         self,
         provider_id: ProviderId,
         pending_epoch: SelectionEpoch,
+        target_account_id: SidekickAccountId,
         required_participant_ids: tuple[ParticipantId, ...],
     ) -> ParticipantSnapshot:
         """Restore one crash-recovery gate from opaque durable IDs."""
         with self._condition:
+            require_gate_epoch(
+                self._selected.load(provider_id),
+                pending_epoch,
+                recovery_target=target_account_id,
+            )
             current = self._gates.get(provider_id)
+            required = set(required_participant_ids) | (
+                set() if current is None else current.required
+            )
+            require_membership_bound(self._participants, provider_id, required)
             if current is not None:
                 if current.pending_epoch != pending_epoch:
                     raise ParticipantRequestError(
                         SelectionCode.SELECTION_RECOVERY_REQUIRED
                     )
-                current.required.update(required_participant_ids)
+                current.required = required
                 return self._snapshot(provider_id)
-            self._gates[provider_id] = _ProviderGate(
-                pending_epoch,
-                set(required_participant_ids),
-            )
+            self._gates[provider_id] = ProviderGate(pending_epoch, required)
             return self._snapshot(provider_id)
 
     def prepare_target(self, proof: AuthorityReadyProof) -> None:
@@ -414,12 +417,9 @@ class ParticipantRegistry:
             return self._snapshot(provider_id)
 
     def registered_count(self, provider_id: ProviderId) -> int:
-        """Return the bounded number of retained provider participants."""
+        """Return live and durably required provider membership."""
         with self._condition:
-            return sum(
-                participant.manifest.provider_id is provider_id
-                for participant in self._participants.values()
-            )
+            return self._snapshot(provider_id).registered_count
 
     def unreachable_processes(
         self,
@@ -469,9 +469,9 @@ class ParticipantRegistry:
                 raise ParticipantRequestError(
                     SelectionCode.PARTICIPANT_UNREACHABLE
                 )
-            participant.connected = True
             cursor = self._notice_sequence
             initial = self._current_notice(request.participant_id)
+            participant.connected = True
             self._condition.notify_all()
         try:
             yield initial
@@ -690,52 +690,12 @@ class ParticipantRegistry:
 
     def _snapshot(self, provider_id: ProviderId) -> ParticipantSnapshot:
         gate = self._gates.get(provider_id)
-        required = set() if gate is None else set(gate.required)
-        pending_epoch = None if gate is None else gate.pending_epoch
-        ready = {
-            participant_id
-            for participant_id in required
-            if participant_id in self._participants
-            and self._participants[participant_id].ready_epoch == pending_epoch
-        }
-        dead = {
-            participant_id
-            for participant_id in required
-            if participant_id in self._participants
-            and self._participants[participant_id].confirmed_dead
-        }
-        unreachable = {
-            participant_id
-            for participant_id in required
-            if participant_id not in self._participants
-            or (
-                not self._participants[participant_id].connected
-                and participant_id not in dead
-            )
-        }
-        return ParticipantSnapshot(
-            provider_id=provider_id,
-            required_participant_ids=tuple(sorted(required)),
-            ready_participant_ids=tuple(sorted(ready)),
-            confirmed_dead_participant_ids=tuple(sorted(dead)),
-            unreachable_participant_ids=tuple(sorted(unreachable)),
-            active_turn_count=self._active_turn_count(provider_id),
-            registered_count=sum(
-                participant.manifest.provider_id is provider_id
-                for participant in self._participants.values()
-            ),
-            reachable_count=sum(
-                participant.manifest.provider_id is provider_id
-                and participant.connected
-                and not participant.confirmed_dead
-                for participant in self._participants.values()
-            ),
-            adopted_count=sum(
-                participant.manifest.provider_id is provider_id
-                and participant.adopted_epoch is not None
-                for participant in self._participants.values()
-            ),
-            queued_turn_count=0 if gate is None else len(gate.queued),
+        return project_snapshot(
+            provider_id,
+            self._participants,
+            self._turns,
+            gate,
+            self._selected.load(provider_id),
         )
 
     def _all_required_resolved(self, provider_id: ProviderId) -> bool:
@@ -748,12 +708,6 @@ class ParticipantRegistry:
         return sum(
             self._participants[turn.participant_id].manifest.provider_id
             is provider_id
-            for turn in self._turns.values()
-        )
-
-    def _has_active_turn(self, participant_id: ParticipantId) -> bool:
-        return any(
-            turn.participant_id == participant_id
             for turn in self._turns.values()
         )
 
@@ -800,24 +754,11 @@ class ParticipantRegistry:
         """Return the current semantic state after connect or overrun."""
         participant = self._participants[participant_id]
         provider_id = participant.manifest.provider_id
-        gate = self._gates.get(provider_id)
-        if gate is None:
-            return ParticipantNotice(
-                participant_id=participant_id,
-                provider_id=provider_id,
-                kind=ParticipantNoticeKind.OPEN,
-                epoch=self._require_selected(provider_id).epoch,
-            )
-        return ParticipantNotice(
-            participant_id=participant_id,
-            provider_id=provider_id,
-            kind=(
-                ParticipantNoticeKind.PREPARE
-                if gate.status_code is None
-                else ParticipantNoticeKind.STATUS
-            ),
-            epoch=gate.pending_epoch,
-            code=gate.status_code,
+        return project_notice(
+            participant_id,
+            participant,
+            self._gates.get(provider_id),
+            self._selected.load(provider_id),
         )
 
     def _wait_until(
@@ -837,26 +778,15 @@ class ParticipantRegistry:
         self,
         participant_id: ParticipantId,
         connection_generation: int,
-    ) -> _Participant:
-        participant = self._participants.get(participant_id)
-        if (
-            participant is None
-            or participant.confirmed_dead
-            or participant.manifest.connection_generation
-            != connection_generation
-        ):
-            raise ParticipantRequestError(
-                SelectionCode.PARTICIPANT_UNREACHABLE
-            )
-        return participant
+    ) -> ParticipantRecord:
+        return require_connection(
+            self._participants,
+            participant_id,
+            connection_generation,
+        )
 
-    def _require_gate(self, provider_id: ProviderId) -> _ProviderGate:
-        gate = self._gates.get(provider_id)
-        if gate is None:
-            raise ParticipantRequestError(
-                SelectionCode.SELECTION_RECOVERY_REQUIRED
-            )
-        return gate
+    def _require_gate(self, provider_id: ProviderId) -> ProviderGate:
+        return require_gate(self._gates, provider_id)
 
     def _require_selected(self, provider_id: ProviderId) -> FinalizedSelection:
         selected = self._selected.load(provider_id)
@@ -865,33 +795,3 @@ class ParticipantRegistry:
                 SelectionCode.SESSION_CONFIGURATION_REQUIRED
             )
         return selected
-
-    def _require_capacity(self, provider_id: ProviderId) -> None:
-        count = sum(
-            participant.manifest.provider_id is provider_id
-            for participant in self._participants.values()
-        )
-        if count >= MAX_PARTICIPANTS_PER_PROVIDER:
-            raise ParticipantRequestError(
-                SelectionCode.ACTIVE_OPERATION_TIMEOUT
-            )
-
-    @staticmethod
-    def _require_reconnect(
-        current: _Participant,
-        manifest: ParticipantManifest,
-        peer: ProcessIdentity,
-    ) -> None:
-        if (
-            current.connected
-            or current.process_identity != peer
-            or current.manifest.provider_id is not manifest.provider_id
-            or current.manifest.client_kind != manifest.client_kind
-            or current.manifest.capability_version
-            != manifest.capability_version
-            or manifest.connection_generation
-            <= current.manifest.connection_generation
-        ):
-            raise ParticipantRequestError(
-                SelectionCode.PARTICIPANT_UNREACHABLE
-            )
