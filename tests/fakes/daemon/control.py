@@ -1,13 +1,21 @@
 """Typed control-protocol boundaries for daemon tests."""
 
 import socket
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from threading import Event, Thread
 
 from sidekick_usages import __version__
+from sidekick_usages.core.accounts.identifiers import new_request_id
 from sidekick_usages.core.accounts.types import OperationId, RequestId
+from sidekick_usages.core.selection.models import SelectionEpoch
+from sidekick_usages.core.selection.types import ParticipantId
+from sidekick_usages.core.types import ProviderId
 from sidekick_usages.daemon.control.client import ControlClient
+from sidekick_usages.daemon.control.dispatch import (
+    OperationEventHub,
+    SupervisorDispatcher,
+)
 from sidekick_usages.daemon.control.server import (
     ControlConnection,
     ControlSubscription,
@@ -19,10 +27,27 @@ from sidekick_usages.daemon.models.protocol import (
     CompletedPayload,
     ControlEvent,
     ControlRequest,
+    EmptyPayload,
     EventPayload,
     ProgressPayload,
 )
-from sidekick_usages.daemon.types.ports import ControlDispatcher
+from sidekick_usages.daemon.runtime.diagnostics import (
+    ControlFailureDiagnosticSink,
+    SanitizedDiagnosticLog,
+)
+from sidekick_usages.daemon.selection.coordinator import SelectionCoordinator
+from sidekick_usages.daemon.selection.models import (
+    ParticipantClientKind,
+    ParticipantConnectionRequest,
+    ParticipantManifest,
+)
+from sidekick_usages.daemon.selection.registry import ParticipantRegistry
+from sidekick_usages.daemon.selection.worker import SelectionWorkerGateway
+from sidekick_usages.daemon.types.control import ControlFailurePhase
+from sidekick_usages.daemon.types.ports import (
+    ControlDispatcher,
+    ResidentService,
+)
 from sidekick_usages.daemon.types.protocol import (
     PROTOCOL_VERSION,
     CompletionOutcome,
@@ -30,13 +55,20 @@ from sidekick_usages.daemon.types.protocol import (
     ProgressPhase,
     RequestKind,
 )
-from sidekick_usages.platform.models import PeerIdentity
+from sidekick_usages.persistence.supervisor.selection import (
+    SelectionOperationStore,
+)
+from sidekick_usages.persistence.supervisor.service import ServiceStateStore
+from sidekick_usages.platform.models import PeerIdentity, ProcessIdentity
 from sidekick_usages.platform.peer import PeerVerificationError
 from sidekick_usages.platform.types import (
     PeerFailureCode,
     PeerSocket,
     PeerVerifier,
+    ProcessLiveness,
 )
+from tests.fakes.daemon.foundation import FoundationState
+from tests.support.time import FixedClock
 
 _FRAGMENT_SIZE = 3
 _RESPONSE_BUFFER_SIZE = 65_540
@@ -179,6 +211,188 @@ class RecordingDispatcher:
         self.release_subscription.set()
 
 
+class FailingProcessInspector:
+    """Fail exact liveness inspection after coordinator disconnect."""
+
+    def __init__(self) -> None:
+        self.attempted = Event()
+
+    def inspect(self, identity: ProcessIdentity) -> ProcessLiveness:
+        """Expose one synthetic downstream inspection failure."""
+        del identity
+        self.attempted.set()
+        raise RuntimeError("synthetic cancellation failure")
+
+
+class FailingControlReporter:
+    """Raise after an optional sanitized diagnostic projection."""
+
+    def __init__(
+        self,
+        persist: Callable[[ControlFailurePhase], None] | None = None,
+    ) -> None:
+        self._persist = persist
+
+    def __call__(self, phase: ControlFailurePhase) -> None:
+        """Project once, then expose a synthetic diagnostic I/O failure."""
+        if self._persist is not None:
+            self._persist(phase)
+        raise OSError("synthetic diagnostic failure")
+
+
+@dataclass(frozen=True, slots=True)
+class RegistryMonitorResult:
+    """Observed state from one production cancellation journey."""
+
+    participant_id: ParticipantId
+    registry_state: tuple[
+        int,
+        int,
+        tuple[ParticipantId, ...],
+        int,
+        int,
+    ]
+    states: tuple[bool, bool, bool, bool, bool, bool, bool, bool]
+    diagnostics: str
+
+
+class RegistryMonitorScenario:
+    """Own sockets and production services for one monitor journey."""
+
+    def __init__(
+        self,
+        state: FoundationState,
+        resident: ResidentService,
+    ) -> None:
+        self._state = state
+        self._resident = resident
+
+    def exercise(self) -> RegistryMonitorResult:
+        """Run registration, failed cancellation, and later cancellation."""
+        participant_id = ParticipantId("5b78ccdf-5e8b-4054-a86f-e6a052bc742a")
+        process = ProcessIdentity(101, 202)
+        registry = ParticipantRegistry(self._state.selected)
+        registry.register(
+            ParticipantManifest(
+                participant_id=participant_id,
+                provider_id=ProviderId.CLAUDE,
+                client_kind=ParticipantClientKind.CLAUDE_CODE,
+                capability_version=1,
+                connection_generation=1,
+            ),
+            process,
+        )
+        participant = ParticipantConnectionRequest(participant_id, 1)
+        inspector = FailingProcessInspector()
+        selection = SelectionCoordinator(
+            self._state.selected,
+            SelectionOperationStore(self._state.paths.selection_journals),
+            registry,
+            SelectionWorkerGateway(
+                self._state.queue,
+                FixedClock(),
+                Event().set,
+            ),
+            FixedClock(),
+            process_inspector=inspector,
+        )
+        diagnostic = ControlFailureDiagnosticSink(
+            SanitizedDiagnosticLog(self._state.paths.service_logs),
+            FixedClock(),
+        )
+        dispatcher = SupervisorDispatcher(
+            self._state.queue,
+            ServiceStateStore(self._state.paths.service_state),
+            OperationEventHub(diagnostic.failed),
+            self._resident,
+            FixedClock(),
+            Event().set,
+            Event().set,
+            selection=selection,
+        )
+        reporter = FailingControlReporter(diagnostic.failed)
+        monitor = ControlSubscriptionMonitor(
+            dispatcher,
+            failure_reporter=reporter,
+        )
+        failed_registration, failed_peer = _subscription_pair(
+            RequestKind.PARTICIPANT_SUBSCRIBE,
+            participant,
+            process,
+        )
+        registry.close_admission(ProviderId.CLAUDE, SelectionEpoch(1))
+        stream = dispatcher.dispatch(failed_registration.context)
+        accepted = next(stream)
+        activated = registry.snapshot(ProviderId.CLAUDE)
+        later, later_peer = _subscription_pair(
+            RequestKind.SUBSCRIBE, EmptyPayload()
+        )
+        failed_registration.connection.close()
+        monitor.start()
+        try:
+            monitor.register(failed_registration)
+            cancellation_attempted = inspector.attempted.wait(2)
+            before_drain = registry.snapshot(ProviderId.CLAUDE)
+            drained_count = len(tuple(stream)) if cancellation_attempted else 0
+            later_peer.close()
+            monitor.register(later)
+            later_cancelled = later.cancelled.wait(2)
+        finally:
+            monitor.close()
+            for subscription, peer in (
+                (failed_registration, failed_peer),
+                (later, later_peer),
+            ):
+                subscription.connection.close()
+                peer.close()
+        snapshot = registry.snapshot(ProviderId.CLAUDE)
+        return RegistryMonitorResult(
+            participant_id=participant_id,
+            registry_state=(
+                activated.reachable_count,
+                before_drain.reachable_count,
+                snapshot.unreachable_participant_ids,
+                snapshot.reachable_count,
+                drained_count,
+            ),
+            states=(
+                accepted.kind is EventKind.ACCEPTED,
+                cancellation_attempted,
+                failed_registration.cancelled.is_set(),
+                failed_registration.cancellation_failed.is_set(),
+                failed_registration.diagnostic_degraded.is_set(),
+                later_cancelled,
+                later.cancellation_failed.is_set(),
+                later.diagnostic_degraded.is_set(),
+            ),
+            diagnostics=(
+                self._state.paths.service_logs / "supervisor.jsonl"
+            ).read_text(),
+        )
+
+
+def _subscription_pair(
+    kind: RequestKind,
+    payload: EmptyPayload | ParticipantConnectionRequest,
+    process: ProcessIdentity | None = None,
+) -> tuple[ControlSubscription, socket.socket]:
+    server, client = socket.socketpair()
+    request = ControlRequest(
+        PROTOCOL_VERSION,
+        new_request_id(),
+        kind,
+        payload,
+        __version__,
+    )
+    return (
+        ControlSubscription(
+            server,
+            VerifiedControlRequest(request, PeerIdentity(1000, process)),
+        ),
+        client,
+    )
+
+
 def _service_event(
     request: ControlRequest,
     kind: EventKind,
@@ -190,6 +404,22 @@ def _service_event(
         kind=kind,
         payload=payload,
         package_version=__version__,
+    )
+
+
+def foundation_dispatcher(
+    state: FoundationState,
+    resident: ResidentService,
+) -> SupervisorDispatcher:
+    """Compose the default dispatcher for one foundation state graph."""
+    return SupervisorDispatcher(
+        state.queue,
+        ServiceStateStore(state.paths.service_state),
+        OperationEventHub(),
+        resident,
+        FixedClock(),
+        Event().set,
+        Event().set,
     )
 
 

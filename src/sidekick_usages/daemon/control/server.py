@@ -7,6 +7,7 @@ import socket
 import stat
 import sys
 from collections import deque
+from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -39,7 +40,10 @@ from sidekick_usages.daemon.models.protocol import (
     FailedPayload,
     IncompatiblePayload,
 )
-from sidekick_usages.daemon.types.control import EndpointFailureCode
+from sidekick_usages.daemon.types.control import (
+    ControlFailurePhase,
+    EndpointFailureCode,
+)
 from sidekick_usages.daemon.types.ports import (
     ControlDispatcher,
 )
@@ -71,7 +75,15 @@ class ControlSubscription:
 
     connection: socket.socket
     context: VerifiedControlRequest
+    cancellation_started: Event = field(default_factory=Event)
     cancelled: Event = field(default_factory=Event)
+    cancellation_failed: Event = field(default_factory=Event)
+    diagnostic_degraded: Event = field(default_factory=Event)
+    cancellation_lock: Lock = field(
+        default_factory=Lock,
+        compare=False,
+        repr=False,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,8 +95,14 @@ class _SubscriptionCommand:
 class ControlSubscriptionMonitor:
     """Wake blocked streams from one bounded selector-owned monitor."""
 
-    def __init__(self, dispatcher: ControlDispatcher) -> None:
+    def __init__(
+        self,
+        dispatcher: ControlDispatcher,
+        *,
+        failure_reporter: Callable[[ControlFailurePhase], None] | None = None,
+    ) -> None:
         self._dispatcher = dispatcher
+        self._failure_reporter = failure_reporter
         self._reader, self._writer = socket.socketpair()
         self._reader.setblocking(False)
         self._writer.setblocking(False)
@@ -108,6 +126,10 @@ class ControlSubscriptionMonitor:
     def unregister(self, subscription: ControlSubscription) -> None:
         """Stop watching one stream that already completed."""
         self._enqueue(_SubscriptionCommand(subscription, False))
+
+    def cancel(self, subscription: ControlSubscription) -> None:
+        """Cancel one exact stream through the fault-isolated boundary."""
+        self._cancel_subscription(subscription)
 
     def close(self) -> None:
         """Cancel watched streams and close the shared wake channel."""
@@ -165,18 +187,26 @@ class ControlSubscriptionMonitor:
         with self._lock:
             commands = tuple(self._commands)
             self._commands.clear()
+        failed_registrations: dict[socket.socket, ControlSubscription] = {}
         for command in commands:
             connection = command.subscription.connection
             if command.register:
                 if connection not in subscriptions:
-                    subscriptions[connection] = command.subscription
-                    with suppress(OSError, ValueError):
+                    try:
                         selector.register(connection, selectors.EVENT_READ)
+                    except KeyError, OSError, ValueError:
+                        failed_registrations[connection] = command.subscription
+                    else:
+                        failed_registrations.pop(connection, None)
+                        subscriptions[connection] = command.subscription
                 continue
+            failed_registrations.pop(connection, None)
             if connection in subscriptions:
                 subscriptions.pop(connection)
                 with suppress(KeyError, OSError, ValueError):
                     selector.unregister(connection)
+        for subscription in failed_registrations.values():
+            self._cancel_subscription(subscription)
 
     def _cancel(
         self,
@@ -194,10 +224,22 @@ class ControlSubscriptionMonitor:
         self,
         subscription: ControlSubscription,
     ) -> None:
-        if subscription.cancelled.is_set():
-            return
-        subscription.cancelled.set()
-        self._dispatcher.cancel(subscription.context)
+        with subscription.cancellation_lock:
+            if subscription.cancellation_started.is_set():
+                return
+            subscription.cancellation_started.set()
+        try:
+            self._dispatcher.cancel(subscription.context)
+        except Exception:
+            subscription.cancellation_failed.set()
+            reporter = self._failure_reporter
+            if reporter is not None:
+                try:
+                    reporter(ControlFailurePhase.SUBSCRIPTION_CANCELLATION)
+                except Exception:
+                    subscription.diagnostic_degraded.set()
+        else:
+            subscription.cancelled.set()
 
     def _drain_wake(self) -> None:
         while True:
@@ -402,9 +444,10 @@ class ControlConnection:
         except _InvalidDispatchEventError:
             return False
         except BrokenPipeError, ConnectionResetError:
-            if subscription is None or not subscription.cancelled.is_set():
-                if subscription is not None:
-                    subscription.cancelled.set()
+            monitor = self._subscription_monitor
+            if subscription is not None and monitor is not None:
+                monitor.cancel(subscription)
+            else:
                 self._dispatcher.cancel(context)
             return False
         except Exception:
@@ -534,6 +577,7 @@ class LocalControlServer:
         *,
         peer_verifier: PeerVerifier | None = None,
         package_version: str = __version__,
+        failure_reporter: Callable[[ControlFailurePhase], None] | None = None,
     ) -> None:
         self._runtime_directory = runtime_directory
         self._socket_path = socket_path
@@ -544,6 +588,7 @@ class LocalControlServer:
             else peer_verifier
         )
         self._package_version = package_version
+        self._failure_reporter = failure_reporter
         self._listener: socket.socket | None = None
         self._socket_identity: SocketIdentity | None = None
         self._subscription_monitor: ControlSubscriptionMonitor | None = None
@@ -576,7 +621,10 @@ class LocalControlServer:
             raise EndpointError(EndpointFailureCode.CREATE_FAILED) from error
         self._listener = listener
         self._socket_identity = bound_identity
-        monitor = ControlSubscriptionMonitor(self._dispatcher)
+        monitor = ControlSubscriptionMonitor(
+            self._dispatcher,
+            failure_reporter=self._failure_reporter,
+        )
         monitor.start()
         self._subscription_monitor = monitor
 

@@ -87,6 +87,7 @@ from sidekick_usages.daemon.selection.models import (
     TurnEndRequest,
 )
 from sidekick_usages.daemon.selection.ports import SelectionSupervisorPort
+from sidekick_usages.daemon.types.control import ControlFailurePhase
 from sidekick_usages.daemon.types.lifecycle import (
     ServiceBackendId,
     ServiceComponentState,
@@ -113,12 +114,15 @@ from sidekick_usages.platform.peer import (
 )
 from sidekick_usages.platform.types import PeerFailureCode, PeerVerifier
 from tests.fakes.daemon.control import (
+    FailingControlReporter,
     FragmentingSocket,
     RecordingDispatcher,
+    RegistryMonitorScenario,
     RejectedPeer,
     VerifiedPeer,
     exercise_blocked_stream_cancellation,
     exercise_closed_subscription_monitor,
+    foundation_dispatcher,
     rejected_protocol_response,
     serve_protocol_connection,
 )
@@ -146,6 +150,8 @@ class _OperatorSelection(SelectionSupervisorPort):
         target_account_id: SidekickAccountId,
     ) -> SelectionResult:
         """Record and complete one exact synthetic selection."""
+        if self.operation_id is not None:
+            raise ValueError("synthetic fault")
         self.operation_id = operation_id
         return SelectionResult(
             operation_id=operation_id,
@@ -167,6 +173,15 @@ class _OperatorSelection(SelectionSupervisorPort):
 def _verified(request: ControlRequest) -> VerifiedControlRequest:
     """Pair one direct dispatcher request with same-user proof."""
     return VerifiedControlRequest(request, PeerIdentity(1000))
+
+
+def _assert_monitor(state: FoundationState, resident: ResidentState) -> None:
+    """Assert the complete transactional cancellation contract."""
+    result = RegistryMonitorScenario(state, resident).exercise()
+    assert result.states == (True, True, False, True, True, True, False, False)
+    assert result.registry_state == (0, 0, (result.participant_id,), 0, 0)
+    assert result.diagnostics.count("subscription_cancellation_failed") == 1
+    assert "synthetic cancellation failure" not in result.diagnostics
 
 
 def _assert_reused_operation_follows_current_events(
@@ -292,18 +307,9 @@ def test_authenticated_control_stream_frames_completes_and_cancels(
         _verified(fragmented_request),
     )
     assert dispatcher.cancellations == [accepted.request_id]
-
-    state = foundation_state(tmp_path)
-    resident = ResidentState()
-    durable_dispatcher = SupervisorDispatcher(
-        state.queue,
-        ServiceStateStore(state.paths.service_state),
-        OperationEventHub(),
-        resident,
-        RuntimeClock(),
-        Event().set,
-        Event().set,
-    )
+    state, resident = foundation_state(tmp_path), ResidentState()
+    durable_dispatcher = foundation_dispatcher(state, resident)
+    _assert_monitor(state, resident)
     approved_request = replace(
         fragmented_request,
         request_id=new_request_id(),
@@ -505,11 +511,12 @@ def test_select_accepts_with_the_correlated_operation_id(
     operation_id = OperationId("9265897c-7881-47af-b69e-575823b33c3f")
     target = SidekickAccountId("2999e642-0299-4f73-9187-01b3d240e3d8")
     selection = _OperatorSelection()
+    events = OperationEventHub(FailingControlReporter())
     state = foundation_state(tmp_path)
     dispatcher = SupervisorDispatcher(
         state.queue,
         ServiceStateStore(state.paths.service_state),
-        OperationEventHub(),
+        events,
         ResidentState(),
         RuntimeClock(),
         Event().set,
@@ -532,6 +539,10 @@ def test_select_accepts_with_the_correlated_operation_id(
     assert isinstance(completed.payload, SelectionResult)
     assert completed.payload.operation_id == operation_id
     assert selection.operation_id == operation_id
+    failed = tuple(dispatcher.dispatch(_verified(request)))[-1]
+    assert isinstance(failed.payload, FailedPayload)
+    assert failed.payload.code == ProtocolErrorCode.DISPATCH_FAILED.value
+    assert events.degraded_phases == (ControlFailurePhase.DISPATCH,)
 
 
 def _dispatch_failure_code(
@@ -541,18 +552,9 @@ def _dispatch_failure_code(
 ) -> str:
     """Return one safe dispatcher refusal without a selection adapter."""
     state = foundation_state(root)
-    dispatcher = SupervisorDispatcher(
-        state.queue,
-        ServiceStateStore(state.paths.service_state),
-        OperationEventHub(),
-        ResidentState(),
-        RuntimeClock(),
-        Event().set,
-        Event().set,
-    )
-    (event,) = tuple(
-        dispatcher.dispatch(VerifiedControlRequest(request, peer))
-    )
+    dispatcher = foundation_dispatcher(state, ResidentState())
+    events = tuple(dispatcher.dispatch(VerifiedControlRequest(request, peer)))
+    event = events[-1]
     assert isinstance(event.payload, FailedPayload)
     return event.payload.code
 

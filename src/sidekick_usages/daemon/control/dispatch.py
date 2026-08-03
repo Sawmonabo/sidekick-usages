@@ -49,6 +49,7 @@ from sidekick_usages.daemon.selection.models import (
     TurnEndRequest,
 )
 from sidekick_usages.daemon.selection.ports import SelectionSupervisorPort
+from sidekick_usages.daemon.types.control import ControlFailurePhase
 from sidekick_usages.daemon.types.lifecycle import ServiceFailureCode
 from sidekick_usages.daemon.types.ports import (
     OperationEventSink,
@@ -85,13 +86,35 @@ _PARTICIPANT_REQUEST_KINDS = frozenset(
 class OperationEventHub(OperationEventSink):
     """Bounded condition-driven operation and subscription updates."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        failure_reporter: Callable[[ControlFailurePhase], None] | None = None,
+    ) -> None:
         self._condition = Condition()
         self._updates: deque[OperationUpdate] = deque(
             maxlen=_MAX_RETAINED_UPDATES
         )
         self._sequence = 0
         self._cancelled: set[RequestId] = set()
+        self._failure_reporter = failure_reporter
+        self._diagnostic_failures: set[ControlFailurePhase] = set()
+
+    def control_failed(self, phase: ControlFailurePhase) -> None:
+        """Report one sanitized unexpected control failure."""
+        reporter = self._failure_reporter
+        if reporter is None:
+            return
+        try:
+            reporter(phase)
+        except Exception:
+            with self._condition:
+                self._diagnostic_failures.add(phase)
+
+    @property
+    def degraded_phases(self) -> tuple[ControlFailurePhase, ...]:
+        """Return bounded phases whose diagnostic projection failed."""
+        with self._condition:
+            return tuple(sorted(self._diagnostic_failures))
 
     def started(self, operation: DueOperation) -> None:
         """Publish one safe running notification."""
@@ -333,14 +356,11 @@ class SupervisorDispatcher:
             and self._selection is not None
             and peer is not None
         ):
-            try:
-                self._selection.cancel_subscription(
-                    request.request_id,
-                    payload,
-                    peer,
-                )
-            except ParticipantRequestError, PermissionError, ValueError:
-                return
+            self._selection.cancel_subscription(
+                request.request_id,
+                payload,
+                peer,
+            )
             return
         self._events.cancel(request.request_id)
 
@@ -368,7 +388,7 @@ class SupervisorDispatcher:
                 FailedPayload(None, ProtocolErrorCode.FEATURE_DISABLED.value),
             )
             return
-        code = "dispatch_failed"
+        code = ProtocolErrorCode.DISPATCH_FAILED.value
         try:
             if request.kind in _PARTICIPANT_REQUEST_KINDS and peer is not None:
                 yield from self._participant_events(
@@ -383,10 +403,9 @@ class SupervisorDispatcher:
             code = error.code.value
         except ParticipantRequestError as error:
             code = error.code.value
-        except PermissionError:
-            code = SelectionCode.PARTICIPANT_UNREACHABLE.value
-        except BufferError, RuntimeError, ValueError:
-            code = SelectionCode.SELECTION_RECOVERY_REQUIRED.value
+        except Exception:
+            code = ProtocolErrorCode.DISPATCH_FAILED.value
+            self._events.control_failed(ControlFailurePhase.DISPATCH)
         yield self._event(
             request,
             EventKind.FAILED,

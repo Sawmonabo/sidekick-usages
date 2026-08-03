@@ -11,3 +11,10 @@ class EndpointFailureCode(StrEnum):
     UNSAFE_RUNTIME_DIRECTORY = "unsafe_runtime_directory"
     UNSAFE_SOCKET_PATH = "unsafe_socket_path"
     SOCKET_IN_USE = "socket_in_use"
+
+
+class ControlFailurePhase(StrEnum):
+    """Sanitized local control failures owned by supervisor diagnostics."""
+
+    DISPATCH = "control_dispatch_failed"
+    SUBSCRIPTION_CANCELLATION = "subscription_cancellation_failed"

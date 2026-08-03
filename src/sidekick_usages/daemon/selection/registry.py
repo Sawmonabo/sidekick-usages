@@ -460,6 +460,9 @@ class ParticipantRegistry:
     ) -> Generator[ParticipantNotice]:
         """Yield future bounded participant notices until cancellation."""
         with self._condition:
+            if request_id in self._cancelled_subscriptions:
+                self._cancelled_subscriptions.discard(request_id)
+                return
             self._wait_unsealed_for_participant(request.participant_id)
             participant = self._require_connection(
                 request.participant_id,
@@ -721,8 +724,7 @@ class ParticipantRegistry:
         self,
         participant_id: ParticipantId,
     ) -> None:
-        participant = self._participants.get(participant_id)
-        if participant is not None:
+        if (participant := self._participants.get(participant_id)) is not None:
             self._wait_unsealed(participant.manifest.provider_id)
 
     def _append_notice(
