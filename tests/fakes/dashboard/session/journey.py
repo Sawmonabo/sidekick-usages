@@ -35,7 +35,6 @@ from sidekick_usages.usage.dashboard.models import (
     DashboardActionState,
     DashboardFooter,
     DashboardSnapshot,
-    DashboardStatusKind,
 )
 from sidekick_usages.usage.lookup.diagnostics.models import (
     MetricsRefreshObservation,
@@ -275,23 +274,18 @@ def _approve_setup(
     invalidation: SessionInvalidationProbe,
     daemon: SetupDaemon,
 ) -> tuple[
-    DashboardConfirmationProof,
     tuple[str, ...],
     SidekickAccountId | None,
     DashboardFooter,
 ]:
-    """Approve setup and the exact Claude Remote Control retry."""
+    """Approve setup and capture the verified selection result."""
     session.move(DashboardMove.UP)
     session.activate()
     invalidation.wait_for(lambda: session.view.confirmation is not None)
     session.confirm(True)
-    invalidation.wait_for(lambda: session.view.confirmation is not None)
-    remote_confirmation = _confirmation_proof(session)
-    session.confirm(True)
     invalidation.wait_for(lambda: not session.view.action_in_flight)
     view = session.view
     return (
-        remote_confirmation,
         tuple(daemon.events),
         view.controller.account_id,
         view.footer,
@@ -316,26 +310,6 @@ def _reject_contradictory_completion(
         == setup_events.count("install:claude"),
         view.controller.account_id,
         view.footer,
-    )
-
-
-def _reject_codex_remote_control_code(
-    session: InteractiveDashboardSession,
-    invalidation: SessionInvalidationProbe,
-    connector: SessionControlConnector,
-) -> bool:
-    """Treat a malformed Codex Remote Control code as ordinary failure."""
-    connector.require_remote_control_next = True
-    session.focus_next_provider()
-    session.move(DashboardMove.UP)
-    session.activate()
-    invalidation.wait_for(lambda: not session.view.action_in_flight)
-    view = session.view
-    status = view.footer.status
-    return (
-        view.confirmation is None
-        and status is not None
-        and status.kind is DashboardStatusKind.ERROR
     )
 
 
@@ -518,7 +492,6 @@ def exercise_dashboard_session(
         FixedClock(snapshot.reference_time)
     )
     connector = SessionControlConnector(daemon, snapshots)
-    connector.require_remote_control_next = True
     connector.snapshot_ready = False
     invalidation = SessionInvalidationProbe()
     environment: dict[str, str] = {}
@@ -568,7 +541,6 @@ def exercise_dashboard_session(
             preview_account_id=preview_account_id,
         )
         (
-            remote_confirmation,
             setup_events,
             verified_account_id,
             success_footer,
@@ -586,12 +558,6 @@ def exercise_dashboard_session(
                 setup_events,
             )
         )
-        remote_control_scoped_to_claude = _reject_codex_remote_control_code(
-            session,
-            invalidation,
-            connector,
-        )
-
         connector.pause_next = True
         session.focus_next_provider()
         session.move(DashboardMove.DOWN)
@@ -611,7 +577,7 @@ def exercise_dashboard_session(
         startup_account_id=startup_account_id,
         startup_footer=startup_footer,
         activation_locked=activation_locked,
-        confirmations=(service_confirmation, remote_confirmation),
+        confirmations=(service_confirmation,),
         activations=tuple(connector.activations),
         setup_events=setup_events,
         setup_progress_sanitized=EXPECTED_SERVICE_SETUP_PROGRESS.issubset(
@@ -624,7 +590,6 @@ def exercise_dashboard_session(
         setup_not_repeated=setup_not_repeated,
         restored_account_id=restored_account_id,
         failure_footer=failure_footer,
-        remote_control_scoped_to_claude=remote_control_scoped_to_claude,
         lookup_failure=lookup_failure,
         metrics_refresh=metrics_refresh.observations[-1],
         metrics_retry=metrics_retry,

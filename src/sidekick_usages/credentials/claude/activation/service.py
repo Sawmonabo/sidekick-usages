@@ -6,6 +6,7 @@ from sidekick_usages.core.accounts.models import (
     SavedAccount,
 )
 from sidekick_usages.core.accounts.types import (
+    AuthorityGeneration,
     OperationId,
     SidekickAccountId,
 )
@@ -70,8 +71,6 @@ class ClaudeActivationService:
         operation_id: OperationId,
         target_account_id: SidekickAccountId,
         authority: ProviderMutationAuthority,
-        *,
-        allow_remote_control_disconnect: bool = False,
     ) -> SelectedAccountState:
         """Retain the native source, activate the target, and commit proof."""
         authority.require(ProviderId.CLAUDE)
@@ -100,10 +99,7 @@ class ClaudeActivationService:
         native_capabilities = self._authorities.native_capabilities(
             target_capabilities
         )
-        self._authorities.require_native_switch(
-            native_capabilities,
-            allow_remote_control_disconnect=allow_remote_control_disconnect,
-        )
+        self._authorities.require_native_switch(native_capabilities)
         self._authorities.read_saved_private(
             source_capabilities,
             source_authority,
@@ -231,6 +227,105 @@ class ClaudeActivationService:
                 raise
             raise activation_error from error
         return selected
+
+    def prevalidate(
+        self,
+        target_account_id: SidekickAccountId,
+        authority: ProviderMutationAuthority,
+    ) -> AuthorityGeneration:
+        """Prove one refreshable target without retaining its token."""
+        authority.require(ProviderId.CLAUDE)
+        self._authorities.require_activation_environment()
+        authority.account(target_account_id)
+        target, target_authority = self._authorities.managed_account(
+            target_account_id,
+            ClaudeActivationFailure.TARGET_UNAVAILABLE,
+        )
+        target_capabilities = self._authorities.prepare(target_account_id)
+        native_capabilities = self._authorities.native_capabilities(
+            target_capabilities
+        )
+        self._authorities.require_native_switch(native_capabilities)
+        target_private = self._authorities.read_saved_private(
+            target_capabilities,
+            target_authority,
+            target,
+            ClaudeActivationFailure.TARGET_UNAVAILABLE,
+        )
+        self._authorities.require_usable(
+            target_private,
+            ClaudeActivationFailure.TARGET_UNAVAILABLE,
+        )
+        return target_private.generation
+
+    def readback(
+        self,
+        operation_id: OperationId,
+        target_account_id: SidekickAccountId,
+        prepared_generation: AuthorityGeneration,
+        authority: ProviderMutationAuthority,
+    ) -> SelectedAccountState | None:
+        """Return exact committed native proof for one prepared target."""
+        authority.require(ProviderId.CLAUDE)
+        record = next(
+            (
+                candidate
+                for candidate in reversed(
+                    self._journals.load(ProviderId.CLAUDE).history
+                )
+                if candidate.operation_id == operation_id
+            ),
+            None,
+        )
+        if (
+            record is None
+            or record.phase is not ActivationPhase.COMMITTED
+            or record.target_account_id != target_account_id
+            or record.target_authority_generation != prepared_generation
+            or record.verified_runtime_generation is None
+        ):
+            return None
+        authority.account(target_account_id)
+        target, target_authority = self._authorities.managed_account(
+            target_account_id,
+            ClaudeActivationFailure.TARGET_UNAVAILABLE,
+        )
+        if (
+            target_authority.provider_identity
+            != record.expected_target_identity
+        ):
+            return None
+        target_capabilities = self._authorities.prepare(target_account_id)
+        target_private = self._authorities.read_saved_private(
+            target_capabilities,
+            target_authority,
+            target,
+            ClaudeActivationFailure.TARGET_UNAVAILABLE,
+        )
+        if target_private.generation != prepared_generation:
+            return None
+        native_capabilities = self._authorities.native_capabilities(
+            target_capabilities
+        )
+        native = self._authorities.read_native(
+            native_capabilities,
+            expected_identity=record.expected_target_identity,
+        )
+        if native.generation != record.verified_runtime_generation:
+            return None
+        self._authorities.require_usable(
+            native,
+            ClaudeActivationFailure.NATIVE_UNAVAILABLE,
+        )
+        return SelectedAccountState(
+            provider_id=ProviderId.CLAUDE,
+            runtime_state=ProviderRuntimeState.SAVED_ACTIVE,
+            account_id=target_account_id,
+            provider_identity=native.provider_identity,
+            runtime_generation=native.generation,
+            verified_at=self._clock.now(),
+            outcome=ActivationOutcome.VERIFIED,
+        )
 
     def _prove_final_authorities(
         self,

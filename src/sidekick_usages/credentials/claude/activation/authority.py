@@ -134,6 +134,7 @@ class ClaudeActivationAuthorityCoordinator:
         self._environment = resolved_runtime.environment
         self._runner = resolved_runtime.runner
         self._foreground_probe = resolved_runtime.foreground_probe
+        self._remote_control_probe = resolved_runtime.remote_control_probe
         self._capabilities = capabilities
         self._managed_reader = ClaudeManagedAuthorityReader(paths, profiles)
         self._observations = RuntimeAuthObservationStore(
@@ -210,15 +211,12 @@ class ClaudeActivationAuthorityCoordinator:
     def require_native_switch(
         self,
         capabilities: ClaudeCapabilities,
-        *,
-        allow_remote_control_disconnect: bool,
     ) -> None:
         """Reject an unsafe new switch before native mutation."""
         conflict = claude_native_switch_conflict(
             capabilities,
             self._source_environment(),
-            self._foreground_probe,
-            allow_remote_control_disconnect=allow_remote_control_disconnect,
+            self._remote_control_probe,
         )
         if conflict is not None:
             raise ClaudeActivationError(conflict)

@@ -20,10 +20,9 @@ class ClaudeActivationGuardFailure(StrEnum):
     API_KEY_HELPER = "api_key_helper_conflict"
     CLOUD_PROVIDER = "cloud_provider_conflict"
     CONFIGURATION_UNREADABLE = "configuration_unreadable"
-    FOREGROUND_PROOF_UNAVAILABLE = "foreground_proof_unavailable"
     GATEWAY = "gateway_conflict"
     CLAUDE_OAUTH_OVERRIDE = "oauth_token_conflict"
-    REMOTE_CONTROL_DISCONNECT_REQUIRED = "remote_control_disconnect_required"
+    REMOTE_CONTROL_INCOMPATIBLE = "remote_control_incompatible"
 
     @property
     def action_required(self) -> bool:
@@ -44,6 +43,14 @@ class ClaudeForegroundState(StrEnum):
     PROOF_UNAVAILABLE = "proof_unavailable"
 
 
+class ClaudeRemoteControlState(StrEnum):
+    """Structured capability state for incompatible Remote Control."""
+
+    INACTIVE = "inactive"
+    ACTIVE_INCOMPATIBLE = "active_incompatible"
+    PROOF_UNAVAILABLE = "proof_unavailable"
+
+
 class ClaudeForegroundProbe(Protocol):
     """Inspect exact same-user foreground Claude processes without mutation."""
 
@@ -52,4 +59,11 @@ class ClaudeForegroundProbe(Protocol):
         executable: ClaudeExecutable,
         platform: ClaudeManagedPlatform,
     ) -> ClaudeForegroundState:
-        """Return whether a foreground can carry Remote Control."""
+        """Return exact foreground presence for diagnostics."""
+
+
+class ClaudeRemoteControlProbe(Protocol):
+    """Return structured Remote Control capability evidence."""
+
+    def __call__(self) -> ClaudeRemoteControlState:
+        """Return the exact integrated Remote Control state."""

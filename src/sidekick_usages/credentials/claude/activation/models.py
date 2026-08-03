@@ -15,11 +15,13 @@ from sidekick_usages.core.types import ProviderId
 from sidekick_usages.platform.types import HostPlatform
 from sidekick_usages.providers.claude.activation.foreground import (
     inspect_claude_foreground,
+    inspect_claude_remote_control,
 )
 from sidekick_usages.providers.claude.activation.types import (
     CLAUDE_ACTIVATION_FAILURE_CODE_PREFIX,
     ClaudeActivationGuardFailure,
     ClaudeForegroundProbe,
+    ClaudeRemoteControlProbe,
 )
 from sidekick_usages.providers.claude.auth.storage.models import (
     ClaudeAuthoritySnapshot,
@@ -95,6 +97,9 @@ class ClaudeActivationRuntime:
     host: HostPlatform | None = None
     runner: ClaudeCommandRunner = run_bounded_claude_command
     foreground_probe: ClaudeForegroundProbe = inspect_claude_foreground
+    remote_control_probe: ClaudeRemoteControlProbe = (
+        inspect_claude_remote_control
+    )
 
 
 @dataclass(frozen=True, slots=True)

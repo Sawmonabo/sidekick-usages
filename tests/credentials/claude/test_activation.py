@@ -1,7 +1,6 @@
 """Load-bearing native Claude activation scenario."""
 
 import os
-from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -11,20 +10,30 @@ from sidekick_usages.core.accounts.models import (
     ClaudeManagedLoginAuthority,
 )
 from sidekick_usages.core.selection.models import (
+    AuthorityReadyProof,
     ClaudeAuthObservation,
     DueOperation,
+    FinalizedSelection,
+    OpenSelectionOperation,
+    PreparedSelection,
 )
 from sidekick_usages.core.selection.types import (
     ActivationPhase,
     ProviderAuthState,
     ProviderRuntimeState,
+    SelectionCode,
+    SelectionPhase,
 )
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.credentials.claude.activation.models import (
+    ClaudeActivationError,
     ClaudeActivationFailure,
 )
 from sidekick_usages.daemon.models.worker import WorkerResult
 from sidekick_usages.daemon.types.worker import WorkerOutcome
+from sidekick_usages.daemon.worker.claude.selection import (
+    ClaudeSelectionAuthorityAdapter,
+)
 from sidekick_usages.persistence.supervisor.authority import (
     ProviderMutationLock,
 )
@@ -34,6 +43,7 @@ from sidekick_usages.persistence.supervisor.observation import (
 from sidekick_usages.providers.claude.activation.types import (
     ClaudeActivationGuardFailure,
     ClaudeForegroundState,
+    ClaudeRemoteControlState,
 )
 from sidekick_usages.providers.claude.auth.generation import (
     claude_access_token_generation,
@@ -69,6 +79,106 @@ def _execute_activation(
         return scenario.executor.execute(operation, authority)
 
 
+class _DirectClaudeSelectionWorkerLane:
+    """Exercise provider phases with a fresh test authority per call."""
+
+    def __init__(self, scenario: ClaudeActivationScenario) -> None:
+        self._scenario = scenario
+
+    def prevalidate(
+        self,
+        operation: OpenSelectionOperation,
+        baseline: FinalizedSelection | None,
+    ) -> PreparedSelection:
+        """Run isolated prevalidation with synthetic provider locks."""
+        with self._lock().hold() as authority:
+            return self._scenario.executor.prevalidate_selection(
+                operation,
+                baseline,
+                authority,
+            )
+
+    def commit(self, prepared: PreparedSelection) -> AuthorityReadyProof:
+        """Run isolated activation with synthetic provider locks."""
+        with self._lock().hold() as authority:
+            return self._scenario.executor.commit_selection(
+                prepared,
+                authority,
+            )
+
+    def readback(
+        self,
+        prepared: PreparedSelection,
+    ) -> AuthorityReadyProof | None:
+        """Run isolated readback with synthetic provider locks."""
+        with self._lock().hold() as authority:
+            return self._scenario.executor.readback_selection(
+                prepared,
+                authority,
+            )
+
+    def _lock(self) -> ProviderMutationLock:
+        scenario = self._scenario
+        return ProviderMutationLock(
+            scenario.paths.durable_operations,
+            ProviderId.CLAUDE,
+            tuple(
+                sorted(
+                    (scenario.source.account_id, scenario.target.account_id)
+                )
+            ),
+            timeout_seconds=1.0,
+        )
+
+
+def _selection_adapter(
+    scenario: ClaudeActivationScenario,
+) -> ClaudeSelectionAuthorityAdapter:
+    """Compose the provider adapter around a synthetic worker lane."""
+    return ClaudeSelectionAuthorityAdapter(
+        _DirectClaudeSelectionWorkerLane(scenario)
+    )
+
+
+def _open_selection(
+    scenario: ClaudeActivationScenario,
+) -> OpenSelectionOperation:
+    """Build the coordinator-owned epoch input for one scenario."""
+    baseline = scenario.selected.load(ProviderId.CLAUDE)
+    assert baseline is not None
+    return OpenSelectionOperation(
+        operation_id=scenario.operation.operation_id,
+        provider_id=ProviderId.CLAUDE,
+        baseline_account_id=baseline.account_id,
+        target_account_id=scenario.target.account_id,
+        target_generation=None,
+        baseline_epoch=baseline.epoch,
+        pending_epoch=baseline.epoch.next(),
+        phase=SelectionPhase.PREVALIDATING,
+        required_participant_ids=(),
+        ready_participant_ids=(),
+        lost_after_commit_participant_ids=(),
+        confirmed_dead_before_commit_count=0,
+        confirmed_dead_before_commit_code=None,
+        outcome_code=None,
+        started_at=baseline.finalized_at,
+        updated_at=baseline.finalized_at,
+    )
+
+
+def _execute_selection(
+    scenario: ClaudeActivationScenario,
+) -> tuple[PreparedSelection, AuthorityReadyProof]:
+    """Run one provider-proven epoch adapter transition."""
+    baseline = scenario.selected.load(ProviderId.CLAUDE)
+    assert baseline is not None
+    prepared = _selection_adapter(scenario).prevalidate(
+        _open_selection(scenario),
+        baseline,
+    )
+    return prepared, _selection_adapter(scenario).commit(prepared)
+
+
 def _guarded_activation_scenario(
     root: Path,
 ) -> ClaudeActivationScenario:
@@ -84,37 +194,51 @@ def _guarded_activation_scenario(
         conflict_root,
         environment=conflict_environment,
     )
-    rejected = _execute_activation(conflict, conflict.operation)
+    conflict_baseline = conflict.selected.load(ProviderId.CLAUDE)
+    assert conflict_baseline is not None
+    with pytest.raises(ClaudeActivationError) as rejected:
+        _selection_adapter(conflict).prevalidate(
+            _open_selection(conflict),
+            conflict_baseline,
+        )
 
-    assert rejected.outcome is WorkerOutcome.ACTION_REQUIRED
-    assert rejected.failure_code == (
-        ClaudeActivationGuardFailure.ANTHROPIC_API_KEY.failure_code
+    assert (
+        rejected.value.failure
+        is ClaudeActivationGuardFailure.ANTHROPIC_API_KEY
     )
     assert conflict_environment == original_environment
     assert conflict.runner.calls == []
     assert conflict.script.login_profiles == []
     assert conflict.journals.load(ProviderId.CLAUDE).active is None
 
-    scenario = claude_activation_scenario(
+    incompatible = claude_activation_scenario(
+        root / "remote-control",
+        foreground=ClaudeForegroundState.PRESENT,
+        remote_control=ClaudeRemoteControlState.ACTIVE_INCOMPATIBLE,
+    )
+    native_before = incompatible.native_credentials.read_bytes()
+    selected_before = incompatible.selected.load(ProviderId.CLAUDE)
+    incompatible_baseline = incompatible.selected.load(ProviderId.CLAUDE)
+    assert incompatible_baseline is not None
+    with pytest.raises(ClaudeActivationError) as refused:
+        _selection_adapter(incompatible).prevalidate(
+            _open_selection(incompatible),
+            incompatible_baseline,
+        )
+
+    assert (
+        refused.value.failure
+        is ClaudeActivationGuardFailure.REMOTE_CONTROL_INCOMPATIBLE
+    )
+    assert incompatible.native_credentials.read_bytes() == native_before
+    assert incompatible.selected.load(ProviderId.CLAUDE) == selected_before
+    assert incompatible.script.login_profiles == []
+    assert incompatible.journals.load(ProviderId.CLAUDE).active is None
+
+    return claude_activation_scenario(
         root / "foreground",
         foreground=ClaudeForegroundState.PRESENT,
     )
-    native_before = scenario.native_credentials.read_bytes()
-    selected_before = scenario.selected.load(ProviderId.CLAUDE)
-    refused = _execute_activation(scenario, scenario.operation)
-
-    assert refused.outcome is WorkerOutcome.ACTION_REQUIRED
-    assert (
-        refused.failure_code
-        == (
-            ClaudeActivationGuardFailure.REMOTE_CONTROL_DISCONNECT_REQUIRED
-        ).failure_code
-    )
-    assert scenario.native_credentials.read_bytes() == native_before
-    assert scenario.selected.load(ProviderId.CLAUDE) == selected_before
-    assert scenario.script.login_profiles == []
-    assert scenario.journals.load(ProviderId.CLAUDE).active is None
-    return scenario
 
 
 def test_native_activation_retains_source_and_commits_verified_target(
@@ -124,15 +248,23 @@ def test_native_activation_retains_source_and_commits_verified_target(
     """Guards fail closed before one approved, provider-proven switch."""
     use_synthetic_claude(monkeypatch)
     scenario = _guarded_activation_scenario(tmp_path)
-    result = _execute_activation(
-        scenario,
-        replace(
-            scenario.operation,
-            allow_remote_control_disconnect=True,
-        ),
-    )
+    prepared, proof = _execute_selection(scenario)
 
-    assert result.outcome is WorkerOutcome.SUCCEEDED
+    assert (
+        proof.provider_id,
+        proof.account_id,
+        proof.generation != prepared.target_generation,
+        proof.epoch,
+        proof.safe_code,
+        _selection_adapter(scenario).readback(prepared),
+    ) == (
+        ProviderId.CLAUDE,
+        scenario.target.account_id,
+        True,
+        prepared.pending_epoch,
+        SelectionCode.SELECTION_SUCCEEDED,
+        proof,
+    )
     current_source = scenario.store.read_saved(scenario.source.account_id)
     assert current_source is not None
     current_source_authority = current_source.authority
@@ -224,10 +356,7 @@ def test_native_activation_retains_source_and_commits_verified_target(
     status_only_selected = status_only.selected.load(ProviderId.CLAUDE)
     status_only_result = _execute_activation(
         status_only,
-        replace(
-            status_only.operation,
-            allow_remote_control_disconnect=True,
-        ),
+        status_only.operation,
     )
     status_only_runtime = RuntimeAuthObservationStore(
         status_only.paths.durable_operations
@@ -288,10 +417,7 @@ def test_native_activation_retains_source_and_commits_verified_target(
     unpropagated_selected = unpropagated.selected.load(ProviderId.CLAUDE)
     unpropagated_result = _execute_activation(
         unpropagated,
-        replace(
-            unpropagated.operation,
-            allow_remote_control_disconnect=True,
-        ),
+        unpropagated.operation,
     )
     unpropagated_runtime = RuntimeAuthObservationStore(
         unpropagated.paths.durable_operations

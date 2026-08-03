@@ -183,8 +183,6 @@ class TracingSessionControlClient(SessionControlClient):
         self,
         provider_id: ProviderId,
         account_id: SidekickAccountId,
-        *,
-        allow_remote_control_disconnect: bool = False,
     ) -> Iterator[ControlEvent]:
         """Trace the exact interval occupied by one paused action stream."""
         owner = self._tracing_owner
@@ -200,7 +198,6 @@ class TracingSessionControlClient(SessionControlClient):
         return super().activate(
             provider_id,
             account_id,
-            allow_remote_control_disconnect=allow_remote_control_disconnect,
         )
 
 
@@ -296,8 +293,8 @@ def _write_trace(
     ]
     trace.extend(f"setup={event}" for event in daemon.events)
     trace.extend(
-        f"activation={provider_id.value}:{account_id}:{str(approved).lower()}"
-        for provider_id, account_id, approved in connector.activations
+        f"activation={provider_id.value}:{account_id}"
+        for provider_id, account_id in connector.activations
     )
     trace.extend(
         f"refresh={provider_id.value}:{account_id}"
@@ -665,7 +662,7 @@ def test_dashboard_pty_completes_the_interactive_account_journey(
     assert "daemon_cancelled=true" in trace
     assert "setup=status:claude" in trace
     assert "setup=install:claude" in trace
-    assert f"activation=claude:{CLAUDE_WARNING_ID}:false" in trace
+    assert f"activation=claude:{CLAUDE_WARNING_ID}" in trace
     assert f"refresh=claude:{CLAUDE_WARNING_ID}" in trace
 
 
@@ -701,7 +698,7 @@ def test_dashboard_pty_interrupt_restores_terminal_and_reaps_lookup(
     assert "daemon_cancelled=true" in trace
     assert "closed_clients=1" in trace
     assert "action_stream_released=true" in trace
-    assert f"activation=claude:{CLAUDE_WARNING_ID}:false" in trace
+    assert f"activation=claude:{CLAUDE_WARNING_ID}" in trace
 
 
 if (

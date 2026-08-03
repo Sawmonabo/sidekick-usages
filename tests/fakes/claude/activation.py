@@ -71,6 +71,7 @@ from sidekick_usages.persistence.types.artifact import AuthorityExpectation
 from sidekick_usages.platform.types import HostPlatform
 from sidekick_usages.providers.claude.activation.types import (
     ClaudeForegroundState,
+    ClaudeRemoteControlState,
 )
 from sidekick_usages.providers.claude.auth.generation import (
     claude_access_token_generation,
@@ -255,6 +256,9 @@ def claude_activation_scenario(
     *,
     environment: dict[str, str] | None = None,
     foreground: ClaudeForegroundState = ClaudeForegroundState.CLEAR,
+    remote_control: ClaudeRemoteControlState = (
+        ClaudeRemoteControlState.PROOF_UNAVAILABLE
+    ),
     status_only_native_login: bool = False,
     advance_native_mtime: bool = True,
 ) -> ClaudeActivationScenario:
@@ -360,6 +364,7 @@ def claude_activation_scenario(
         script,
         environment=environment,
         foreground=foreground,
+        remote_control=remote_control,
     )
     operation = _selection_operation(
         _ACTIVATION_OPERATION_ID,
@@ -608,8 +613,16 @@ def _runtime_fixture(
     *,
     environment: Mapping[str, str] | None = None,
     foreground: ClaudeForegroundState = ClaudeForegroundState.CLEAR,
+    remote_control: ClaudeRemoteControlState = (
+        ClaudeRemoteControlState.PROOF_UNAVAILABLE
+    ),
 ) -> _ClaudeRuntimeFixture:
     """Compose one synthetic Claude selection worker and durable stores."""
+
+    def remote_control_probe() -> ClaudeRemoteControlState:
+        """Return the injected structured capability state."""
+        return remote_control
+
     runner = ClaudeRunner(script=script)
     source_environment = (
         {
@@ -650,6 +663,7 @@ def _runtime_fixture(
         host=HostPlatform.LINUX,
         runner=runner,
         foreground_probe=FixedClaudeForegroundProbe(foreground),
+        remote_control_probe=remote_control_probe,
     )
     capabilities = ClaudeProfileCapabilityFactory(
         paths,

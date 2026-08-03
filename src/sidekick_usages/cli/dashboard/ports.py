@@ -47,7 +47,6 @@ class AccountActivation(Protocol):
         self,
         provider_id: ProviderId,
         account_id: SidekickAccountId,
-        allow_remote_control_disconnect: bool,
     ) -> UseActivationResult:
         """Return the supervisor's sanitized activation outcome."""
         ...
@@ -79,8 +78,6 @@ class DashboardControlClient(Protocol):
         self,
         provider_id: ProviderId,
         account_id: SidekickAccountId,
-        *,
-        allow_remote_control_disconnect: bool = False,
     ) -> Iterator[ControlEvent]:
         """Activate one stable account."""
         ...
