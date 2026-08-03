@@ -203,16 +203,20 @@ def test_codex_activation_commits_only_correlated_target(
         revalidate_current_socket,
     )
 
-    with FakeCodexDaemon(fixture.native_home) as daemon:
+    with FakeCodexDaemon(
+        fixture.session_home,
+        app_server_version="0.146.0",
+    ) as daemon:
         configure_codex_daemon_lifecycle(
             fixture.provider_root,
-            fixture.native_home,
+            fixture.session_home,
             daemon.socket_path,
+            app_server_version="0.146.0",
         )
         with FakeCodexSupervisor(
             fixture.paths,
             fixture.executable,
-            fixture.native_home,
+            fixture.session_home,
             fixture.environment,
             real_worker_executable(),
         ) as supervisor:
@@ -251,7 +255,7 @@ def test_codex_activation_commits_only_correlated_target(
         with FakeCodexSupervisor(
             fixture.paths,
             fixture.executable,
-            fixture.native_home,
+            fixture.session_home,
             fixture.environment,
             real_worker_executable(),
         ) as restarted:
@@ -306,16 +310,20 @@ def test_codex_activation_recovers_at_official_mutation_boundary(
     )
     selected, journals = _codex_recovery_state(fixture.paths)
 
-    with FakeCodexDaemon(fixture.native_home) as daemon:
+    with FakeCodexDaemon(
+        fixture.session_home,
+        app_server_version="0.146.0",
+    ) as daemon:
         configure_codex_daemon_lifecycle(
             fixture.provider_root,
-            fixture.native_home,
+            fixture.session_home,
             daemon.socket_path,
+            app_server_version="0.146.0",
         )
         supervisor = FakeCodexSupervisor(
             fixture.paths,
             fixture.executable,
-            fixture.native_home,
+            fixture.session_home,
             fixture.environment,
             real_worker_executable(),
         )
@@ -343,7 +351,7 @@ def test_codex_activation_recovers_at_official_mutation_boundary(
         with FakeCodexSupervisor(
             fixture.paths,
             fixture.executable,
-            fixture.native_home,
+            fixture.session_home,
             fixture.environment,
             real_worker_executable(),
         ) as restarted:

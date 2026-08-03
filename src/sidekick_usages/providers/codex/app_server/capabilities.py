@@ -23,12 +23,23 @@ from sidekick_usages.providers.codex.app_server.methods import (
     ACCOUNT_LOGIN_START_METHOD,
     ACCOUNT_READ_METHOD,
     ACCOUNT_UPDATED_METHOD,
+    CONFIG_READ_METHOD,
     INITIALIZE_METHOD,
     INITIALIZED_METHOD,
+    MCP_SERVER_STATUS_LIST_METHOD,
+    MCP_SERVER_STATUS_UPDATED_METHOD,
+    MODEL_PROVIDER_CAPABILITIES_READ_METHOD,
+    THREAD_REALTIME_CLOSED_METHOD,
+    THREAD_REALTIME_START_METHOD,
+    THREAD_REALTIME_STARTED_METHOD,
+    TURN_COMPLETED_METHOD,
+    TURN_START_METHOD,
+    TURN_STARTED_METHOD,
 )
 from sidekick_usages.providers.codex.app_server.models import (
     CodexAppServerCapabilities,
     CodexExecutable,
+    CodexVersion,
 )
 from sidekick_usages.providers.codex.app_server.process import (
     minimal_codex_environment,
@@ -62,6 +73,20 @@ SCHEMA_FILES = (
     "ClientNotification.json",
     "ServerRequest.json",
     "ServerNotification.json",
+)
+_SESSION_VERSION = CodexVersion(0, 146, 0)
+_SESSION_SCHEMA_FILES = (
+    "v2/ConfigReadParams.json",
+    "v2/ConfigReadResponse.json",
+    "v2/ModelProviderCapabilitiesReadParams.json",
+    "v2/ModelProviderCapabilitiesReadResponse.json",
+    "v2/TurnStartParams.json",
+    "v2/TurnStartedNotification.json",
+    "v2/TurnCompletedNotification.json",
+    "v2/ThreadRealtimeStartParams.json",
+    "v2/ThreadRealtimeStartedNotification.json",
+    "v2/ThreadRealtimeClosedNotification.json",
+    "v2/McpServerStatusListResponse.json",
 )
 _MAX_SCHEMA_FILE_BYTES = 512 * 1024
 _MAX_SCHEMA_DEPTH = 32
@@ -105,12 +130,20 @@ def probe_codex_capabilities(
             process_group=process_group,
             cancelled=cancelled,
         )
-        raw_schemas, schemas = _read_required_schemas(schema_directory)
+        schema_files = _schema_files(executable.version)
+        raw_schemas, schemas = _read_required_schemas(
+            schema_directory,
+            schema_files,
+        )
         _validate_required_capabilities(schemas)
-        schema_hash = _hash_schemas(raw_schemas)
+        session_schema_supported = executable.version == _SESSION_VERSION
+        if session_schema_supported:
+            _validate_session_capabilities(schemas)
+        schema_hash = _hash_schemas(raw_schemas, schema_files)
         capabilities = CodexAppServerCapabilities(
             executable=executable,
             schema_hash=schema_hash,
+            session_schema_supported=session_schema_supported,
         )
         try:
             with CodexAppServerSession.open(
@@ -132,10 +165,11 @@ def probe_codex_capabilities(
 
 def _read_required_schemas(
     schema_directory: Path,
+    schema_files: tuple[str, ...],
 ) -> tuple[dict[str, bytes], dict[str, JsonObject]]:
     raw_schemas: dict[str, bytes] = {}
     schemas: dict[str, JsonObject] = {}
-    for relative in SCHEMA_FILES:
+    for relative in schema_files:
         path = schema_directory / relative
         try:
             file_status = path.lstat()
@@ -160,6 +194,12 @@ def _read_required_schemas(
         raw_schemas[relative] = payload
         schemas[relative] = schema
     return raw_schemas, schemas
+
+
+def _schema_files(version: CodexVersion) -> tuple[str, ...]:
+    if version == _SESSION_VERSION:
+        return (*SCHEMA_FILES, *_SESSION_SCHEMA_FILES)
+    return SCHEMA_FILES
 
 
 def _validate_required_capabilities(
@@ -281,9 +321,79 @@ def _validate_required_capabilities(
     )
 
 
-def _hash_schemas(raw_schemas: dict[str, bytes]) -> str:
+def _validate_session_capabilities(
+    schemas: dict[str, JsonObject],
+) -> None:
+    config_params = schemas["v2/ConfigReadParams.json"]
+    _require_property(config_params, "includeLayers", "boolean")
+    config_response = schemas["v2/ConfigReadResponse.json"]
+    _require_names(config_response, "required", ("config", "layers"))
+    _require_property(config_response, "config", "object")
+    _require_property(config_response, "layers", "array")
+
+    provider_params = schemas[
+        "v2/ModelProviderCapabilitiesReadParams.json"
+    ]
+    _require_names(provider_params, "required", ("modelProvider",))
+    _require_property(provider_params, "modelProvider", "string")
+    provider_response = schemas[
+        "v2/ModelProviderCapabilitiesReadResponse.json"
+    ]
+    _require_names(
+        provider_response,
+        "required",
+        ("authResolution", "modelTransport", "supportsWebsockets"),
+    )
+    _require_property(provider_response, "authResolution", "string")
+    _require_property(provider_response, "modelTransport", "string")
+    _require_property(provider_response, "supportsWebsockets", "boolean")
+
+    _require_property(
+        schemas["v2/TurnStartParams.json"],
+        "threadId",
+        "string",
+    )
+    for relative in (
+        "v2/TurnStartedNotification.json",
+        "v2/TurnCompletedNotification.json",
+    ):
+        _require_property(schemas[relative], "turn", "object")
+    for relative in (
+        "v2/ThreadRealtimeStartParams.json",
+        "v2/ThreadRealtimeStartedNotification.json",
+        "v2/ThreadRealtimeClosedNotification.json",
+    ):
+        _require_property(schemas[relative], "threadId", "string")
+    _require_property(
+        schemas["v2/McpServerStatusListResponse.json"],
+        "data",
+        "array",
+    )
+
+    for method in (
+        CONFIG_READ_METHOD,
+        MODEL_PROVIDER_CAPABILITIES_READ_METHOD,
+        TURN_START_METHOD,
+        THREAD_REALTIME_START_METHOD,
+        MCP_SERVER_STATUS_LIST_METHOD,
+    ):
+        _require_method(schemas["ClientRequest.json"], method)
+    for method in (
+        TURN_STARTED_METHOD,
+        TURN_COMPLETED_METHOD,
+        THREAD_REALTIME_STARTED_METHOD,
+        THREAD_REALTIME_CLOSED_METHOD,
+        MCP_SERVER_STATUS_UPDATED_METHOD,
+    ):
+        _require_method(schemas["ServerNotification.json"], method)
+
+
+def _hash_schemas(
+    raw_schemas: dict[str, bytes],
+    schema_files: tuple[str, ...],
+) -> str:
     digest = hashlib.sha256()
-    for relative in SCHEMA_FILES:
+    for relative in schema_files:
         digest.update(relative.encode("utf-8"))
         digest.update(b"\0")
         digest.update(raw_schemas[relative])

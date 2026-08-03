@@ -16,6 +16,7 @@ RAW_PROVIDER_SECRET = "raw-provider-secret"
 LOGIN_CONFIG_FILE = "login-config.json"
 DAEMON_CONFIG_FILE = "daemon-config.json"
 DAEMON_EVENTS_FILE = "daemon-events.jsonl"
+SESSION_CONFIG_FILE = "session-config.json"
 HUNG_WORKER_MARKER_FILE = "hung-worker.started"
 
 
@@ -215,6 +216,7 @@ def write_fake_codex(
             DAEMON_EVENTS_FILE = Path(
                 {json.dumps(str(tmp_path / DAEMON_EVENTS_FILE))}
             )
+            SESSION_CONFIG_FILE = {json.dumps(SESSION_CONFIG_FILE)}
             EMITTED_AT_MILLISECONDS = 1_750_000_000_000
             VERSION = {json.dumps(version)}
 
@@ -280,6 +282,21 @@ def write_fake_codex(
                     response["pid"] = configured["pid"]
                 print(json.dumps(response))
 
+            def command_and_config(arguments):
+                config = {{}}
+                index = 0
+                while index < len(arguments) and arguments[index] == "-c":
+                    assignment = arguments[index + 1]
+                    key, value = assignment.split("=", 1)
+                    parsed = json.loads(value)
+                    target = config
+                    components = key.split(".")
+                    for component in components[:-1]:
+                        target = target.setdefault(component, {{}})
+                    target[components[-1]] = parsed
+                    index += 2
+                return arguments[index:], config
+
             event = {{
                 "argv": sys.argv[1:],
                 "codex_home": os.environ.get("CODEX_HOME"),
@@ -300,13 +317,20 @@ def write_fake_codex(
                 output = Path(sys.argv[5])
                 shutil.copytree(SCHEMA_ROOT, output, dirs_exist_ok=True)
                 raise SystemExit
-            if sys.argv[1:] == ["app-server", "daemon", "start"]:
+            command, session_config = command_and_config(sys.argv[1:])
+            if command[:2] == ["app-server", "daemon"]:
+                home = Path(os.environ["CODEX_HOME"])
+                (home / SESSION_CONFIG_FILE).write_text(
+                    json.dumps(session_config),
+                    encoding="utf-8",
+                )
+            if command == ["app-server", "daemon", "start"]:
                 daemon_lifecycle("start")
                 raise SystemExit
-            if sys.argv[1:] == ["app-server", "daemon", "restart"]:
+            if command == ["app-server", "daemon", "restart"]:
                 daemon_lifecycle("restart")
                 raise SystemExit
-            if sys.argv[1:] == ["app-server", "daemon", "version"]:
+            if command == ["app-server", "daemon", "version"]:
                 daemon_lifecycle("version")
                 raise SystemExit
             if sys.argv[1:] != ["app-server"]:

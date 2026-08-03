@@ -55,6 +55,9 @@ from sidekick_usages.providers.codex.broker.models import (
 from sidekick_usages.providers.codex.broker.ports import CodexProjection
 from sidekick_usages.providers.codex.broker.types import CodexBrokerFailure
 from sidekick_usages.providers.codex.broker.wire import CodexDaemonSession
+from sidekick_usages.providers.codex.session.models import (
+    CodexSessionCapability,
+)
 
 
 class CodexSharedRuntime:
@@ -67,12 +70,13 @@ class CodexSharedRuntime:
         self._expected: CodexProjectionExpectation | None = None
         self._receipt: CodexProjectionReceipt | None = None
         self._projection_auth_generation: AuthorityGeneration | None = None
+        self._session_capability: CodexSessionCapability | None = None
 
     @classmethod
     def create(
         cls,
         executable: CodexExecutable,
-        native_home: Path,
+        codex_home: Path,
         *,
         environment: Mapping[str, str] | None = None,
         expected_user_id: int | None = None,
@@ -91,7 +95,7 @@ class CodexSharedRuntime:
         return cls(
             CodexDaemonManager(
                 capabilities,
-                native_home,
+                codex_home,
                 environment=environment,
                 expected_user_id=expected_user_id,
                 peer_verifier=peer_verifier,
@@ -103,7 +107,14 @@ class CodexSharedRuntime:
     def qualified(self) -> bool:
         """Return whether the exact shared-daemon connection remains live."""
         session = self._session
-        if session is None or self._authority is None or session.closed:
+        capability = self._session_capability
+        if (
+            session is None
+            or self._authority is None
+            or session.closed
+            or capability is None
+            or not capability.supported
+        ):
             return False
         try:
             self._manager.verify_executable()
@@ -135,16 +146,40 @@ class CodexSharedRuntime:
         """Return the exact qualified daemon authority."""
         return self._authority if self.qualified else None
 
-    def qualify(self) -> None:
-        """Qualify the shared daemon connection without changing auth."""
+    @property
+    def codex_home(self) -> Path:
+        """Return the token-free home owned by the resident session."""
+        return self._manager.codex_home
+
+    def qualify_session_transport(self) -> CodexSessionCapability:
+        """Read the resident direct-HTTP and current-auth capability."""
         try:
             self._qualify_session()
+            session = self._session
+            if session is None or session.closed:
+                raise CodexBrokerError(CodexBrokerFailure.RUNTIME_CHANGED)
+            capability = self._manager.session_config.qualify(
+                session,
+                self._manager.session_config_version,
+                session_schema_supported=(
+                    self._manager.session_schema_supported
+                ),
+            )
         except CodexAppServerError as error:
             self._drop_session()
             raise codex_broker_error(error) from None
         except CodexBrokerError:
             self._drop_session()
             raise
+        self._session_capability = capability
+        return capability
+
+    def qualify(self) -> None:
+        """Qualify the shared daemon connection without changing auth."""
+        capability = self.qualify_session_transport()
+        if not capability.supported:
+            self._drop_session()
+            raise CodexBrokerError(CodexBrokerFailure.PROTOCOL_UNSUPPORTED)
 
     def prepare(
         self,
@@ -375,6 +410,7 @@ class CodexSharedRuntime:
         self._expected = None
         self._receipt = None
         self._projection_auth_generation = None
+        self._session_capability = None
         if session is not None:
             session.close()
 

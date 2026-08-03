@@ -37,6 +37,7 @@ from sidekick_usages.providers.codex.broker.types import (
     CodexBrokerFailure,
     CodexDaemonStatus,
 )
+from sidekick_usages.providers.codex.session.config import CodexSessionConfig
 from sidekick_usages.serialization.json import (
     JsonObject,
     decode_json_object,
@@ -78,12 +79,12 @@ _ATTACHABLE_UNMANAGED_STATUSES = frozenset(
 
 
 class CodexDaemonManager:
-    """Start and qualify one official daemon for an exact native home."""
+    """Start and qualify one official daemon for an exact neutral home."""
 
     def __init__(
         self,
         capabilities: CodexAppServerCapabilities,
-        native_home: Path,
+        codex_home: Path,
         *,
         environment: Mapping[str, str] | None = None,
         expected_user_id: int | None = None,
@@ -94,11 +95,11 @@ class CodexDaemonManager:
             sys.platform == "win32"
             or not hasattr(socket, "AF_UNIX")
             or not hasattr(socket, "MSG_DONTWAIT")
-            or not native_home.is_absolute()
+            or not codex_home.is_absolute()
         ):
             raise CodexBrokerError(CodexBrokerFailure.PLATFORM_UNSUPPORTED)
         try:
-            resolved_home = native_home.resolve(strict=True)
+            resolved_home = codex_home.resolve(strict=True)
         except OSError, ValueError:
             raise CodexBrokerError(
                 CodexBrokerFailure.INSTALLATION_UNSUPPORTED
@@ -106,7 +107,8 @@ class CodexDaemonManager:
         if not resolved_home.is_dir():
             raise CodexBrokerError(CodexBrokerFailure.INSTALLATION_UNSUPPORTED)
         self._capabilities = capabilities
-        self._native_home = resolved_home
+        self._codex_home = resolved_home
+        self._session_config = CodexSessionConfig()
         self._environment = None if environment is None else dict(environment)
         self._expected_user_id = (
             os.geteuid() if expected_user_id is None else expected_user_id
@@ -121,14 +123,29 @@ class CodexDaemonManager:
         self._cancelled = cancelled
 
     @property
-    def native_home(self) -> Path:
-        """Return the exact native home owned by the shared daemon."""
-        return self._native_home
+    def codex_home(self) -> Path:
+        """Return the exact neutral home owned by the shared daemon."""
+        return self._codex_home
+
+    @property
+    def session_config(self) -> CodexSessionConfig:
+        """Return the immutable provider overlay for this daemon."""
+        return self._session_config
+
+    @property
+    def session_config_version(self) -> CodexVersion:
+        """Return the exact executable version serving this daemon."""
+        return self._capabilities.executable.version
+
+    @property
+    def session_schema_supported(self) -> bool:
+        """Return whether exact interactive schemas were qualified."""
+        return self._capabilities.session_schema_supported
 
     @property
     def socket_path(self) -> Path:
         """Return the only accepted official daemon socket."""
-        return self._native_home / CONTROL_DIRECTORY_NAME / CONTROL_SOCKET_NAME
+        return self._codex_home / CONTROL_DIRECTORY_NAME / CONTROL_SOCKET_NAME
 
     def cancellation_requested(self) -> bool:
         """Return whether the owning broker requested shutdown."""
@@ -226,17 +243,17 @@ class CodexDaemonManager:
             output = run_bounded_codex_command(
                 (
                     str(self._capabilities.executable.provenance.path),
-                    "app-server",
-                    "daemon",
-                    operation,
+                    *self._session_config.command(
+                        ("app-server", "daemon", operation)
+                    ),
                 ),
                 minimal_codex_environment(
                     self._environment,
-                    codex_home=self._native_home,
+                    codex_home=self._codex_home,
                 ),
                 timeout_seconds=timeout_seconds,
                 maximum_output_bytes=_MAXIMUM_LIFECYCLE_OUTPUT_BYTES,
-                working_directory=self._native_home,
+                working_directory=self._codex_home,
                 cancelled=self._cancelled,
             )
         except CodexAppServerError:
@@ -343,7 +360,7 @@ class CodexDaemonManager:
         if not isinstance(value, str):
             raise CodexBrokerError(CodexBrokerFailure.LIFECYCLE_MALFORMED)
         managed_path = Path(value)
-        expected_path = self._native_home.joinpath(*MANAGED_CODEX_COMPONENTS)
+        expected_path = self._codex_home.joinpath(*MANAGED_CODEX_COMPONENTS)
         if managed_path != expected_path:
             raise CodexBrokerError(CodexBrokerFailure.INSTALLATION_UNSUPPORTED)
         try:

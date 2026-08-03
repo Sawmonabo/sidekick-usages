@@ -59,6 +59,7 @@ class CodexAppServerCapabilities:
 
     executable: CodexExecutable
     schema_hash: str
+    session_schema_supported: bool = False
 
     def __post_init__(self) -> None:
         """Require a lowercase SHA-256 compatibility fingerprint."""

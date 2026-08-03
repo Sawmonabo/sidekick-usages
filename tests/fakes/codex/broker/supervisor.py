@@ -61,7 +61,7 @@ _WAIT_INTERVAL_SECONDS = 0.01
 
 def _runtime_factory(
     executable: CodexExecutable,
-    native_home: Path,
+    session_home: Path,
     environment: Mapping[str, str],
 ) -> Callable[[Callable[[], bool]], CodexSharedRuntime]:
     """Build the shared-runtime factory used by resident test harnesses."""
@@ -70,7 +70,7 @@ def _runtime_factory(
     def create(cancelled: Callable[[], bool]) -> CodexSharedRuntime:
         return CodexSharedRuntime.create(
             executable,
-            native_home,
+            session_home,
             environment=runtime_environment,
             cancelled=cancelled,
         )
@@ -129,7 +129,7 @@ class FakeCodexBroker:
         self,
         paths: ApplicationPaths,
         executable: CodexExecutable,
-        native_home: Path,
+        session_home: Path,
         environment: Mapping[str, str],
     ) -> None:
         clock = SystemClock()
@@ -137,7 +137,7 @@ class FakeCodexBroker:
         observations = RuntimeAuthObservationStore(paths.durable_operations)
         self._broker = _compose_broker(
             paths,
-            _runtime_factory(executable, native_home, environment),
+            _runtime_factory(executable, session_home, environment),
             clock,
             queue,
             ActivationJournalStore(
@@ -200,7 +200,7 @@ class FakeCodexSupervisor:
         self,
         paths: ApplicationPaths,
         executable: CodexExecutable,
-        native_home: Path,
+        session_home: Path,
         environment: Mapping[str, str],
         worker_executable: Path,
     ) -> None:
@@ -237,7 +237,7 @@ class FakeCodexSupervisor:
         )
         broker = _compose_broker(
             paths,
-            _runtime_factory(executable, native_home, environment),
+            _runtime_factory(executable, session_home, environment),
             clock,
             queue,
             journals,

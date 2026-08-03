@@ -73,7 +73,6 @@ from sidekick_usages.persistence.supervisor.service import ServiceStateStore
 from sidekick_usages.providers.codex.app_server.executable import (
     discover_codex_executable_from_launcher,
 )
-from sidekick_usages.providers.codex.auth.home import default_codex_home
 from sidekick_usages.providers.codex.broker.responder import CodexRuntimeBroker
 from sidekick_usages.providers.codex.broker.service import CodexSharedRuntime
 
@@ -97,7 +96,7 @@ def _signal_stop(
 
 
 def _create_codex_runtime(
-    native_home: Path,
+    session_home: Path,
     launcher: Path | None,
     cancelled: Callable[[], bool],
 ) -> CodexSharedRuntime:
@@ -108,7 +107,7 @@ def _create_codex_runtime(
     )
     return CodexSharedRuntime.create(
         executable,
-        native_home,
+        session_home,
         environment=os.environ,
         cancelled=cancelled,
     )
@@ -179,7 +178,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     broker = CodexRuntimeBroker(
         partial(
             _create_codex_runtime,
-            default_codex_home(),
+            paths.codex_session_home,
             provider_launchers.codex,
         ),
         RuntimeStateReader(

@@ -40,6 +40,11 @@ def write_codex_schema(root: Path, *, external_auth: bool) -> None:
     server_notifications = _method_schema(
         "account/login/completed",
         "account/updated",
+        "turn/started",
+        "turn/completed",
+        "thread/realtime/started",
+        "thread/realtime/closed",
+        "mcpServerStatus/updated",
     )
     server_notifications["properties"] = {"emittedAtMs": {"type": "integer"}}
     schemas_by_path: dict[str, JsonObject] = {
@@ -118,10 +123,69 @@ def write_codex_schema(root: Path, *, external_auth: bool) -> None:
             },
             required=("accessToken", "chatgptAccountId"),
         ),
+        "v2/ConfigReadParams.json": _object_schema(
+            {"includeLayers": {"type": "boolean"}}
+        ),
+        "v2/ConfigReadResponse.json": _object_schema(
+            {
+                "config": {"type": "object"},
+                "layers": {"type": "array"},
+            },
+            required=("config", "layers"),
+        ),
+        "v2/ModelProviderCapabilitiesReadParams.json": _object_schema(
+            {"modelProvider": {"type": "string"}},
+            required=("modelProvider",),
+        ),
+        "v2/ModelProviderCapabilitiesReadResponse.json": _object_schema(
+            {
+                "authResolution": {"type": "string"},
+                "modelTransport": {"type": "string"},
+                "supportsWebsockets": {"type": "boolean"},
+            },
+            required=(
+                "authResolution",
+                "modelTransport",
+                "supportsWebsockets",
+            ),
+        ),
+        "v2/TurnStartParams.json": _object_schema(
+            {"threadId": {"type": "string"}},
+            required=("threadId",),
+        ),
+        "v2/TurnStartedNotification.json": _object_schema(
+            {"turn": {"type": "object"}},
+            required=("turn",),
+        ),
+        "v2/TurnCompletedNotification.json": _object_schema(
+            {"turn": {"type": "object"}},
+            required=("turn",),
+        ),
+        "v2/ThreadRealtimeStartParams.json": _object_schema(
+            {"threadId": {"type": "string"}},
+            required=("threadId",),
+        ),
+        "v2/ThreadRealtimeStartedNotification.json": _object_schema(
+            {"threadId": {"type": "string"}},
+            required=("threadId",),
+        ),
+        "v2/ThreadRealtimeClosedNotification.json": _object_schema(
+            {"threadId": {"type": "string"}},
+            required=("threadId",),
+        ),
+        "v2/McpServerStatusListResponse.json": _object_schema(
+            {"data": {"type": "array"}},
+            required=("data",),
+        ),
         "ClientRequest.json": _method_schema(
             "initialize",
             "account/login/start",
             "account/read",
+            "config/read",
+            "modelProvider/capabilities/read",
+            "turn/start",
+            "thread/realtime/start",
+            "mcpServerStatus/list",
         ),
         "ClientNotification.json": _method_schema("initialized"),
         "ServerRequest.json": _method_schema(

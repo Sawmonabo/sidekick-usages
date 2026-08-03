@@ -2,6 +2,7 @@
 
 import json
 import os
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -55,6 +56,20 @@ _ACCOUNT_ID = SidekickAccountId("33333333-3333-4333-8333-333333333333")
 _PROVIDER_IDENTITY = "workspace-account-alpha"
 _GENERATION = "2026-07-24T10:00:00.000000000Z"
 _NATIVE_AUTH = managed_auth(_PROVIDER_IDENTITY, _GENERATION)
+_SESSION_PROVIDER = "sidekick-chatgpt-http"
+_SESSION_BASE_URL = "https://chatgpt.com/backend-api/codex"
+
+
+@dataclass(frozen=True, slots=True)
+class _SessionCase:
+    version: str = "0.146.0"
+    model_provider: str | None = None
+    base_url: str | None = None
+    requires_openai_auth: bool | None = None
+    supports_websockets: bool | None = None
+    model_transport: str | None = None
+    auth_resolution: str | None = None
+    supported: bool = False
 
 
 def _prepare_shared_runtime(
@@ -185,6 +200,143 @@ def test_codex_app_server_boundary_fails_closed_and_redacted(
         os.kill(process_id, 0)
 
 
+@pytest.mark.parametrize(
+    "case",
+    [
+        pytest.param(
+            _SessionCase(supported=True),
+            id="direct-http-current-auth",
+        ),
+        pytest.param(
+            _SessionCase(version="0.145.0"),
+            id="wrong-version",
+        ),
+        pytest.param(
+            _SessionCase(model_provider="user-provider"),
+            id="overridden-provider",
+        ),
+        pytest.param(
+            _SessionCase(base_url="https://example.invalid/codex"),
+            id="wrong-base-url",
+        ),
+        pytest.param(
+            _SessionCase(requires_openai_auth=False),
+            id="missing-openai-auth",
+        ),
+        pytest.param(
+            _SessionCase(supports_websockets=True),
+            id="websockets-enabled",
+        ),
+        pytest.param(
+            _SessionCase(model_transport="websocket"),
+            id="websocket-attempted",
+        ),
+        pytest.param(
+            _SessionCase(auth_resolution="cached"),
+            id="cached-auth-attempted",
+        ),
+    ],
+)
+def test_neutral_runtime_requires_current_auth_without_model_websockets(
+    tmp_path: Path,
+    short_socket_root: Path,
+    case: _SessionCase,
+) -> None:
+    schema_root = tmp_path / "schema"
+    session_home = short_socket_root / "session"
+    session_home.mkdir()
+    session_settings = session_home / "config.toml"
+    unrelated_settings = b'model = "gpt-test"\n'
+    session_settings.write_bytes(unrelated_settings)
+    write_codex_schema(schema_root, external_auth=True)
+    write_fake_managed_codex(
+        tmp_path,
+        schema_root,
+        session_home,
+        version=case.version,
+    )
+    environment = {
+        "HOME": str(tmp_path),
+        "PATH": os.pathsep.join((str(tmp_path), os.environ["PATH"])),
+    }
+    executable = discover_codex_executable(environment)
+
+    with FakeCodexDaemon(
+        session_home,
+        app_server_version=case.version,
+        model_provider=case.model_provider,
+        base_url=case.base_url,
+        requires_openai_auth=case.requires_openai_auth,
+        supports_websockets=case.supports_websockets,
+        model_transport=case.model_transport,
+        auth_resolution=case.auth_resolution,
+    ) as daemon:
+        configure_codex_daemon_lifecycle(
+            tmp_path,
+            session_home,
+            daemon.socket_path,
+            app_server_version=case.version,
+        )
+        runtime = CodexSharedRuntime.create(
+            executable,
+            session_home,
+            environment=environment,
+        )
+
+        capability = runtime.qualify_session_transport()
+
+        assert capability.model_provider == (
+            _SESSION_PROVIDER
+            if case.model_provider is None
+            else case.model_provider
+        )
+        assert capability.base_url == (
+            _SESSION_BASE_URL if case.base_url is None else case.base_url
+        )
+        assert capability.requires_openai_auth is (
+            True
+            if case.requires_openai_auth is None
+            else case.requires_openai_auth
+        )
+        assert capability.supports_websockets is (
+            False
+            if case.supports_websockets is None
+            else case.supports_websockets
+        )
+        assert capability.model_transport == (
+            case.model_transport
+            if case.model_transport is not None
+            else (
+                "websocket" if case.supports_websockets is True else "http"
+            )
+        )
+        assert capability.auth_resolution == (
+            case.auth_resolution
+            if case.auth_resolution is not None
+            else (
+                "none"
+                if case.requires_openai_auth is False
+                else "perAttempt"
+            )
+        )
+        assert capability.supported is case.supported
+        assert session_settings.read_bytes() == unrelated_settings
+        assert not (runtime.codex_home / "auth.json").exists()
+        if not case.supported:
+            with pytest.raises(CodexBrokerError) as blocked:
+                runtime.prepare(
+                    _ACCOUNT_ID,
+                    ProviderIdentity(_PROVIDER_IDENTITY),
+                    AuthorityGeneration(_GENERATION),
+                )
+            assert (
+                blocked.value.code
+                is CodexBrokerFailure.PROTOCOL_UNSUPPORTED
+            )
+            assert daemon.installed_account_ids == ()
+        runtime.close()
+
+
 def test_shared_codex_runtime_self_heals_and_rejects_unsafe_authority(
     tmp_path: Path,
     short_socket_root: Path,
@@ -263,19 +415,27 @@ def test_shared_codex_runtime_self_heals_and_rejects_unsafe_authority(
     native_home = short_socket_root / "update"
     native_home.mkdir()
     write_codex_schema(schema_root, external_auth=True)
-    write_fake_managed_codex(root, schema_root, native_home)
+    write_fake_managed_codex(
+        root,
+        schema_root,
+        native_home,
+        version="0.146.0",
+    )
     environment = {
         "HOME": str(root),
         "PATH": os.pathsep.join((str(root), os.environ["PATH"])),
     }
     executable = discover_codex_executable(environment)
-    with FakeCodexDaemon(native_home) as daemon:
+    with FakeCodexDaemon(
+        native_home,
+        app_server_version="0.146.0",
+    ) as daemon:
         lifecycle = configure_codex_daemon_lifecycle(
             root,
             native_home,
             daemon.socket_path,
             app_server_version="0.144.0",
-            cli_version="0.145.0",
+            cli_version="0.146.0",
             already_running=True,
         )
         runtime = _prepare_shared_runtime(
@@ -289,3 +449,6 @@ def test_shared_codex_runtime_self_heals_and_rejects_unsafe_authority(
     assert lifecycle.start_statuses == ("alreadyRunning",)
     assert lifecycle.restart_count == 1
     assert lifecycle.version_count == 1
+    assert daemon.config_read_count == 1
+    assert daemon.model_transport_attempts == (("http", None, "perAttempt"),)
+    assert not (native_home / "auth.json").exists()
