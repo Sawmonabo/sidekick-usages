@@ -27,6 +27,7 @@ DASHBOARD_BENCHMARK_HOME_PREFIX = "sidekick-dashboard-benchmark-home-"
 PUBLIC_ROOT_USAGE = "Usage: sidekick-usages"
 PRIVATE_ROOT_USAGE = "sidekick_usages.cli.runtime.application"
 SESSION_NOT_STARTED = "provider process was not started"
+CODEX_EXECUTABLE_MISSING = "The Codex CLI executable was not found."
 DASHBOARD_NORMAL_EXIT = "installed_console_natural_exit=true"
 DASHBOARD_TERMINAL_RESTORED = "installed_console_terminal_restored=true"
 SYNTHETIC_PROVIDER_SECTIONS = (
@@ -180,16 +181,13 @@ def _dashboard_benchmark_env(
     )
 
 
-def _require_disabled_session(
+def _require_refused_session(
     provider: str,
     completed: subprocess.CompletedProcess[str],
+    required: tuple[str, ...],
 ) -> None:
     """Require one synthetic provider session to fail before launch."""
     output = completed.stdout + completed.stderr
-    required = (
-        f"{provider} session integration is not available",
-        SESSION_NOT_STARTED,
-    )
     if any(fragment not in output for fragment in required):
         raise WheelVerificationError(
             f"Installed-wheel {provider.title()} session did not fail closed."
@@ -284,7 +282,14 @@ def _verify_dashboard_benchmark(
             env=env,
             expected_exit_code=1,
         )
-        _require_disabled_session("claude", claude)
+        _require_refused_session(
+            "claude",
+            claude,
+            (
+                "claude session integration is not available",
+                SESSION_NOT_STARTED,
+            ),
+        )
         codex = run_command(
             [
                 str(public_script),
@@ -297,7 +302,11 @@ def _verify_dashboard_benchmark(
             env=env,
             expected_exit_code=1,
         )
-        _require_disabled_session("codex", codex)
+        _require_refused_session(
+            "codex",
+            codex,
+            (CODEX_EXECUTABLE_MISSING,),
+        )
     if DASHBOARD_BENCHMARK_SUCCESS not in result.stdout:
         raise WheelVerificationError(
             "Installed-wheel dashboard benchmark omitted its success proof."

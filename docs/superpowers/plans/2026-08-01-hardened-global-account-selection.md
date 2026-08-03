@@ -2292,9 +2292,11 @@ rule per file or a duplicated dependency graph.
 - [ ] **Step 2: Add a wheel smoke journey with synthetic providers.**
 
 Extend the existing external-wheel smoke to run help, one-shot reporting,
-dashboard PTY startup/quit, session shell dry-run, a fake Claude session, and a
-fake Codex session. It uses isolated XDG/provider homes and never resolves live
-credentials or provider binaries.
+dashboard PTY startup/quit, session shell dry-run, and a release-disabled
+Claude session. Exercise default Codex session composition with an isolated
+`PATH` that contains no provider executable and require the exact prelaunch
+missing-executable refusal. It uses isolated XDG/provider homes and never
+resolves live credentials or provider binaries.
 
 - [ ] **Step 3: Document exact product and bypass behavior.**
 
