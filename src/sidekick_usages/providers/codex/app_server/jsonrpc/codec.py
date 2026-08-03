@@ -56,6 +56,7 @@ _ACCOUNT_MUTATION_MESSAGE = (
     "Use Sidekick saved-account commands for Codex login or logout."
 )
 _BACKPRESSURE_MESSAGE = "The Sidekick Codex relay queue is full."
+_ADMISSION_REFUSAL_MESSAGE = "Sidekick cannot safely admit a new Codex turn."
 _THREAD_ROUTING_METHODS = frozenset(
     {
         THREAD_REALTIME_CLOSED_METHOD,
@@ -133,6 +134,18 @@ def encode_relay_backpressure_refusal(request_id: int | str) -> bytes:
         request_id,
         SelectionCode.ACTIVE_OPERATION_TIMEOUT,
         _BACKPRESSURE_MESSAGE,
+    )
+
+
+def encode_relay_admission_refusal(
+    request_id: int | str,
+    code: SelectionCode,
+) -> bytes:
+    """Encode one exact safe admission refusal from the control plane."""
+    return _encode_relay_refusal(
+        request_id,
+        code,
+        _ADMISSION_REFUSAL_MESSAGE,
     )
 
 

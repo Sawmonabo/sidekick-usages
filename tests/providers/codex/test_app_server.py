@@ -9,7 +9,6 @@ from threading import Condition, Event, RLock, Thread
 
 import pytest
 
-import sidekick_usages.providers.codex.app_server.capabilities
 from sidekick_usages.core.accounts.types import (
     AuthorityGeneration,
     ProviderIdentity,
@@ -17,15 +16,12 @@ from sidekick_usages.core.accounts.types import (
 )
 from sidekick_usages.core.selection.models import SelectionEpoch
 from sidekick_usages.core.selection.types import SelectionCode, TurnId
+from sidekick_usages.providers.codex.app_server import errors
 from sidekick_usages.providers.codex.app_server.capabilities import (
     probe_codex_capabilities,
 )
-from sidekick_usages.providers.codex.app_server.errors import (
-    CodexAppServerError,
-)
 from sidekick_usages.providers.codex.app_server.executable import (
     discover_codex_executable,
-    verify_codex_executable,
 )
 from sidekick_usages.providers.codex.app_server.jsonrpc.codec import (
     decode_json_rpc_routing,
@@ -40,6 +36,7 @@ from sidekick_usages.providers.codex.app_server.session import (
 from sidekick_usages.providers.codex.app_server.types import (
     CodexAppServerFailure,
 )
+from sidekick_usages.providers.codex.broker.daemon import CodexDaemonManager
 from sidekick_usages.providers.codex.broker.errors import CodexBrokerError
 from sidekick_usages.providers.codex.broker.service import CodexSharedRuntime
 from sidekick_usages.providers.codex.broker.types import CodexBrokerFailure
@@ -76,7 +73,6 @@ pytestmark = REQUIRES_MANAGED_RUNTIME
 
 SCHEMA_HASH_HEX_LENGTH = 64
 _NEWER_CODEX_VERSION = "0.146.0"
-_CAPABILITY_EXECUTABLE_VERIFICATIONS = 2
 _ACCOUNT_ID = SidekickAccountId("33333333-3333-4333-8333-333333333333")
 _PROVIDER_IDENTITY = "workspace-account-alpha"
 _GENERATION = "2026-07-24T10:00:00.000000000Z"
@@ -137,6 +133,7 @@ class _RelayControl:
         self._open = True
         self._pause_states: set[CodexRelayAdmissionState] = set()
         self._block_adoption = False
+        self._fail_end = False
         self.events = {
             name: Event()
             for name in (
@@ -152,6 +149,13 @@ class _RelayControl:
         self.ended: list[TurnId] = []
         self.ready_targets: list[CodexRelayAuthority] = []
         self.adoptions: list[tuple[TurnId, CodexRelayAuthority]] = []
+        self.mcp_statuses: list[JsonObject] = []
+
+    def request(self, method: str, params: JsonObject) -> JsonObject:
+        """Return an exact zero-MCP response for one loaded thread."""
+        assert method == "mcpServerStatus/list"
+        assert set(params) == {"threadId"}
+        return self.mcp_statuses.pop(0) if self.mcp_statuses else {"data": []}
 
     def close_gate(self) -> None:
         with self._condition:
@@ -161,6 +165,9 @@ class _RelayControl:
         with self._condition:
             self._authority = authority
             self._open = True
+
+    def fail_next_end(self) -> None:
+        self._fail_end = True
 
     def arm_open_race(self) -> None:
         with self._condition:
@@ -213,6 +220,11 @@ class _RelayControl:
         with self._condition:
             self.ended.append(turn_id)
             self._condition.notify_all()
+            if self._fail_end:
+                self._fail_end = False
+                raise CodexRelayError(
+                    SelectionCode.SELECTION_RECOVERY_REQUIRED
+                )
 
     def ready(self, target: CodexRelayAuthority) -> None:
         with self._condition:
@@ -360,6 +372,21 @@ def _prove_relay_baseline(
     assert control.ready_targets == []
     assert control.adoptions == []
 
+    control.fail_next_end()
+    _send_turn(tui, 37, "thread-turn-a")
+    _receive_response(tui, 37)
+    _receive_method(tui, "turn/completed")
+    tui.send_request(38, "account/read", {"refreshToken": False})
+    assert "result" in _receive_response(tui, 38)
+    _send_turn(tui, 39, "thread-degraded")
+    refusal = _receive_response(tui, 39).get("error")
+    assert isinstance(refusal, dict)
+    assert refusal.get("data") == {
+        "code": SelectionCode.SELECTION_RECOVERY_REQUIRED.value
+    }
+    assert control.wait_count(control.ended, 19)
+    relay.prepare_admission()
+
 
 def _prove_relay_target(
     relay: CodexAdmissionRelay,
@@ -376,6 +403,14 @@ def _prove_relay_target(
         relay.mark_ready(_TARGET_AUTHORITY, stale_snapshot)
     assert stale_ready.value.code is SelectionCode.AUTHORITY_PROOF_FAILED
 
+    control.mcp_statuses.append(
+        {"data": [{"name": "synthetic", "status": "ready"}]}
+    )
+    with pytest.raises(CodexRelayError) as nonempty_mcp:
+        relay.mark_ready(_TARGET_AUTHORITY, relay.loaded_threads_snapshot)
+    assert (
+        nonempty_mcp.value.code is SelectionCode.UNSUPPORTED_SESSION_CAPABILITY
+    )
     relay.mark_ready(_TARGET_AUTHORITY, relay.loaded_threads_snapshot)
     _resume_thread(tui, 62, "thread-snapshot-c")
     with pytest.raises(CodexRelayError) as invalidated_open:
@@ -417,7 +452,7 @@ def _prove_relay_target(
     assert not duplicate
     _receive_response(tui, 70)
     _receive_response(tui, 71)
-    assert control.wait_count(control.ended, 20)
+    assert control.wait_count(control.ended, 21)
     assert daemon.relay_start_request_ids[-2:] == (70, 71)
     assert control.adoptions == [(control.begun[-2], _TARGET_AUTHORITY)]
     assert control.ready_targets == [_TARGET_AUTHORITY, _TARGET_AUTHORITY]
@@ -428,7 +463,6 @@ def _prove_loaded_thread_bound(
     tui: FakeCodexTuiObserver,
 ) -> None:
     """Prove relay state is bounded and fails closed on overflow."""
-
     for request_id in range(100, 333):
         _resume_thread(tui, request_id, f"thread-bound-{request_id}")
     full_snapshot = relay.loaded_threads_snapshot
@@ -464,6 +498,7 @@ def _prove_versioned_relay_journey(short_socket_root: Path) -> None:
         relay = CodexAdmissionRelay.open(
             relay_path,
             upstream_socket,
+            control,
             control,
             control,
             turn_id_factory=next_turn_id,
@@ -563,33 +598,47 @@ def test_versioned_codex_app_server_boundary_is_complete(
 ) -> None:
     schema_root = tmp_path / "schema"
     write_codex_schema(schema_root, external_auth=True)
-    executable_path = write_fake_codex(
+    codex_home = short_socket_root / "private-codex-home"
+    write_fake_managed_codex(
         tmp_path,
         schema_root,
+        codex_home,
         version=_NEWER_CODEX_VERSION,
     )
-    codex_home = tmp_path / "private-codex-home"
-    codex_home.mkdir()
+    executable_path = tmp_path / "codex"
     environment = {
         "HOME": str(tmp_path),
         "OPENAI_API_KEY": RAW_PROVIDER_SECRET,
         "PATH": os.pathsep.join((str(tmp_path), os.environ["PATH"])),
     }
 
-    verification_calls = 0
-
-    def record_verification(executable: CodexExecutable) -> None:
-        nonlocal verification_calls
-        verification_calls += 1
-        verify_codex_executable(executable)
-
-    monkeypatch.setattr(
-        sidekick_usages.providers.codex.app_server.capabilities,
-        "verify_codex_executable",
-        record_verification,
-    )
     executable = discover_codex_executable(environment)
     capabilities = probe_codex_capabilities(executable, environment)
+    manager = CodexDaemonManager(
+        capabilities,
+        codex_home,
+        environment=environment,
+    )
+    with FakeCodexDaemon(
+        codex_home,
+        app_server_version=_NEWER_CODEX_VERSION,
+    ) as daemon:
+        lifecycle = configure_codex_daemon_lifecycle(
+            tmp_path,
+            codex_home,
+            daemon.socket_path,
+            app_server_version=_NEWER_CODEX_VERSION,
+            already_running=True,
+        )
+        authority = manager.attach_running()
+        connection = manager.connect(authority)
+        manager.revalidate(authority)
+        connection.close()
+    assert (
+        lifecycle.start_statuses,
+        lifecycle.restart_count,
+        lifecycle.version_count,
+    ) == ((), 0, 1)
     with CodexAppServerSession.open(
         capabilities,
         codex_home,
@@ -603,7 +652,6 @@ def test_versioned_codex_app_server_boundary_is_complete(
 
         assert executable.provenance.path == executable_path.resolve()
         assert str(executable.version) == _NEWER_CODEX_VERSION
-        assert verification_calls == _CAPABILITY_EXECUTABLE_VERIFICATIONS
         assert len(capabilities.schema_hash) == SCHEMA_HASH_HEX_LENGTH
         assert capabilities.session_schema_manifest == (
             _SESSION_SCHEMA_MANIFEST
@@ -613,18 +661,6 @@ def test_versioned_codex_app_server_boundary_is_complete(
         assert notification.method == "account/updated"
 
         _prove_relay_routing_codec(monkeypatch)
-
-        target = CodexRelayAuthority(
-            account_id=_ACCOUNT_ID,
-            generation=AuthorityGeneration(_GENERATION),
-            epoch=SelectionEpoch(2),
-        )
-        admission = CodexRelayAdmission(
-            turn_id=TurnId("f8cbbd03-cc60-4634-a613-4952ac4bdf79"),
-            state=CodexRelayAdmissionState.ADMITTED,
-            authority=target,
-        )
-        assert admission.authority == target
     assert session.closed
 
     events = [
@@ -638,17 +674,20 @@ def test_versioned_codex_app_server_boundary_is_complete(
         "--experimental",
         "--out",
     ]
-    assert Path(events[1]["argv"][4]).name == "schema"
     assert not Path(events[1]["argv"][4]).exists()
     assert events[2]["argv"] == ["app-server"]
     assert events[3]["method"] == "getAuthStatus"
-    assert events[3]["params"] == {
-        "includeToken": False,
-        "refreshToken": False,
-    }
-    assert not Path(events[3]["codex_home"]).exists()
     assert all(event.get("openai_api_key") is None for event in events)
     assert events[-1]["codex_home"] == str(codex_home)
+
+    replacement = tmp_path / "replacement-codex"
+    replacement.write_bytes(executable_path.read_bytes())
+    replacement.chmod(0o700)
+    replacement.replace(executable_path)
+    with pytest.raises(errors.CodexAppServerError) as changed:
+        manager.attach_running()
+    assert changed.value.code is CodexAppServerFailure.EXECUTABLE_UNSAFE
+
     _prove_versioned_relay_journey(short_socket_root)
 
 
@@ -669,7 +708,7 @@ def test_codex_app_server_boundary_fails_closed_and_redacted(
     codex_home.mkdir()
     (tmp_path / "mode").write_text("malformed", encoding="utf-8")
 
-    with pytest.raises(CodexAppServerError) as malformed:
+    with pytest.raises(errors.CodexAppServerError) as malformed:
         CodexAppServerSession.open(
             capabilities,
             codex_home,

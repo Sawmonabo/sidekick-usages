@@ -203,6 +203,25 @@ class CodexDaemonManager:
             control_socket=control_socket,
         )
 
+    def attach_running(self) -> CodexDaemonAuthority:
+        """Qualify one already-running daemon without lifecycle mutation."""
+        self.verify_executable()
+        running = self._run_lifecycle(
+            "version",
+            timeout_seconds=_DAEMON_VERSION_TIMEOUT_SECONDS,
+        )
+        if running.status is not CodexDaemonStatus.RUNNING:
+            raise CodexBrokerError(CodexBrokerFailure.LIFECYCLE_MALFORMED)
+        self._require_current_version(running)
+        self.verify_executable()
+        control_directory, control_socket = self._qualify_socket()
+        return CodexDaemonAuthority(
+            lifecycle=running,
+            executable=self._capabilities.executable,
+            control_directory=control_directory,
+            control_socket=control_socket,
+        )
+
     def connect(self, authority: CodexDaemonAuthority) -> socket.socket:
         """Connect only while the qualified socket identity is unchanged."""
         self.revalidate(authority)
