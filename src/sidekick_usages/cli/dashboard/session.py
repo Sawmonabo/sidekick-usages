@@ -33,18 +33,8 @@ from sidekick_usages.cli.dashboard.ports import (
     DashboardSnapshotSource,
 )
 from sidekick_usages.core.selection.models import SelectionResult
-from sidekick_usages.core.selection.types import (
-    SelectionCode,
-    SelectionOutcome,
-)
 from sidekick_usages.core.types import ProviderId
-from sidekick_usages.daemon.models.protocol import (
-    CompletedPayload,
-    ControlActionTerminalPayload,
-    FailedPayload,
-)
 from sidekick_usages.daemon.selection.models import SelectionStatus
-from sidekick_usages.daemon.types.protocol import CompletionOutcome
 from sidekick_usages.persistence.errors import PersistenceError
 from sidekick_usages.usage.dashboard.models import (
     DashboardCursor,
@@ -516,46 +506,11 @@ class InteractiveDashboardSession:
     def action_completed(
         self,
         intent: DashboardIntent,
-        terminal: ControlActionTerminalPayload,
+        result: SelectionResult | None,
     ) -> None:
         if self._stopping.is_set():
             return
-        selection_result = (
-            terminal if isinstance(terminal, SelectionResult) else None
-        )
-        already_selected = (
-            isinstance(terminal, FailedPayload)
-            and terminal.code == SelectionCode.ALREADY_SELECTED.value
-        )
-        selection_terminal = selection_result is not None or already_selected
-        if (
-            isinstance(intent, SelectAccountIntent)
-            and isinstance(
-                terminal,
-                FailedPayload,
-            )
-            and not already_selected
-        ):
-            self.action_error(
-                intent,
-                selection_code_message(terminal.code),
-            )
-            return
-        if selection_result is not None and selection_result.outcome not in {
-            SelectionOutcome.READY,
-            SelectionOutcome.PARTICIPANT_LOST_AFTER_COMMIT,
-        }:
-            self.action_error(
-                intent,
-                selection_code_message(selection_result.safe_code.value),
-            )
-            return
-        if not selection_terminal and (
-            not isinstance(terminal, CompletedPayload)
-            or terminal.outcome is CompletionOutcome.CANCELLED
-        ):
-            self.action_failed(intent)
-            return
+        selection_terminal = isinstance(intent, SelectAccountIntent)
         with self._serialized_snapshot() as snapshot:
             if snapshot is None:
                 invalidate = self._action_error_transition(
@@ -577,7 +532,7 @@ class InteractiveDashboardSession:
                                     provider_id=intent.provider_id,
                                     account_id=intent.account_id,
                                 ),
-                                selection_result,
+                                result,
                             )
                         except ValueError:
                             controller = self._controller().rebase(
@@ -595,7 +550,7 @@ class InteractiveDashboardSession:
                         footer = (
                             self._status_footer(
                                 DashboardStatusKind.PROGRESS,
-                                selection_ready_message(selection_result),
+                                selection_ready_message(result),
                             )
                             if selection_terminal
                             else self._navigation_footer(
@@ -786,17 +741,10 @@ def dashboard_cursor(view: DashboardSessionView) -> DashboardCursor:
     )
 
 
-def selection_code_message(code: str) -> str:
-    """Render one sanitized coordinator refusal code visibly."""
-    if code == SelectionCode.ALREADY_SELECTED.value:
-        return "This saved account is already selected."
-    return f"Saved account selection is unavailable: {code}."
-
-
 def selection_ready_message(result: SelectionResult | None) -> str:
     """Render truthful participant readiness without claiming adoption."""
     if result is None:
-        return selection_code_message(SelectionCode.ALREADY_SELECTED.value)
+        return "This saved account is already selected."
     if result.lost_count:
         return (
             f"Account changed; {result.ready_count} ready, "

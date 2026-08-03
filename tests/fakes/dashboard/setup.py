@@ -4,8 +4,14 @@ from functools import partial
 from pathlib import Path
 from threading import Lock
 
-from sidekick_usages.cli.dashboard.actions import DashboardActionExecutor
-from sidekick_usages.cli.dashboard.lookup import DashboardLookupCoordinator
+from sidekick_usages.cli.dashboard.actions import (
+    DashboardActionExecutor,
+    DashboardControlConnector,
+)
+from sidekick_usages.cli.dashboard.lookup import (
+    DashboardLookupCoordinator,
+    DashboardLookupWorker,
+)
 from sidekick_usages.cli.dashboard.models.controller import DashboardIntent
 from sidekick_usages.cli.dashboard.models.setup import (
     ServiceSetupDecision,
@@ -14,10 +20,8 @@ from sidekick_usages.cli.dashboard.models.setup import (
 from sidekick_usages.cli.dashboard.ports import (
     DashboardActionOwner,
     DashboardActionSink,
-    DashboardControlConnector,
     DashboardLookupOwner,
     DashboardLookupSink,
-    DashboardLookupWorker,
     DashboardSessionRuntimeFactory,
     DashboardSnapshotSource,
 )

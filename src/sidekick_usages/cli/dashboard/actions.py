@@ -1,8 +1,9 @@
 """Serialized local-supervisor actions for the interactive dashboard."""
 
+from collections.abc import Iterator
 from pathlib import Path
 from threading import Lock
-from typing import assert_never
+from typing import Protocol, assert_never
 
 from sidekick_usages.cli.dashboard.models.controller import (
     DashboardIntent,
@@ -23,11 +24,13 @@ from sidekick_usages.cli.dashboard.models.setup import (
 )
 from sidekick_usages.cli.dashboard.ports import (
     DashboardActionSink,
-    DashboardControlClient,
-    DashboardControlConnector,
 )
 from sidekick_usages.cli.dashboard.setup import GuidedServiceSetup
+from sidekick_usages.core.accounts.types import SidekickAccountId
+from sidekick_usages.core.selection.models import SelectionResult
 from sidekick_usages.core.selection.types import (
+    SelectionCode,
+    SelectionOutcome,
     SelectionPhase,
 )
 from sidekick_usages.core.types import ProviderId
@@ -43,6 +46,8 @@ from sidekick_usages.daemon.models.lifecycle import (
 from sidekick_usages.daemon.models.protocol import (
     CompletedPayload,
     ControlActionTerminalPayload,
+    ControlEvent,
+    FailedPayload,
     SnapshotPayload,
 )
 from sidekick_usages.daemon.selection.models import SelectionStatus
@@ -63,6 +68,59 @@ CONTROL_PROGRESS_MESSAGES = {
     ProgressPhase.RECONCILING: "Reconciling provider account state.",
 }
 STARTUP_RECONCILIATION_ATTEMPTS = 2
+
+
+class DashboardControlClient(Protocol):
+    """Observe one local supervisor connection."""
+
+    def snapshot(self) -> Iterator[ControlEvent]:
+        """Return one current sanitized service snapshot."""
+        ...
+
+    def select_account(
+        self,
+        provider_id: ProviderId,
+        account_id: SidekickAccountId,
+    ) -> Iterator[ControlEvent]:
+        """Select one stable account through global coordination."""
+
+    def refresh_account(
+        self,
+        provider_id: ProviderId,
+        account_id: SidekickAccountId,
+    ) -> Iterator[ControlEvent]:
+        """Refresh one stable account without selecting it."""
+        ...
+
+    def refresh_all(self) -> Iterator[ControlEvent]:
+        """Schedule every due account for maintenance."""
+        ...
+
+    def reconcile(
+        self,
+        provider_id: ProviderId,
+    ) -> Iterator[ControlEvent]:
+        """Reconcile one provider's current native account."""
+        ...
+
+    def close(self) -> None:
+        """Stop observing without cancelling durable provider work."""
+        ...
+
+
+class DashboardControlConnector(Protocol):
+    """Open one local supervisor connection."""
+
+    def __call__(self, socket_path: Path) -> DashboardControlClient:
+        """Connect to the exact same-user control socket."""
+        ...
+
+
+def selection_code_message(code: str) -> str:
+    """Render one sanitized coordinator refusal code visibly."""
+    if code == SelectionCode.ALREADY_SELECTED.value:
+        return "This saved account is already selected."
+    return f"Saved account selection is unavailable: {code}."
 
 
 class DashboardActionExecutor:
@@ -91,7 +149,50 @@ class DashboardActionExecutor:
         terminal = self._dispatch_ready(client, request)
         if terminal is None:
             return
-        self._sink.action_completed(request.intent, terminal)
+        self._publish_terminal(request.intent, terminal)
+
+    def _publish_terminal(
+        self,
+        intent: DashboardIntent,
+        terminal: ControlActionTerminalPayload,
+    ) -> None:
+        """Classify one terminal result before publishing view state."""
+        selection_result = (
+            terminal if isinstance(terminal, SelectionResult) else None
+        )
+        already_selected = (
+            isinstance(terminal, FailedPayload)
+            and terminal.code == SelectionCode.ALREADY_SELECTED.value
+        )
+        if (
+            isinstance(intent, SelectAccountIntent)
+            and isinstance(terminal, FailedPayload)
+            and not already_selected
+        ):
+            self._sink.action_error(
+                intent,
+                selection_code_message(terminal.code),
+            )
+            return
+        if selection_result is not None and selection_result.outcome not in {
+            SelectionOutcome.READY,
+            SelectionOutcome.PARTICIPANT_LOST_AFTER_COMMIT,
+        }:
+            self._sink.action_error(
+                intent,
+                selection_code_message(selection_result.safe_code.value),
+            )
+            return
+        if selection_result is not None or already_selected:
+            self._sink.action_completed(intent, selection_result)
+            return
+        if (
+            not isinstance(terminal, CompletedPayload)
+            or terminal.outcome is CompletionOutcome.CANCELLED
+        ):
+            self._sink.action_failed(intent)
+            return
+        self._sink.action_completed(intent, None)
 
     def reconcile_startup(
         self,

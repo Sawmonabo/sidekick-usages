@@ -6,13 +6,15 @@ from pathlib import Path
 from threading import Lock
 
 from sidekick_usages.cli.dashboard.actions import DashboardActionExecutor
-from sidekick_usages.cli.dashboard.lookup import DashboardLookupCoordinator
+from sidekick_usages.cli.dashboard.lookup import (
+    DashboardLookupCoordinator,
+    DashboardLookupWorker,
+)
 from sidekick_usages.cli.dashboard.ports import (
     DashboardActionOwner,
     DashboardActionSink,
     DashboardLookupOwner,
     DashboardLookupSink,
-    DashboardLookupWorker,
     DashboardSnapshotSource,
 )
 from sidekick_usages.cli.dashboard.setup import GuidedServiceSetup

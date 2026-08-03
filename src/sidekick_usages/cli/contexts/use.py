@@ -2,13 +2,13 @@
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Protocol
 
 from sidekick_usages.cli.dashboard.models.use import (
     UseSelectionFailure,
     UseSelectionResult,
     UseSelectionSuccess,
 )
-from sidekick_usages.cli.dashboard.ports import AccountSelection
 from sidekick_usages.core.accounts.types import SidekickAccountId
 from sidekick_usages.core.selection.models import SelectionResult
 from sidekick_usages.core.selection.types import (
@@ -29,6 +29,18 @@ from sidekick_usages.persistence.accounts.index import (
     AccountIndex,
 )
 from sidekick_usages.persistence.accounts.reader import AccountIndexReader
+
+
+class AccountSelection(Protocol):
+    """Select one exact saved account through global coordination."""
+
+    def __call__(
+        self,
+        provider_id: ProviderId,
+        account_id: SidekickAccountId,
+    ) -> UseSelectionResult:
+        """Return the supervisor's sanitized selection outcome."""
+        ...
 
 
 @dataclass(frozen=True, slots=True)

@@ -2,10 +2,10 @@
 
 from dataclasses import dataclass, replace
 from threading import Event, Lock, Thread
+from typing import Protocol
 
 from sidekick_usages.cli.dashboard.ports import (
     DashboardLookupSink,
-    DashboardLookupWorker,
     DashboardSnapshotSource,
 )
 from sidekick_usages.core.accounts.types import (
@@ -31,6 +31,7 @@ from sidekick_usages.usage.lookup.diagnostics.tracker import (
 )
 from sidekick_usages.usage.lookup.worker.models import (
     UsageLookupEventKind,
+    UsageLookupEventObserver,
     UsageLookupFailure,
     UsageLookupWorkerEvent,
     UsageLookupWorkerResult,
@@ -38,6 +39,21 @@ from sidekick_usages.usage.lookup.worker.models import (
 )
 
 DASHBOARD_LOOKUP_THREAD_NAME = "sidekick-dashboard-lookup"
+
+
+class DashboardLookupWorker(Protocol):
+    """Run and cancel one isolated global account-lookup process."""
+
+    def run(
+        self,
+        observe: UsageLookupEventObserver | None = None,
+    ) -> UsageLookupWorkerResult:
+        """Stream stable account completions and return terminal state."""
+        ...
+
+    def cancel(self) -> None:
+        """Request bounded process-group termination and reaping."""
+        ...
 
 
 @dataclass(frozen=True, slots=True)

@@ -1,7 +1,6 @@
 """Typed boundaries for the isolated interactive dashboard."""
 
-from collections.abc import Callable, Iterator
-from pathlib import Path
+from collections.abc import Callable
 from threading import Lock
 from typing import Protocol
 
@@ -16,22 +15,12 @@ from sidekick_usages.cli.dashboard.models.session import (
     DashboardStartupReconciliation,
 )
 from sidekick_usages.cli.dashboard.models.setup import ServiceSetupDecision
-from sidekick_usages.cli.dashboard.models.use import UseSelectionResult
-from sidekick_usages.core.accounts.types import SidekickAccountId
 from sidekick_usages.core.selection.models import SelectionResult
 from sidekick_usages.core.types import ProviderId
-from sidekick_usages.daemon.models.protocol import (
-    ControlActionTerminalPayload,
-    ControlEvent,
-)
 from sidekick_usages.daemon.selection.models import SelectionStatus
 from sidekick_usages.usage.dashboard.models import (
     DashboardService,
     DashboardSnapshot,
-)
-from sidekick_usages.usage.lookup.worker.models import (
-    UsageLookupEventObserver,
-    UsageLookupWorkerResult,
 )
 
 
@@ -40,33 +29,6 @@ class DashboardSnapshotSource(Protocol):
 
     def load(self, only: ProviderId | None) -> DashboardSnapshot:
         """Return cached state constrained to one optional provider."""
-        ...
-
-
-class AccountSelection(Protocol):
-    """Select one exact saved account through global coordination."""
-
-    def __call__(
-        self,
-        provider_id: ProviderId,
-        account_id: SidekickAccountId,
-    ) -> UseSelectionResult:
-        """Return the supervisor's sanitized selection outcome."""
-        ...
-
-
-class DashboardLookupWorker(Protocol):
-    """Run and cancel one isolated global account-lookup process."""
-
-    def run(
-        self,
-        observe: UsageLookupEventObserver | None = None,
-    ) -> UsageLookupWorkerResult:
-        """Stream stable account completions and return terminal state."""
-        ...
-
-    def cancel(self) -> None:
-        """Request bounded process-group termination and reaping."""
         ...
 
 
@@ -86,52 +48,6 @@ class DashboardLookupSink(Protocol):
         diagnostic_unavailable: bool = False,
     ) -> None:
         """Publish one terminal lookup failure."""
-        ...
-
-
-class DashboardControlClient(Protocol):
-    """Observe one local supervisor connection."""
-
-    def snapshot(self) -> Iterator[ControlEvent]:
-        """Return one current sanitized service snapshot."""
-        ...
-
-    def select_account(
-        self,
-        provider_id: ProviderId,
-        account_id: SidekickAccountId,
-    ) -> Iterator[ControlEvent]:
-        """Select one stable account through global coordination."""
-
-    def refresh_account(
-        self,
-        provider_id: ProviderId,
-        account_id: SidekickAccountId,
-    ) -> Iterator[ControlEvent]:
-        """Refresh one stable account without selecting it."""
-        ...
-
-    def refresh_all(self) -> Iterator[ControlEvent]:
-        """Schedule every due account for maintenance."""
-        ...
-
-    def reconcile(
-        self,
-        provider_id: ProviderId,
-    ) -> Iterator[ControlEvent]:
-        """Reconcile one provider's current native account."""
-        ...
-
-    def close(self) -> None:
-        """Stop observing without cancelling durable provider work."""
-        ...
-
-
-class DashboardControlConnector(Protocol):
-    """Open one local supervisor connection."""
-
-    def __call__(self, socket_path: Path) -> DashboardControlClient:
-        """Connect to the exact same-user control socket."""
         ...
 
 
@@ -171,9 +87,9 @@ class DashboardActionSink(Protocol):
     def action_completed(
         self,
         intent: DashboardIntent,
-        terminal: ControlActionTerminalPayload,
+        result: SelectionResult | None,
     ) -> None:
-        """Apply one correlated terminal action result."""
+        """Apply one successful correlated action result."""
         ...
 
     def action_failed(self, intent: DashboardIntent) -> None:
