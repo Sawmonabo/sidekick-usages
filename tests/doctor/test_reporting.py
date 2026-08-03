@@ -652,6 +652,7 @@ def test_human_view_explains_login_renewal_action(
                 ready_count=1,
                 adopted_count=1,
                 unreachable_count=1,
+                confirmed_dead_count=1,
                 active_turn_count=1,
                 queued_turn_count=1,
             ),
@@ -692,7 +693,7 @@ def test_human_view_explains_login_renewal_action(
         f"{saved.account_id}@8 · awaiting_ready/"
         "participant_lost_after_commit · participants "
         "2 registered, 1 reachable, 2 required, 1 ready, 1 adopted, "
-        "1 unreachable, unknown confirmed dead after commit · turns 1 active, "
+        "1 unreachable, 1 confirmed dead after commit · turns 1 active, "
         "1 queued · unmanaged unavailable · enrollment observed · "
         "structured host unavailable"
     ) in normalized

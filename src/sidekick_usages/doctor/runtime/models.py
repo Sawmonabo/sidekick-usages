@@ -84,16 +84,10 @@ class ProviderSessionDiagnostic:
     ready_count: int
     adopted_count: int
     unreachable_count: int
+    confirmed_dead_after_commit_count: int
     active_turn_count: int
     queued_turn_count: int
     unmanaged_count: int | None
-
-    @property
-    def confirmed_dead_after_commit_count(self) -> int | None:
-        """Return zero or unknown without inferring a participant count."""
-        if self.code is not SelectionCode.PARTICIPANT_LOST_AFTER_COMMIT:
-            return 0
-        return None
 
     @property
     def session_enrollment(self) -> str:

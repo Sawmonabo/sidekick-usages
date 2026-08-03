@@ -177,6 +177,7 @@ def _provider_session_diagnostic(
         ready_count=status.ready_count,
         adopted_count=status.adopted_count,
         unreachable_count=status.unreachable_count,
+        confirmed_dead_after_commit_count=status.confirmed_dead_count,
         active_turn_count=status.active_turn_count,
         queued_turn_count=status.queued_turn_count,
         unmanaged_count=unmanaged_count,
