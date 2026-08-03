@@ -9,6 +9,7 @@ from sidekick_usages.core.selection.models import (
     OpenSelectionOperation,
     PreparedSelection,
     SelectedAccountState,
+    SelectionAuthorityObservation,
 )
 from sidekick_usages.core.selection.types import (
     OperationKind,
@@ -34,6 +35,7 @@ from sidekick_usages.daemon.models.worker import WorkerResult
 from sidekick_usages.daemon.types.worker import WorkerOutcome
 from sidekick_usages.daemon.worker.runtime import (
     managed_worker_result,
+    selection_worker_success,
     worker_no_change,
     worker_success,
 )
@@ -49,6 +51,13 @@ _CLAUDE_SELECTION_KINDS = frozenset(
         OperationKind.ACTIVATE,
         OperationKind.RECONCILE,
         OperationKind.RECONCILE_NATIVE,
+    }
+)
+_CLAUDE_SELECTION_WORKER_KINDS = frozenset(
+    {
+        OperationKind.SELECTION_PREVALIDATE,
+        OperationKind.SELECTION_COMMIT,
+        OperationKind.SELECTION_READBACK,
     }
 )
 
@@ -196,6 +205,78 @@ class ClaudeSelectionWorkerExecutor:
             related,
         )
 
+    def execute_selection(
+        self,
+        operation: DueOperation,
+        active: OpenSelectionOperation,
+        baseline: FinalizedSelection | None,
+        authority: ProviderMutationAuthority,
+    ) -> WorkerResult:
+        """Execute one exact Claude global-selection worker phase."""
+        authority.require(ProviderId.CLAUDE)
+        if (
+            operation.provider_id is not ProviderId.CLAUDE
+            or operation.kind not in _CLAUDE_SELECTION_WORKER_KINDS
+            or operation.priority is not OperationPriority.INTERACTIVE
+            or active.provider_id is not ProviderId.CLAUDE
+            or operation.operation_id != active.operation_id
+            or operation.required_account_id != active.target_account_id
+        ):
+            raise ValueError("Worker operation is not Claude selection work.")
+        try:
+            if operation.kind is OperationKind.SELECTION_PREVALIDATE:
+                prepared = self.prevalidate_selection(
+                    active,
+                    baseline,
+                    authority,
+                )
+                observation = SelectionAuthorityObservation(
+                    provider_id=ProviderId.CLAUDE,
+                    account_id=prepared.target_account_id,
+                    generation=prepared.target_generation,
+                )
+            elif operation.kind is OperationKind.SELECTION_COMMIT:
+                generation = active.prepared_generation
+                if generation is None:
+                    raise ClaudeActivationError(
+                        ClaudeActivationFailure.STATE_CHANGED
+                    )
+                proof = self.commit_selection(
+                    PreparedSelection(
+                        operation_id=active.operation_id,
+                        provider_id=active.provider_id,
+                        target_account_id=active.target_account_id,
+                        target_generation=generation,
+                        baseline_epoch=active.baseline_epoch,
+                        pending_epoch=active.pending_epoch,
+                    ),
+                    authority,
+                )
+                observation = SelectionAuthorityObservation(
+                    provider_id=ProviderId.CLAUDE,
+                    account_id=proof.account_id,
+                    generation=proof.generation,
+                )
+            else:
+                observation = self._selection_observation(
+                    self.readback_selection(active, authority)
+                )
+        except ClaudeActivationError as error:
+            return claude_selection_failure(
+                operation,
+                error,
+                self._clock,
+                recovery_required=(
+                    operation.kind is OperationKind.SELECTION_READBACK
+                ),
+            )
+        return selection_worker_success(
+            operation,
+            active.pending_epoch,
+            observation,
+            self._clock,
+        )
+
     def prevalidate_selection(
         self,
         operation: OpenSelectionOperation,
@@ -274,6 +355,27 @@ class ClaudeSelectionWorkerExecutor:
         return self._native_reconciliation.observe_selection(
             account_ids,
             authority,
+        )
+
+    @staticmethod
+    def _selection_observation(
+        selected: SelectedAccountState | None,
+    ) -> SelectionAuthorityObservation:
+        """Sanitize native readback to one related saved authority or none."""
+        if (
+            selected is None
+            or selected.account_id is None
+            or selected.runtime_generation is None
+        ):
+            return SelectionAuthorityObservation(
+                provider_id=ProviderId.CLAUDE,
+                account_id=None,
+                generation=None,
+            )
+        return SelectionAuthorityObservation(
+            provider_id=ProviderId.CLAUDE,
+            account_id=selected.account_id,
+            generation=selected.runtime_generation,
         )
 
     @staticmethod
