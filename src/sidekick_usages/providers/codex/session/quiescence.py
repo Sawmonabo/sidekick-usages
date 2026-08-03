@@ -112,6 +112,7 @@ class _Channel:
 class _PendingProof:
     operation_id: OperationId
     epoch: SelectionEpoch
+    channels: tuple[tuple[ParticipantId, _Channel], ...]
     receipts: dict[ParticipantId, tuple[int, int]]
     awaiting_terminal: set[ParticipantId]
 
@@ -281,7 +282,13 @@ class CodexParticipantProofSet:
                         "Another Codex participant proof is active."
                     )
                 channels = tuple(self._channels.items())
-                pending = _PendingProof(operation_id, epoch, {}, set())
+                pending = _PendingProof(
+                    operation_id,
+                    epoch,
+                    channels,
+                    {},
+                    set(),
+                )
                 self._pending = pending
             self._exchange(
                 channels,
@@ -305,7 +312,6 @@ class CodexParticipantProofSet:
         try:
             with self._lock:
                 pending = self._pending
-                channels = tuple(self._channels.items())
             if pending is None or (
                 pending.operation_id != operation_id
                 or pending.epoch != target.epoch
@@ -313,6 +319,7 @@ class CodexParticipantProofSet:
                 raise CodexParticipantProofError(
                     "The Codex participant proof is not pending."
                 )
+            channels = pending.channels
             receipts = self._exchange(
                 channels,
                 operation_id,
@@ -371,6 +378,7 @@ class CodexParticipantProofSet:
                 pending = _PendingProof(
                     operation_id,
                     target.epoch,
+                    channels,
                     {},
                     set(),
                 )
@@ -512,13 +520,12 @@ class CodexParticipantProofSet:
     ) -> bool:
         with self._lock:
             pending = self._pending
-            channels = tuple(self._channels.items())
             self._pending = None
         if pending is None or (
             pending.operation_id != operation_id or pending.epoch != epoch
         ):
             return False
-        for participant_id, channel in channels:
+        for participant_id, channel in pending.channels:
             if participant_id not in pending.awaiting_terminal:
                 continue
             challenge = _Challenge(

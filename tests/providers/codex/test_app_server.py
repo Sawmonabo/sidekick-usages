@@ -59,6 +59,7 @@ from sidekick_usages.providers.codex.session.models import (
 )
 from sidekick_usages.providers.codex.session.quiescence import (
     CodexParticipantProofChannel,
+    CodexParticipantProofError,
     CodexParticipantProofSet,
 )
 from sidekick_usages.providers.codex.session.relay import (
@@ -425,19 +426,40 @@ def _prove_participant_quiescence(
         "thread-after-proof" in relay.loaded_threads_snapshot.thread_ids,
     ) == (False, True, list(sealed_threads) * 2, False, False, False, True)
 
-    abort_id = OperationId("77777777-7777-4777-8777-777777777777")
-    abort_thread = Thread(
-        target=channel.serve_selection,
-        args=(relay, _TARGET_AUTHORITY.epoch),
+    reconnect_id = OperationId("88888888-8888-4888-8888-888888888888")
+    new_supervisor, new_participant = socket.socketpair()
+    replacement_aborts: list[bool] = []
+
+    def replace_armed_channel() -> None:
+        participant_endpoint.settimeout(_RELAY_WAIT_SECONDS)
+        assert participant_endpoint.recv(1)
+        replacement = proofs.stage(
+            participant_id, 2, peer, new_supervisor
+        )
+        replacement.commit()
+        replacement.finalize()
+        new_participant.settimeout(0.2)
+        try:
+            replacement_aborts.append(bool(new_participant.recv(1)))
+        except TimeoutError:
+            replacement_aborts.append(False)
+
+    reconnect = Thread(target=replace_armed_channel)
+    reconnect.start()
+    with pytest.raises(CodexParticipantProofError):
+        proofs.bind_after_readback(reconnect_id, _TARGET_AUTHORITY)
+    reconnect.join(timeout=_RELAY_WAIT_SECONDS)
+    replacement_bound = proofs.matches_target(
+        participant_id, 2, peer, reconnect_id, target_proof
     )
-    abort_thread.start()
-    proofs.prepare(abort_id, _TARGET_AUTHORITY.epoch)
-    proofs.abort(abort_id, _TARGET_AUTHORITY.epoch)
-    abort_thread.join(timeout=_RELAY_WAIT_SECONDS)
-    _resume_thread(tui, 81, "thread-after-abort")
-    assert not abort_thread.is_alive()
+    new_participant.close()
     channel.close()
     proofs.close()
+    assert (
+        reconnect.is_alive(),
+        replacement_aborts,
+        replacement_bound,
+    ) == (False, [False], False)
 
 
 def _prove_versioned_relay_journey(short_socket_root: Path) -> None:
