@@ -1,4 +1,4 @@
-"""Strict lightweight codecs for selection and durable operation state."""
+"""Strict lightweight codecs for selection and provider authority state."""
 
 from decimal import Decimal, InvalidOperation
 
@@ -13,7 +13,6 @@ from sidekick_usages.core.accounts.types import (
 from sidekick_usages.core.selection.models import (
     ActivationRecord,
     ClaudeAuthObservation,
-    DueOperation,
     FinalizedSelection,
     ProviderAuthObservation,
     SelectedAccountState,
@@ -22,9 +21,6 @@ from sidekick_usages.core.selection.models import (
 from sidekick_usages.core.selection.types import (
     ActivationOutcome,
     ActivationPhase,
-    OperationKind,
-    OperationPriority,
-    OperationState,
     ProviderAuthState,
     ProviderRuntimeState,
 )
@@ -32,13 +28,10 @@ from sidekick_usages.core.types import ProviderId
 from sidekick_usages.persistence.errors import InvalidSchemaError
 from sidekick_usages.persistence.models.selection import (
     MAX_ACTIVATION_HISTORY,
-    MAX_OPERATION_RECORDS,
     ActivationJournalDocument,
-    OperationQueueDocument,
     SelectedStateDocument,
 )
 from sidekick_usages.persistence.state.fields import (
-    require_boolean,
     require_exact_keys,
     require_integer,
     require_list,
@@ -60,13 +53,9 @@ from sidekick_usages.serialization.json import JsonObject, JsonValue
 SELECTED_STATE_SCHEMA_VERSION = 3
 _LEGACY_SELECTED_STATE_SCHEMA_VERSION = 2
 ACTIVATION_SCHEMA_VERSION = 4
-OPERATION_QUEUE_SCHEMA_VERSION = 5
-_PREVIOUS_OPERATION_QUEUE_SCHEMA_VERSION = 4
-_LEGACY_OPERATION_QUEUE_SCHEMA_VERSION = 3
 RUNTIME_OBSERVATION_SCHEMA_VERSION = 1
 MAX_SELECTED_STATE_BYTES = 256 * 1024
 MAX_ACTIVATION_JOURNAL_BYTES = 512 * 1024
-MAX_OPERATION_QUEUE_BYTES = 8 * 1024 * 1024
 MAX_RUNTIME_OBSERVATION_BYTES = 256 * 1024
 MAX_CLAUDE_MTIME_MILLISECONDS_BYTES = 32
 
@@ -129,25 +118,6 @@ _PROVIDER_AUTH_KEYS = frozenset(
         "state",
     }
 )
-_OPERATION_KEYS = frozenset(
-    {
-        "account_id",
-        "attempts",
-        "due_at",
-        "failure_code",
-        "kind",
-        "operation_id",
-        "priority",
-        "provider_id",
-        "selection_operation_id",
-        "state",
-        "updated_at",
-    }
-)
-_PREVIOUS_OPERATION_KEYS = _OPERATION_KEYS - {"selection_operation_id"}
-_LEGACY_OPERATION_KEYS = _PREVIOUS_OPERATION_KEYS | {
-    "allow_remote_control_disconnect"
-}
 
 
 def decode_selected_state(payload: bytes) -> SelectedStateDocument:
@@ -267,78 +237,6 @@ def encode_activation_journal(
     """Encode one canonical provider activation journal."""
     payload = _activation_payload(document)
     if decode_activation_journal(payload) != document:
-        raise InvalidSchemaError
-    return payload
-
-
-def operation_slot(
-    provider_id: ProviderId,
-    account_id: SidekickAccountId | None,
-    kind: OperationKind,
-) -> str:
-    """Return one canonical durable account or provider operation slot."""
-    owner = (
-        f"provider:{provider_id.value}"
-        if account_id is None
-        else f"account:{account_id}"
-    )
-    return f"{owner}:{kind.value}"
-
-
-def decode_operation_queue(payload: bytes) -> OperationQueueDocument:
-    """Decode one canonical durable operation queue."""
-    root = decode_state_object(payload, MAX_OPERATION_QUEUE_BYTES)
-    require_exact_keys(root, {"operations", "schema_version"})
-    version = require_integer(root["schema_version"])
-    legacy = version == _LEGACY_OPERATION_QUEUE_SCHEMA_VERSION
-    previous = version == _PREVIOUS_OPERATION_QUEUE_SCHEMA_VERSION
-    require_schema_version(
-        version,
-        (
-            _LEGACY_OPERATION_QUEUE_SCHEMA_VERSION
-            if legacy
-            else (
-                _PREVIOUS_OPERATION_QUEUE_SCHEMA_VERSION
-                if previous
-                else OPERATION_QUEUE_SCHEMA_VERSION
-            )
-        ),
-    )
-    records = require_object(root["operations"])
-    if len(records) > MAX_OPERATION_RECORDS:
-        raise InvalidSchemaError
-    try:
-        operations: list[DueOperation] = []
-        for slot, value in records.items():
-            operation = _due_operation(
-                require_object(value),
-                legacy=legacy,
-                previous=previous,
-            )
-            if slot != operation_slot(
-                operation.provider_id,
-                operation.account_id,
-                operation.kind,
-            ):
-                raise InvalidSchemaError
-            operations.append(operation)
-        document = OperationQueueDocument(tuple(operations))
-    except TypeError, ValueError:
-        raise InvalidSchemaError from None
-    expected = (
-        encode_state_object(root, MAX_OPERATION_QUEUE_BYTES)
-        if legacy or previous
-        else _operation_payload(document)
-    )
-    if expected != payload:
-        raise InvalidSchemaError
-    return document
-
-
-def encode_operation_queue(document: OperationQueueDocument) -> bytes:
-    """Encode one canonical durable operation queue."""
-    payload = _operation_payload(document)
-    if decode_operation_queue(payload) != document:
         raise InvalidSchemaError
     return payload
 
@@ -739,96 +637,4 @@ def _activation_payload(document: ActivationJournalDocument) -> bytes:
             "schema_version": ACTIVATION_SCHEMA_VERSION,
         },
         MAX_ACTIVATION_JOURNAL_BYTES,
-    )
-
-
-def _due_operation(
-    record: JsonObject,
-    *,
-    legacy: bool,
-    previous: bool,
-) -> DueOperation:
-    require_exact_keys(
-        record,
-        (
-            _LEGACY_OPERATION_KEYS
-            if legacy
-            else _PREVIOUS_OPERATION_KEYS
-            if previous
-            else _OPERATION_KEYS
-        ),
-    )
-    if legacy:
-        require_boolean(record["allow_remote_control_disconnect"])
-    operation_id = OperationId(require_string(record["operation_id"]))
-    kind = OperationKind(require_string(record["kind"]))
-    parent_id = (
-        operation_id
-        if (legacy or previous) and kind.is_selection_worker
-        else _optional_operation_id(record["selection_operation_id"])
-    )
-    return DueOperation(
-        operation_id=operation_id,
-        selection_operation_id=parent_id,
-        provider_id=ProviderId(require_string(record["provider_id"])),
-        account_id=_optional_account_id(record["account_id"]),
-        kind=kind,
-        priority=OperationPriority(require_string(record["priority"])),
-        state=OperationState(require_string(record["state"])),
-        due_at=parse_canonical_timestamp(require_string(record["due_at"])),
-        updated_at=parse_canonical_timestamp(
-            require_string(record["updated_at"])
-        ),
-        attempts=require_integer(record["attempts"]),
-        failure_code=require_optional_string(record["failure_code"]),
-    )
-
-
-def _optional_account_id(value: JsonValue) -> SidekickAccountId | None:
-    account_id = require_optional_string(value)
-    return None if account_id is None else SidekickAccountId(account_id)
-
-
-def _optional_operation_id(value: JsonValue) -> OperationId | None:
-    operation_id = require_optional_string(value)
-    return None if operation_id is None else OperationId(operation_id)
-
-
-def _operation_object(operation: DueOperation) -> JsonObject:
-    return {
-        "account_id": (
-            None if operation.account_id is None else str(operation.account_id)
-        ),
-        "attempts": operation.attempts,
-        "due_at": canonical_timestamp(operation.due_at),
-        "failure_code": operation.failure_code,
-        "kind": operation.kind.value,
-        "operation_id": str(operation.operation_id),
-        "priority": operation.priority.value,
-        "provider_id": operation.provider_id.value,
-        "selection_operation_id": (
-            None
-            if operation.selection_operation_id is None
-            else str(operation.selection_operation_id)
-        ),
-        "state": operation.state.value,
-        "updated_at": canonical_timestamp(operation.updated_at),
-    }
-
-
-def _operation_payload(document: OperationQueueDocument) -> bytes:
-    operations: JsonObject = {
-        operation_slot(
-            operation.provider_id,
-            operation.account_id,
-            operation.kind,
-        ): (_operation_object(operation))
-        for operation in document.operations
-    }
-    return encode_state_object(
-        {
-            "operations": operations,
-            "schema_version": OPERATION_QUEUE_SCHEMA_VERSION,
-        },
-        MAX_OPERATION_QUEUE_BYTES,
     )

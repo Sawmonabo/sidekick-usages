@@ -22,7 +22,7 @@ from sidekick_usages.core.types import AccountLabel, ProviderId
 from sidekick_usages.daemon.types.worker import WorkerOutcome
 from sidekick_usages.entrypoints import worker
 from sidekick_usages.persistence.errors import InvalidSchemaError
-from sidekick_usages.persistence.schema.selection import decode_operation_queue
+from sidekick_usages.persistence.schema.worker import decode_operation_queue
 from sidekick_usages.persistence.supervisor.queue import OperationQueueStore
 from sidekick_usages.persistence.supervisor.results import WorkerResultStore
 from tests.fakes.credentials.refresh import login_account

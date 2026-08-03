@@ -301,7 +301,7 @@ class FakeWorkerLauncher:
             )
         natural_completion = self._natural_completions.get(spec.operation_id)
         action = self._worker_actions.get(spec.operation_id)
-        if action is not None:
+        if action is not None and natural_completion is None:
             natural_completion = Event()
         handle = FakeWorkerHandle(
             spec.operation_id,

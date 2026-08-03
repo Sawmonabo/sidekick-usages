@@ -312,7 +312,7 @@ def _run_restarted_readback(
         operation_id_factory=iter((readback_id,)).__next__,
     )
     readback_entered = Event()
-    restarted_launcher = FakeWorkerLauncher(
+    launcher = FakeWorkerLauncher(
         results,
         clock,
         frozenset(),
@@ -329,7 +329,7 @@ def _run_restarted_readback(
     restarted, _workers, _recovery = selection_scheduler(
         restarted_queue,
         results,
-        restarted_launcher,
+        launcher,
         restarted_gateway,
         clock,
     )
@@ -348,17 +348,12 @@ def _run_restarted_readback(
     blocked = not readback_entered.wait(0.05)
     release_commit.set()
     entered = readback_entered.wait(1)
-    worker_exit = restarted_launcher.handles[readback_id].wait(1)
+    worker_exit = launcher.handles[readback_id].wait(1)
     completed = len(restarted.collect())
     reader.join(1)
     valid = recovered and woke and dispatched == 1 and entered
     valid = valid and worker_exit == 0 and not reader.is_alive()
-    return (
-        restarted_launcher,
-        tuple(observations),
-        blocked and valid,
-        completed,
-    )
+    return launcher, tuple(observations), blocked and valid, completed
 
 
 def test_selection_worker_lifetime_and_phase_ownership(
@@ -377,14 +372,15 @@ def test_selection_worker_lifetime_and_phase_ownership(
     )
     clock = RuntimeClock()
     wake = Event()
-    commit_entered, release_commit, residual_released = (
-        Event() for _index in range(3)
+    commit_entered, leader_exited, release_commit, residual_released = (
+        Event() for _index in range(4)
     )
     results = WorkerResultStore(state.paths.durable_operations)
     launcher = FakeWorkerLauncher(
         results,
         clock,
         frozenset(),
+        natural_completions={commit_id: leader_exited},
         residual_completions={commit_id: residual_released},
         worker_actions={
             commit_id: selection_phase_action(
@@ -403,7 +399,7 @@ def test_selection_worker_lifetime_and_phase_ownership(
         wake.set,
         operation_id_factory=iter((commit_id,)).__next__,
     )
-    scheduler, workers, _recovery = selection_scheduler(
+    scheduler, workers, recovery = selection_scheduler(
         state.queue,
         results,
         launcher,
@@ -432,16 +428,20 @@ def test_selection_worker_lifetime_and_phase_ownership(
     assert wake.wait(1)
     assert len(scheduler.dispatch_due()) == 1
     assert commit_entered.wait(1)
-    running = state.queue.find(commit_id)
-    assert running is not None
+    assert (running := state.queue.find(commit_id)) is not None
     assert running.selection_operation_id == parent_id
+    leader_exited.set()
+    assert scheduler.collect() == ()
     clock.advance(2)
     assert scheduler.collect() == ()
     commit_thread.join(1)
-    assert failures == [SelectionCode.SELECTION_RECOVERY_REQUIRED]
-    assert workers.active_count == 1
+    assert scheduler.collect() == ()
+    assert (
+        failures,
+        recovery.orphan_calls,
+        workers.active_count,
+    ) == ([SelectionCode.SELECTION_RECOVERY_REQUIRED], 0, 1)
     assert launcher.events == [f"launch:{commit_id}"]
-
     restarted_launcher, observations, blocked, completed = (
         _run_restarted_readback(
             state,
@@ -459,7 +459,6 @@ def test_selection_worker_lifetime_and_phase_ownership(
     assert results.load(commit_id) is not None
     assert results.load(readback_id) is None
     assert len(launcher.specs) == len(restarted_launcher.specs) == 1
-
     shutdown = Thread(target=scheduler.shutdown, daemon=True)
     shutdown.start()
     shutdown.join(0.05)
@@ -469,9 +468,11 @@ def test_selection_worker_lifetime_and_phase_ownership(
     )
     residual_released.set()
     shutdown.join(2)
-    assert not shutdown.is_alive()
-    assert workers.active_count == 0
-    assert launcher.events == [f"launch:{commit_id}"]
+    assert (
+        shutdown.is_alive(),
+        workers.active_count,
+        launcher.events,
+    ) == (False, 0, [f"launch:{commit_id}"])
 
 
 def test_selection_worker_gateway_runs_every_phase_through_entrypoint(

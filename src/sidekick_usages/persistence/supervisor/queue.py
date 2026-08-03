@@ -24,7 +24,7 @@ from sidekick_usages.persistence.models.artifact import FileSnapshot
 from sidekick_usages.persistence.models.selection import (
     OperationQueueDocument,
 )
-from sidekick_usages.persistence.schema.selection import (
+from sidekick_usages.persistence.schema.worker import (
     decode_operation_queue,
     encode_operation_queue,
 )

@@ -474,6 +474,15 @@ class WorkerPool:
                 )
             except WorkerLaunchError:
                 continue
+        for quarantined in self._quarantine.values():
+            if (
+                quarantined.operation.kind.is_selection_worker
+                and quarantined.deadline is not None
+                and quarantined.deadline <= monotonic_now
+                and not quarantined.timeout_reported
+            ):
+                quarantined.timeout_reported = True
+                retained.append(quarantined.operation)
         return tuple(exits), tuple(retained)
 
     def next_deadline(self) -> float | None:
@@ -485,6 +494,12 @@ class WorkerPool:
         ]
         deadlines.extend(
             quarantined.retry_at for quarantined in self._quarantine.values()
+        )
+        deadlines.extend(
+            quarantined.deadline
+            for quarantined in self._quarantine.values()
+            if quarantined.deadline is not None
+            and not quarantined.timeout_reported
         )
         return min(deadlines) if deadlines else None
 
@@ -594,6 +609,8 @@ class WorkerPool:
                     active.operation,
                     active.handle,
                     completion_pending=True,
+                    deadline=active.deadline,
+                    timeout_reported=active.timeout_reported,
                 )
                 return None
             return WorkerExit(active.operation, exit_code)
@@ -633,6 +650,8 @@ class WorkerPool:
         completion_pending: bool,
         timed_out: bool = False,
         preempted: bool = False,
+        deadline: float | None = None,
+        timeout_reported: bool = False,
     ) -> None:
         self._quarantine[operation.operation_id] = QuarantinedWorker(
             operation=operation,
@@ -642,6 +661,8 @@ class WorkerPool:
             completion_pending=completion_pending,
             timed_out=timed_out,
             preempted=preempted,
+            deadline=deadline,
+            timeout_reported=timeout_reported,
         )
 
     def _reap_quarantine(
