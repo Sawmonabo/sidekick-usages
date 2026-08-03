@@ -3,10 +3,12 @@
 import os
 import stat
 import sys
+from collections.abc import Mapping
 from dataclasses import replace
 from datetime import timedelta
 from functools import partial
 from pathlib import Path
+from typing import NoReturn
 
 import pytest
 
@@ -76,10 +78,12 @@ from sidekick_usages.providers.claude.structured.models import (
     ClaudeStructuredAdoptionReceipt,
     ClaudeStructuredCapability,
     ClaudeStructuredError,
+    ClaudeStructuredFailure,
 )
 from sidekick_usages.providers.claude.structured.process import (
     CLAUDE_STRUCTURED_EMBEDDED_BUILD_TIME,
     CLAUDE_STRUCTURED_EMBEDDED_GIT_SHA,
+    ClaudeStructuredProcess,
     qualify_claude_structured_capability,
 )
 from tests.fakes.claude.managed import (
@@ -816,6 +820,7 @@ def test_structured_session_updates_oauth_only_at_an_idle_turn_boundary(
         for request in engine.requests
     )
     assert all(not any(buffer) for buffer in engine.cleared_request_buffers)
+    assert all(engine.wiped_before_response)
     for candidate in (session, ready_b, engine):
         representation = repr(candidate)
         assert fixture.oauth_b not in representation
@@ -827,6 +832,7 @@ def test_structured_session_updates_oauth_only_at_an_idle_turn_boundary(
 def test_structured_capability_requires_the_exact_no_network_probe(
     mutation: StructuredCapabilityMutation | None,
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fixture = structured_capability_fixture(tmp_path, mutation)
     executable = fixture.executable
@@ -867,12 +873,69 @@ def test_structured_capability_requires_the_exact_no_network_probe(
         ]
         assert all(request.exact_envelope for request in probe.requests)
         assert all(request.expected_oauth for request in probe.requests)
+        assert all(probe.wiped_before_response)
         assert probe.user_turn_count == 0
         assert probe.input_closed
         assert fixture.factory.environments == [fixture.environment]
-    else:
+
+        launches: list[tuple[str, ...]] = []
+
+        def record_launch(
+            argv: tuple[str, ...],
+            *,
+            environment: Mapping[str, str],
+            working_directory: Path,
+        ) -> NoReturn:
+            del environment, working_directory
+            launches.append(argv)
+            raise ClaudeStructuredError(
+                ClaudeStructuredFailure.PROCESS_UNAVAILABLE
+            )
+
+        monkeypatch.setattr(
+            "sidekick_usages.providers.claude.structured.process."
+            "launch_piped_claude_command",
+            record_launch,
+        )
         with pytest.raises(ClaudeStructuredError):
+            ClaudeStructuredProcess.open(
+                capability,
+                fixture.environment,
+                working_directory=fixture.working_directory,
+            )
+        assert launches == [
+            (
+                str(executable.provenance.path),
+                "--print",
+                "--input-format",
+                "stream-json",
+                "--output-format",
+                "stream-json",
+            )
+        ]
+        for arguments in (
+            ("--print=true",),
+            ("--model", "sonnet"),
+            ("synthetic-prompt",),
+        ):
+            with pytest.raises(ClaudeStructuredError) as unsafe:
+                ClaudeStructuredProcess.open(
+                    capability,
+                    fixture.environment,
+                    working_directory=fixture.working_directory,
+                    user_arguments=arguments,
+                )
+            assert (
+                unsafe.value.code
+                is ClaudeStructuredFailure.PROCESS_UNAVAILABLE
+            )
+        assert len(launches) == 1
+    else:
+        with pytest.raises(ClaudeStructuredError) as failure:
             qualify()
+        assert (
+            failure.value.code is ClaudeStructuredFailure.VERSION_UNSUPPORTED
+        )
 
     assert running_engine.process_id == running_process_id
     assert running_engine.requests == []

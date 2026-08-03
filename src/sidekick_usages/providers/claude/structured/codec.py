@@ -16,6 +16,7 @@ from sidekick_usages.providers.claude.structured.models import (
 )
 from sidekick_usages.serialization.json import (
     JsonEncodeError,
+    JsonObject,
     decode_json_object,
     encode_compact_json_buffer,
 )
@@ -23,6 +24,8 @@ from sidekick_usages.serialization.json import (
 CLAUDE_OAUTH_TOKEN_VARIABLE = "CLAUDE_CODE_OAUTH_TOKEN"
 _RESPONSE_KEYS = frozenset({"response", "type"})
 _SUCCESS_KEYS = frozenset({"request_id", "subtype"})
+_REJECTION_KEYS = frozenset({"error", "request_id", "subtype"})
+_MAXIMUM_REJECTION_ERROR_BYTES = 1024
 
 
 def encode_oauth_update(request_id: RequestId, oauth: str) -> bytearray:
@@ -95,31 +98,69 @@ def decode_oauth_update_rejection(
         _malformed()
 
 
+def decode_control_response_request_id(
+    payload: bytes,
+) -> RequestId | None:
+    """Return one exact control correlation or preserve an event frame."""
+    root = _decode_frame(payload)
+    if root.get("type") != "control_response":
+        return None
+    _, correlated = _decode_control_response_root(root)
+    return correlated
+
+
 def _decode_control_response(
     payload: bytes,
 ) -> tuple[str, RequestId]:
+    root = _decode_frame(payload)
+    return _decode_control_response_root(root)
+
+
+def _decode_frame(payload: bytes) -> JsonObject:
     if not payload or len(payload) > MAX_CLAUDE_CONTROL_FRAME_BYTES:
         _malformed()
     try:
         root = decode_json_object(payload)
     except InvalidPayloadError:
         _malformed()
+    return root
+
+
+def _decode_control_response_root(
+    root: JsonObject,
+) -> tuple[str, RequestId]:
     if set(root) != _RESPONSE_KEYS or root.get("type") != "control_response":
         _malformed()
     response = root.get("response")
     if not isinstance(response, dict):
         _malformed()
-    if set(response) != _SUCCESS_KEYS:
-        _malformed()
     received_id = response.get("request_id")
     subtype = response.get("subtype")
     if not isinstance(received_id, str) or not isinstance(subtype, str):
+        _malformed()
+    if subtype == "success":
+        if set(response) != _SUCCESS_KEYS:
+            _malformed()
+    elif subtype == "error":
+        error = response.get("error")
+        if set(response) != _REJECTION_KEYS or not _valid_error(error):
+            _malformed()
+    else:
         _malformed()
     try:
         correlated = RequestId(received_id)
     except ValueError:
         _malformed()
     return subtype, correlated
+
+
+def _valid_error(error: object) -> bool:
+    if not isinstance(error, str) or not error or "\0" in error:
+        return False
+    try:
+        return len(error.encode("utf-8")) <= _MAXIMUM_REJECTION_ERROR_BYTES
+    except UnicodeEncodeError:
+        return False
 
 
 def clear_secret_buffer(buffer: bytearray) -> None:

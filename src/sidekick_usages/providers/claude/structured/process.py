@@ -12,6 +12,7 @@ from uuid import uuid4
 
 from sidekick_usages.core.accounts.types import RequestId
 from sidekick_usages.platform.types import HostPlatform
+from sidekick_usages.providers.claude.errors import ClaudeProcessError
 from sidekick_usages.providers.claude.managed.errors import ClaudeManagedError
 from sidekick_usages.providers.claude.managed.executable import (
     inspect_claude_executable_artifact,
@@ -24,6 +25,7 @@ from sidekick_usages.providers.claude.process import (
 )
 from sidekick_usages.providers.claude.structured.codec import (
     clear_secret_buffer,
+    decode_control_response_request_id,
     decode_oauth_update_rejection,
     decode_oauth_update_success,
     encode_invalid_oauth_probe,
@@ -45,6 +47,7 @@ _STRUCTURED_ARGUMENTS = (
     "--output-format",
     "stream-json",
 )
+_STRUCTURED_USER_ARGUMENT_ALLOWLIST = frozenset({()})
 CLAUDE_STRUCTURED_ARTIFACT_SIZE = 275_012_592
 CLAUDE_STRUCTURED_ARTIFACT_SHA256 = (
     "674f61f20ff306f3100cf9200e4c36c4b70278b5bef2884549819b942a89c863"
@@ -112,17 +115,29 @@ def qualify_claude_structured_capability(
     ):
         _unsupported()
     factory = _open_probe_engine if engine_factory is None else engine_factory
-    engine = factory(
-        executable,
-        environment,
-        working_directory=working_directory,
-    )
+    try:
+        engine = factory(
+            executable,
+            environment,
+            working_directory=working_directory,
+        )
+    except ClaudeManagedError, ClaudeProcessError, ClaudeStructuredError:
+        _unsupported()
+    failed = False
     try:
         _probe_structured_control(engine, request_id_factory)
-    finally:
+    except ClaudeStructuredError:
+        failed = True
+    try:
         engine.close_input()
+    except ClaudeStructuredError:
+        failed = True
+    try:
         exit_status = engine.wait(_PROBE_TIMEOUT_SECONDS)
-    if exit_status != 0:
+    except ClaudeStructuredError:
+        failed = True
+        exit_status = -1
+    if failed or exit_status != 0:
         _unsupported()
     return ClaudeStructuredCapability(
         executable=executable,
@@ -144,7 +159,11 @@ def _probe_structured_control(
         CLAUDE_STRUCTURED_PROBE_CANARY,
     )
     try:
-        response = engine.exchange(positive, _PROBE_TIMEOUT_SECONDS)
+        response = engine.exchange(
+            positive,
+            positive_id,
+            _PROBE_TIMEOUT_SECONDS,
+        )
     finally:
         clear_secret_buffer(positive)
     decode_oauth_update_success(response, positive_id, frozenset())
@@ -153,7 +172,11 @@ def _probe_structured_control(
         raise ClaudeStructuredError(ClaudeStructuredFailure.PROTOCOL_MALFORMED)
     negative = encode_invalid_oauth_probe(negative_id)
     try:
-        response = engine.exchange(negative, _PROBE_TIMEOUT_SECONDS)
+        response = engine.exchange(
+            negative,
+            negative_id,
+            _PROBE_TIMEOUT_SECONDS,
+        )
     finally:
         clear_secret_buffer(negative)
     decode_oauth_update_rejection(response, negative_id)
@@ -186,6 +209,8 @@ class ClaudeStructuredProcess:
         self._monotonic = monotonic
         self._selector = selectors.DefaultSelector()
         self._buffer = bytearray()
+        self._event_frames: list[bytes] = []
+        self._event_bytes = 0
         self._stderr_buffer = bytearray()
         self._stderr_overflow = False
         self._input_closed = False
@@ -252,14 +277,28 @@ class ClaudeStructuredProcess:
     def exchange(
         self,
         request: bytearray,
+        request_id: RequestId,
         timeout_seconds: float,
     ) -> bytes:
-        """Exchange one control line without retry or process mutation."""
-        if timeout_seconds <= 0 or self._process.poll() is not None:
-            raise ClaudeStructuredError(ClaudeStructuredFailure.PROCESS_EXITED)
-        deadline = self._monotonic() + timeout_seconds
-        self._send(request, deadline)
-        return self._receive(deadline)
+        """Exchange one control line and wipe it before response wait."""
+        try:
+            if timeout_seconds <= 0 or self._process.poll() is not None:
+                raise ClaudeStructuredError(
+                    ClaudeStructuredFailure.PROCESS_EXITED
+                )
+            deadline = self._monotonic() + timeout_seconds
+            self._prepare_exchange(deadline)
+            self._send(request, deadline)
+        finally:
+            clear_secret_buffer(request)
+        return self._receive(request_id, deadline)
+
+    def take_events(self) -> tuple[bytes, ...]:
+        """Take bounded non-control frames retained for the terminal host."""
+        events = tuple(self._event_frames)
+        self._event_frames.clear()
+        self._event_bytes = 0
+        return events
 
     def close_input(self) -> None:
         """Close input once and allow the child to exit naturally."""
@@ -325,39 +364,83 @@ class ClaudeStructuredProcess:
             view.release()
             selector.close()
 
-    def _receive(self, deadline: float) -> bytes:
+    def _prepare_exchange(self, deadline: float) -> None:
         while True:
-            line_end = self._buffer.find(b"\n")
-            if line_end >= 0:
-                line = bytes(self._buffer[:line_end])
-                del self._buffer[: line_end + 1]
-                if not line:
-                    self._malformed()
-                return line
-            if len(self._buffer) > MAX_CLAUDE_CONTROL_FRAME_BYTES:
+            self._consume_pending_frames(None)
+            if self._buffer:
+                self._read(deadline)
+                continue
+            if not self._selector.select(0):
+                return
+            self._read(deadline)
+
+    def _receive(
+        self,
+        request_id: RequestId,
+        deadline: float,
+    ) -> bytes:
+        response: bytes | None = None
+        while True:
+            response = self._consume_pending_frames(request_id, response)
+            if response is not None:
+                return response
+            self._read(deadline)
+
+    def _consume_pending_frames(
+        self,
+        request_id: RequestId | None,
+        response: bytes | None = None,
+    ) -> bytes | None:
+        while (line_end := self._buffer.find(b"\n")) >= 0:
+            if line_end > MAX_CLAUDE_CONTROL_FRAME_BYTES:
                 self._malformed()
-            remaining = deadline - self._monotonic()
-            if remaining <= 0 or not self._selector.select(remaining):
-                raise ClaudeStructuredError(
-                    ClaudeStructuredFailure.PROTOCOL_TIMEOUT
-                )
-            try:
-                chunk = os.read(
-                    self._stdout.fileno(),
-                    min(
-                        _READ_CHUNK_BYTES,
-                        MAX_CLAUDE_CONTROL_FRAME_BYTES + 1 - len(self._buffer),
-                    ),
-                )
-            except OSError:
-                raise ClaudeStructuredError(
-                    ClaudeStructuredFailure.PROTOCOL_EOF
-                ) from None
-            if not chunk:
-                raise ClaudeStructuredError(
-                    ClaudeStructuredFailure.PROTOCOL_EOF
-                )
-            self._buffer.extend(chunk)
+            frame = bytes(self._buffer[:line_end])
+            del self._buffer[: line_end + 1]
+            if not frame:
+                self._malformed()
+            correlated = decode_control_response_request_id(frame)
+            if correlated is None:
+                self._retain_event(frame)
+                continue
+            if (
+                request_id is None
+                or correlated != request_id
+                or response is not None
+            ):
+                self._malformed()
+            response = frame
+        if len(self._buffer) > MAX_CLAUDE_CONTROL_FRAME_BYTES:
+            self._malformed()
+        return response
+
+    def _read(self, deadline: float) -> None:
+        remaining = deadline - self._monotonic()
+        if remaining <= 0 or not self._selector.select(remaining):
+            raise ClaudeStructuredError(
+                ClaudeStructuredFailure.PROTOCOL_TIMEOUT
+            )
+        maximum = MAX_CLAUDE_CONTROL_FRAME_BYTES + 1 - len(self._buffer)
+        if maximum <= 0:
+            self._malformed()
+        try:
+            chunk = os.read(
+                self._stdout.fileno(),
+                min(_READ_CHUNK_BYTES, maximum),
+            )
+        except OSError:
+            raise ClaudeStructuredError(
+                ClaudeStructuredFailure.PROTOCOL_EOF
+            ) from None
+        if not chunk:
+            raise ClaudeStructuredError(ClaudeStructuredFailure.PROTOCOL_EOF)
+        self._buffer.extend(chunk)
+
+    def _retain_event(self, frame: bytes) -> None:
+        retained = len(frame) + 1
+        if self._event_bytes + retained > MAX_CLAUDE_CONTROL_FRAME_BYTES:
+            self._malformed()
+        self._event_frames.append(frame)
+        self._event_bytes += retained
 
     def _drain_stderr(self) -> None:
         try:
@@ -377,15 +460,7 @@ class ClaudeStructuredProcess:
 
 
 def _require_safe_user_arguments(arguments: tuple[str, ...]) -> None:
-    forbidden = {"--print", "--input-format", "--output-format"}
-    if any(
-        not argument
-        or "\0" in argument
-        or argument in forbidden
-        or argument.startswith("--input-format=")
-        or argument.startswith("--output-format=")
-        for argument in arguments
-    ):
+    if arguments not in _STRUCTURED_USER_ARGUMENT_ALLOWLIST:
         raise ClaudeStructuredError(
             ClaudeStructuredFailure.PROCESS_UNAVAILABLE
         )

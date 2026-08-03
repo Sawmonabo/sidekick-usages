@@ -134,6 +134,7 @@ class ClaudeStructuredSession:
         try:
             response = self._engine.exchange(
                 request,
+                request_id,
                 _CONTROL_TIMEOUT_SECONDS,
             )
         finally:

@@ -57,6 +57,9 @@ from sidekick_usages.providers.claude.models import (
     ClaudeNativeProfile,
     ClaudeVersion,
 )
+from sidekick_usages.providers.claude.structured.codec import (
+    clear_secret_buffer,
+)
 from sidekick_usages.providers.claude.structured.models import (
     ClaudeStructuredBinding,
     ClaudeStructuredError,
@@ -66,6 +69,7 @@ from sidekick_usages.providers.claude.structured.process import (
     CLAUDE_STRUCTURED_ARTIFACT_SHA256,
     CLAUDE_STRUCTURED_ARTIFACT_SIZE,
     CLAUDE_STRUCTURED_PROBE_CANARY,
+    ClaudeStructuredProcess,
 )
 from sidekick_usages.providers.claude.structured.session import (
     ClaudeStructuredSession,
@@ -117,10 +121,12 @@ class StructuredResponseCase(StrEnum):
     OVERSIZE = "oversize"
     MALFORMED_UTF8 = "malformed_utf8"
     MULTIPLE_JSON = "multiple_json"
+    DUPLICATE_RESPONSE = "duplicate_response"
     TIMEOUT = "timeout"
     EOF = "eof"
     PROCESS_ERROR = "process_error"
     ERROR_RESPONSE = "error_response"
+    ERROR_EXTRA_FIELDS = "error_extra_fields"
     EXTRA_FIELDS = "extra_fields"
 
 
@@ -150,6 +156,7 @@ class ClaudeStructuredEngineFake:
         self.process_id = process_id
         self.requests: list[StructuredRequestObservation] = []
         self.cleared_request_buffers: list[bytearray] = []
+        self.wiped_before_response: list[bool] = []
         self.events: list[tuple[str, str]] = []
         self.user_turn_count = 0
         self.input_closed = False
@@ -157,18 +164,21 @@ class ClaudeStructuredEngineFake:
     def exchange(
         self,
         request: bytearray,
+        request_id: RequestId,
         timeout_seconds: float,
     ) -> bytes:
         """Return one scripted response without retaining OAuth bytes."""
         del timeout_seconds
         root = decode_json_object(request[:-1])
-        request_id = self._request_id(root)
+        encoded_request_id = self._request_id(root)
+        if encoded_request_id != str(request_id):
+            raise AssertionError("Structured request correlation changed.")
         variables = self._variables(root)
         oauth = variables.get("CLAUDE_CODE_OAUTH_TOKEN")
         expected_oauth = self._expected_oauth_values.pop(0)
         self.requests.append(
             StructuredRequestObservation(
-                request_id=request_id,
+                request_id=encoded_request_id,
                 variable_names=tuple(sorted(variables)),
                 exact_envelope=(
                     set(root) == {"request_id", "type", "variables"}
@@ -181,9 +191,11 @@ class ClaudeStructuredEngineFake:
         )
         self.cleared_request_buffers.append(request)
         if self._first_request_id is None:
-            self._first_request_id = request_id
+            self._first_request_id = encoded_request_id
         response_case = self._responses.pop(0)
-        return self._response(response_case, request_id)
+        clear_secret_buffer(request)
+        self.wiped_before_response.append(not any(request))
+        return self._response(response_case, encoded_request_id)
 
     def transmit_turn(self, receipt_epoch: int) -> None:
         """Record that adoption existed before one real prompt."""
@@ -226,12 +238,13 @@ class ClaudeStructuredEngineFake:
         failure = _structured_transport_failure(response_case)
         if failure is not None:
             raise ClaudeStructuredError(failure)
-        if response_case is StructuredResponseCase.OVERSIZE:
-            return b"x" * 65_537
-        if response_case is StructuredResponseCase.MALFORMED_UTF8:
-            return b"\xff"
-        if response_case is StructuredResponseCase.MULTIPLE_JSON:
-            return b"{}{}"
+        fixed = {
+            StructuredResponseCase.OVERSIZE: b"x" * 65_537,
+            StructuredResponseCase.MALFORMED_UTF8: b"\xff",
+            StructuredResponseCase.MULTIPLE_JSON: b"{}{}",
+        }.get(response_case)
+        if fixed is not None:
+            return fixed
         response_id = request_id
         if response_case is StructuredResponseCase.WRONG_REQUEST:
             response_id = "99999999-9999-4999-8999-999999999999"
@@ -239,23 +252,48 @@ class ClaudeStructuredEngineFake:
             if self._first_request_id is None:
                 raise AssertionError("Replay requires one prior request.")
             response_id = self._first_request_id
-        subtype = (
-            "error"
-            if response_case is StructuredResponseCase.ERROR_RESPONSE
-            else "success"
-        )
+        is_error = response_case in {
+            StructuredResponseCase.ERROR_RESPONSE,
+            StructuredResponseCase.ERROR_EXTRA_FIELDS,
+        }
+        subtype = "error" if is_error else "success"
         response: JsonObject = {
             "request_id": response_id,
             "subtype": subtype,
         }
-        if response_case is StructuredResponseCase.EXTRA_FIELDS:
+        if is_error:
+            response["error"] = "Environment variable values must be strings."
+        if response_case in {
+            StructuredResponseCase.ERROR_EXTRA_FIELDS,
+            StructuredResponseCase.EXTRA_FIELDS,
+        }:
             response["unexpected"] = True
-        return encode_compact_json(
+        encoded = encode_compact_json(
             {
                 "response": response,
                 "type": "control_response",
             }
         )
+        if response_case is StructuredResponseCase.DUPLICATE_RESPONSE:
+            return _duplicate_response(encoded, RequestId(request_id))
+        return encoded
+
+
+def _duplicate_response(encoded: bytes, request_id: RequestId) -> bytes:
+    event = b'{"type":"synthetic_event"}'
+    transport = ClaudeStructuredProcess.__new__(ClaudeStructuredProcess)
+    transport._buffer = bytearray(event + b"\n" + encoded + b"\n")
+    transport._event_frames = []
+    transport._event_bytes = 0
+    transport._monotonic = lambda: 0.0
+    assert transport._receive(request_id, 1.0) == encoded
+    assert transport.take_events() == (event,)
+
+    transport._buffer = bytearray(encoded + b"\n" + encoded + b"\n")
+    with pytest.raises(ClaudeStructuredError) as duplicate:
+        transport._receive(request_id, 1.0)
+    assert duplicate.value.code is ClaudeStructuredFailure.PROTOCOL_MALFORMED
+    return encoded + b"\n" + encoded
 
 
 def _structured_transport_failure(
@@ -279,9 +317,13 @@ class ClaudeStructuredEngineFactoryFake:
         positive_response: StructuredResponseCase = (
             StructuredResponseCase.SUCCESS
         ),
+        negative_response: StructuredResponseCase = (
+            StructuredResponseCase.ERROR_RESPONSE
+        ),
     ) -> None:
         self._positive_canary = positive_canary
         self._positive_response = positive_response
+        self._negative_response = negative_response
         self.engines: list[ClaudeStructuredEngineFake] = []
         self.environments: list[dict[str, str]] = []
 
@@ -300,7 +342,7 @@ class ClaudeStructuredEngineFactoryFake:
         engine = ClaudeStructuredEngineFake(
             (
                 self._positive_response,
-                StructuredResponseCase.ERROR_RESPONSE,
+                self._negative_response,
             ),
             (self._positive_canary, 7),
             process_id=5252,
@@ -320,6 +362,7 @@ class StructuredCapabilityMutation(StrEnum):
     SIZE = "size"
     MANIFEST = "manifest"
     SCHEMA = "schema"
+    NEGATIVE_SCHEMA = "negative_schema"
     MACOS = "macos"
 
 
@@ -397,6 +440,11 @@ def structured_capability_fixture(
             StructuredResponseCase.EXTRA_FIELDS
             if mutation is StructuredCapabilityMutation.SCHEMA
             else StructuredResponseCase.SUCCESS
+        ),
+        (
+            StructuredResponseCase.ERROR_EXTRA_FIELDS
+            if mutation is StructuredCapabilityMutation.NEGATIVE_SCHEMA
+            else StructuredResponseCase.ERROR_RESPONSE
         ),
     )
     return StructuredCapabilityFixture(

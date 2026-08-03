@@ -101,9 +101,10 @@ class ClaudeStructuredEngine(Protocol):
     def exchange(
         self,
         request: bytearray,
+        request_id: RequestId,
         timeout_seconds: float,
     ) -> bytes:
-        """Exchange one bounded control frame without retry."""
+        """Exchange one correlated bounded control frame without retry."""
 
     def close_input(self) -> None:
         """Close the structured input without signalling the child."""
