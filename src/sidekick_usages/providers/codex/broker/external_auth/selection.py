@@ -49,6 +49,11 @@ from sidekick_usages.providers.codex.broker.ports import (
 )
 from sidekick_usages.providers.codex.broker.service import CodexSharedRuntime
 from sidekick_usages.providers.codex.broker.types import CodexBrokerFailure
+from sidekick_usages.providers.codex.session.models import CodexRelayAuthority
+from sidekick_usages.providers.codex.session.quiescence import (
+    CodexParticipantProofError,
+    CodexParticipantProofSet,
+)
 from sidekick_usages.serialization.framing import clear_mutable_buffer
 from sidekick_usages.serialization.json import (
     JsonEncodeError,
@@ -507,6 +512,7 @@ class CodexSelectionBroker:
         exchanges: CodexWorkerExchangeFactory,
         saved_authority: CodexSavedAuthorityRelation,
         runtime_state: CodexRuntimeStateReader,
+        participant_proofs: CodexParticipantProofSet,
         *,
         wall_time: Callable[[], datetime],
         monotonic: Callable[[], float] = time.monotonic,
@@ -514,6 +520,7 @@ class CodexSelectionBroker:
         self._exchanges = exchanges
         self._saved_authority = saved_authority
         self._runtime_state = runtime_state
+        self._participant_proofs = participant_proofs
         self._wall_time = wall_time
         self._monotonic = monotonic
         self._lock = Lock()
@@ -611,31 +618,62 @@ class CodexSelectionBroker:
         finally:
             clear_mutable_buffer(payload)
         if instruction.kind is OperationKind.SELECTION_PREVALIDATE:
-            runtime.require_mcp_quiescent()
             observed_account_id = reply.binding.account_id
             observed_generation = reply.binding.generation
         elif instruction.kind is OperationKind.SELECTION_COMMIT:
             projection = reply.projection
             if projection is None:
                 raise CodexBrokerError(CodexBrokerFailure.PROTOCOL_FAILED)
-            self._require_runtime(runtime, instruction)
-            with projection:
-                runtime.prepare(
-                    projection.account_id,
-                    projection.provider_identity,
-                    projection.generation,
+            target = CodexRelayAuthority(
+                account_id=projection.account_id,
+                generation=projection.generation,
+                epoch=reply.binding.pending_epoch,
+            )
+            try:
+                self._participant_proofs.prepare(
+                    reply.binding.operation_id,
+                    reply.binding.pending_epoch,
                 )
-                runtime.require_authority(
-                    instruction.socket_device,
-                    instruction.socket_inode,
-                )
-                receipt = runtime.install(
-                    projection,
-                    deadline=(
-                        instruction.deadlines.completion_deadline_seconds
-                        - CODEX_SELECTION_INSTALL_RESERVE_SECONDS
-                    ),
-                )
+            except CodexParticipantProofError:
+                raise CodexBrokerError(
+                    CodexBrokerFailure.PROTOCOL_UNSUPPORTED
+                ) from None
+            proof_pending = True
+            try:
+                self._require_runtime(runtime, instruction)
+                with projection:
+                    runtime.prepare(
+                        projection.account_id,
+                        projection.provider_identity,
+                        projection.generation,
+                    )
+                    runtime.require_authority(
+                        instruction.socket_device,
+                        instruction.socket_inode,
+                    )
+                    receipt = runtime.install(
+                        projection,
+                        deadline=(
+                            instruction.deadlines.completion_deadline_seconds
+                            - CODEX_SELECTION_INSTALL_RESERVE_SECONDS
+                        ),
+                    )
+                try:
+                    self._participant_proofs.complete(
+                        reply.binding.operation_id,
+                        target,
+                    )
+                except CodexParticipantProofError:
+                    raise CodexBrokerError(
+                        CodexBrokerFailure.PROTOCOL_UNSUPPORTED
+                    ) from None
+                proof_pending = False
+            finally:
+                if proof_pending:
+                    self._participant_proofs.abort(
+                        reply.binding.operation_id,
+                        reply.binding.pending_epoch,
+                    )
             self._require_runtime(runtime, instruction)
             record_projection(runtime, receipt)
             observed_account_id = receipt.account_id

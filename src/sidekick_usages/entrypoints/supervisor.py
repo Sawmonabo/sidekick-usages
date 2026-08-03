@@ -17,6 +17,7 @@ from sidekick_usages.daemon.control.dispatch import (
     OperationEventHub,
     SupervisorDispatcher,
 )
+from sidekick_usages.daemon.control.protocol import FramedTransport
 from sidekick_usages.daemon.control.server import LocalControlServer
 from sidekick_usages.daemon.lifecycle.constants import (
     CLAUDE_LAUNCHER_OPTION,
@@ -88,10 +89,8 @@ from sidekick_usages.providers.codex.auth.home import default_codex_home
 from sidekick_usages.providers.codex.auth.storage import codex_auth_basename
 from sidekick_usages.providers.codex.broker.responder import CodexRuntimeBroker
 from sidekick_usages.providers.codex.broker.service import (
-    CodexLoadedThreadSupplier,
     CodexSharedRuntime,
     prepare_codex_session_home,
-    unavailable_codex_loaded_threads,
 )
 
 _EXIT_OK = 0
@@ -116,7 +115,6 @@ def _signal_stop(
 def _create_codex_runtime(
     paths: ApplicationPaths,
     launcher: Path | None,
-    loaded_threads: CodexLoadedThreadSupplier,
     cancelled: Callable[[], bool],
 ) -> CodexSharedRuntime:
     session_home = prepare_codex_session_home(
@@ -142,7 +140,6 @@ def _create_codex_runtime(
         session_home,
         environment=os.environ,
         cancelled=cancelled,
-        loaded_threads=loaded_threads,
     )
 
 
@@ -234,7 +231,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             _create_codex_runtime,
             paths,
             provider_launchers.codex,
-            unavailable_codex_loaded_threads,
         ),
         RuntimeStateReader(
             ProviderId.CODEX,
@@ -254,9 +250,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             wakeup.notify,
         ),
         exchanges,
+        proof_transport_factory=FramedTransport,
         wall_time=clock.now,
         status_changed=wakeup.notify,
     )
+    participants.add_attachment_registry(broker.participant_proofs)
     scheduler = DurableScheduler(
         queue,
         results,

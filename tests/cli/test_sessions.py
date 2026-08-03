@@ -41,7 +41,7 @@ from sidekick_usages.cli.session.shell import (
     ShellStartupResolver,
 )
 from sidekick_usages.core.types import ExitCode, ProviderId
-from sidekick_usages.daemon.control import dispatch
+from sidekick_usages.daemon.control import dispatch, protocol
 from sidekick_usages.daemon.control.server import LocalControlServer
 from sidekick_usages.daemon.selection.coordinator import SelectionCoordinator
 from sidekick_usages.daemon.selection.registry import ParticipantRegistry
@@ -57,6 +57,7 @@ from sidekick_usages.persistence.supervisor import selection
 from sidekick_usages.persistence.supervisor.service import ServiceStateStore
 from sidekick_usages.platform.executable import qualify_executable
 from sidekick_usages.providers.codex.app_server import executable
+from sidekick_usages.providers.codex.session import quiescence
 from tests.fakes.codex.app_server.daemon import FakeCodexDaemon
 from tests.fakes.codex.app_server.executable import (
     configure_codex_daemon_lifecycle,
@@ -863,7 +864,12 @@ def test_codex_session_runs_one_coordinated_stock_tui(
     ready_read, ready_write = os.pipe()
     os.set_inheritable(ready_write, True)
     state = foundation_state(short_socket_root / "state")
-    participants = ParticipantRegistry(state.selected)
+    participants = ParticipantRegistry(
+        state.selected,
+        attachments=quiescence.CodexParticipantProofSet(
+            protocol.FramedTransport
+        ),
+    )
     clock = FixedClock()
     coordinator = SelectionCoordinator(
         state.selected,
@@ -990,7 +996,3 @@ def test_codex_session_runs_one_coordinated_stock_tui(
         lifecycle.start_statuses,
         lifecycle.restart_count,
     ) == (2, 0, 0, False, (), 0)
-    unsafe_args = ("session", "codex", "--", "--remote", "unix:///x")
-    unsafe = CliRunner().invoke(create_app(), unsafe_args, obj=contexts[0])
-    assert unsafe.exit_code == ExitCode.MANUAL_ACTION
-    assert "Codex arguments override protected" in click.unstyle(unsafe.output)

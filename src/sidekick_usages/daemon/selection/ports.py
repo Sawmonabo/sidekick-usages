@@ -58,6 +58,9 @@ class ParticipantAttachmentRegistry(Protocol):
     def requires_endpoint(self, provider_id: ProviderId) -> bool:
         """Return whether this provider requires a protected endpoint."""
 
+    def requires_finalized_binding(self, provider_id: ProviderId) -> bool:
+        """Return whether baseline admission requires attachment binding."""
+
     def stage(
         self,
         participant_id: ParticipantId,

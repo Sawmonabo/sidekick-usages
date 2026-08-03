@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from sidekick_usages.cli.session.codex import CodexSessionRuntime
 from sidekick_usages.core.accounts.types import (
     AuthorityGeneration,
     OperationId,
@@ -66,7 +67,6 @@ from sidekick_usages.providers.codex.broker.service import CodexSharedRuntime
 from sidekick_usages.providers.codex.broker.types import CodexBrokerFailure
 from sidekick_usages.providers.codex.session.models import (
     CODEX_SESSION_OPERATOR_PRECONDITION,
-    CodexLoadedThreadSnapshot,
     CodexSessionConfigurationReason,
 )
 from tests.fakes.codex.app_server.daemon import FakeCodexDaemon
@@ -89,6 +89,7 @@ from tests.fakes.codex.broker.runtime import (
     PROVIDER_IDENTITY,
     RECOVERY_GENERATION,
     UNKNOWN_GENERATION,
+    UNSELECTED_NEXT_GENERATION,
     activation_source_fixture,
     broker_finalized_fixture,
     projection_matches_account,
@@ -428,10 +429,6 @@ def test_shared_codex_runtime_is_idempotent_and_rehydrates(
             executable,
             session_home,
             environment=environment,
-            loaded_threads=lambda: CodexLoadedThreadSnapshot(
-                revision=0,
-                thread_ids=(),
-            ),
         )
         observer_a = daemon.connect_tui()
         observer_b = daemon.connect_tui()
@@ -632,7 +629,6 @@ def test_selection_worker_binds_codex_broker_journey(
         tmp_path,
         short_socket_root,
         monkeypatch,
-        account_a_private_generation=GENERATION,
     )
     paths = fixture.paths
     initial = _finalized_codex_selection(paths)
@@ -648,6 +644,13 @@ def test_selection_worker_binds_codex_broker_journey(
             app_server_version="0.146.0",
         )
         observer = daemon.connect_tui()
+        session = CodexSessionRuntime.create(
+            fixture.executable,
+            fixture.session_home,
+            short_socket_root / "selection-participant.sock",
+            paths.supervisor_socket,
+            environment=fixture.environment,
+        )
         with FakeCodexSupervisor(
             paths,
             fixture.executable,
@@ -657,6 +660,12 @@ def test_selection_worker_binds_codex_broker_journey(
         ) as supervisor:
             supervisor.wait_until_ready()
             observer.wait_for_account_update()
+            session.open()
+            participant = daemon.connect_tui(session.socket_path)
+            participant.send_request(
+                1, "thread/resume", {"threadId": "thread-alpha"}
+            )
+            assert participant.receive().get("id") == 1
             assert (
                 _finalized_codex_selection(paths),
                 set(daemon.installed_account_ids),
@@ -664,25 +673,59 @@ def test_selection_worker_binds_codex_broker_journey(
             ) == (
                 initial,
                 {ACCOUNT_A_PROVIDER_IDENTITY},
-                ("thread-alpha", "thread-alpha"),
+                (),
             )
 
             assert saved_generation(paths, MANAGED_ACCOUNT_ID) == GENERATION
+            selected_events = _select_codex_account(
+                paths,
+                MANAGED_ACCOUNT_ID,
+            )
+            selected = selected_events[-1].payload
+            assert isinstance(selected, SelectionResult), selected_events
+            assert (selected.outcome, selected.safe_code) == (
+                SelectionOutcome.READY,
+                SelectionCode.SELECTION_SUCCEEDED,
+            )
+            supervisor.wait_until_selection_workers_collected()
+            participant.send_request(
+                2,
+                "turn/start",
+                {"input": [], "threadId": "thread-alpha"},
+            )
+            for _message_index in range(3):
+                participant.receive()
+            finalized = _finalized_codex_selection(paths)
+            assert (
+                finalized.account_id,
+                finalized.epoch,
+                str(finalized.generation),
+                set(daemon.installed_account_ids),
+                saved_generation(paths, MANAGED_ACCOUNT_ID),
+                daemon.mcp_status_thread_ids,
+                daemon.relay_start_request_ids[-1:],
+            ) == (
+                MANAGED_ACCOUNT_ID,
+                initial.epoch.next(),
+                NEXT_GENERATION,
+                {ACCOUNT_A_PROVIDER_IDENTITY, PROVIDER_IDENTITY},
+                NEXT_GENERATION,
+                ("thread-alpha", "thread-alpha", "thread-alpha"),
+                (2,),
+            )
+
             supervisor.schedule_selection_hook(
                 OperationKind.SELECTION_COMMIT,
                 daemon.replace_socket_listener,
             )
             target_auth = (
-                managed_codex_home(paths, MANAGED_ACCOUNT_ID) / CODEX_AUTH_FILE
+                managed_codex_home(paths, ACCOUNT_A_ID) / CODEX_AUTH_FILE
             )
             supervisor.schedule_selection_hook(
                 OperationKind.SELECTION_READBACK,
                 target_auth.unlink,
             )
-            rejected_events = _select_codex_account(
-                paths,
-                MANAGED_ACCOUNT_ID,
-            )
+            rejected_events = _select_codex_account(paths, ACCOUNT_A_ID)
             rejected = rejected_events[-1].payload
             assert isinstance(rejected, SelectionResult), rejected_events
             assert (rejected.outcome, rejected.safe_code) == (
@@ -696,13 +739,13 @@ def test_selection_worker_binds_codex_broker_journey(
             assert (
                 _finalized_codex_selection(paths),
                 set(daemon.installed_account_ids),
-                saved_generation(paths, MANAGED_ACCOUNT_ID),
+                saved_generation(paths, ACCOUNT_A_ID),
                 recovered.active,
                 recovered.history[-1].outcome,
             ) == (
-                initial,
-                {ACCOUNT_A_PROVIDER_IDENTITY},
-                NEXT_GENERATION,
+                finalized,
+                {ACCOUNT_A_PROVIDER_IDENTITY, PROVIDER_IDENTITY},
+                UNSELECTED_NEXT_GENERATION,
                 None,
                 SelectionOutcome.FAILED_OLD_EPOCH,
             )
@@ -710,28 +753,28 @@ def test_selection_worker_binds_codex_broker_journey(
                 supervisor,
                 daemon,
                 paths,
-                ACCOUNT_A_ID,
-                ACCOUNT_A_PROVIDER_IDENTITY,
+                MANAGED_ACCOUNT_ID,
+                PROVIDER_IDENTITY,
                 supervisor.schedule_stale_callback_epoch,
             )
             _assert_callback_rejection(
                 supervisor,
                 daemon,
                 paths,
-                ACCOUNT_A_ID,
-                ACCOUNT_A_PROVIDER_IDENTITY,
+                MANAGED_ACCOUNT_ID,
+                PROVIDER_IDENTITY,
                 supervisor.schedule_stale_callback_request,
             )
             _assert_callback_rejection(
                 supervisor,
                 daemon,
                 paths,
-                ACCOUNT_A_ID,
-                ACCOUNT_A_PROVIDER_IDENTITY,
-                lambda: supervisor.schedule_wrong_callback_home(
-                    MANAGED_ACCOUNT_ID
-                ),
+                MANAGED_ACCOUNT_ID,
+                PROVIDER_IDENTITY,
+                lambda: supervisor.schedule_wrong_callback_home(ACCOUNT_A_ID),
             )
+            participant.close()
+            session.close()
 
         observer.close()
     assert fixture.native_auth.read_bytes() == NATIVE_AUTH_SENTINEL

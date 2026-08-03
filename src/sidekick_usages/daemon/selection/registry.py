@@ -89,13 +89,38 @@ class ParticipantRegistry:
             maxlen=MAX_RETAINED_PARTICIPANT_NOTICES
         )
         self._cancelled_subscriptions: set[RequestId] = set()
-        self._attachments = attachments
+        self._attachments = () if attachments is None else (attachments,)
+
+    def add_attachment_registry(
+        self,
+        attachments: ParticipantAttachmentRegistry,
+    ) -> None:
+        """Compose one additional provider owner before serving requests."""
+        with self._condition:
+            if self._participants or self._gates:
+                raise RuntimeError(
+                    "Participant attachment composition is already active."
+                )
+            if any(
+                owner.requires_endpoint(provider_id)
+                and attachments.requires_endpoint(provider_id)
+                for owner in self._attachments
+                for provider_id in ProviderId
+            ):
+                raise RuntimeError(
+                    "Participant attachment owner is duplicate."
+                )
+            self._attachments = (*self._attachments, attachments)
 
     def requires_attachment(self, provider_id: ProviderId) -> bool:
         """Return whether an injected provider attachment is mandatory."""
+        return self._attachment_registry(provider_id) is not None
+
+    def requires_finalized_attachment(self, provider_id: ProviderId) -> bool:
+        """Return whether baseline turns require a provider target bind."""
+        attachments = self._attachment_registry(provider_id)
         return bool(
-            self._attachments
-            and self._attachments.requires_endpoint(provider_id)
+            attachments and attachments.requires_finalized_binding(provider_id)
         )
 
     def stage_attachment(
@@ -105,7 +130,7 @@ class ParticipantRegistry:
         endpoint: socket.socket,
     ) -> ParticipantAttachmentTransaction:
         """Stage one injected attachment for the membership transaction."""
-        attachments = self._attachments
+        attachments = self._attachment_registry(manifest.provider_id)
         if attachments is None:
             endpoint.close()
             raise ParticipantRequestError(SelectionCode.AUTHORITY_PROOF_FAILED)
@@ -146,6 +171,15 @@ class ParticipantRegistry:
                 else selected.epoch
             )
             gate = self._gates.get(manifest.provider_id)
+            attachment_ready_epoch = (
+                registered_epoch
+                if attachment is not None
+                and gate is None
+                and not self.requires_finalized_attachment(
+                    manifest.provider_id
+                )
+                else None
+            )
             registration = ParticipantRegistration(
                 participant_id=manifest.participant_id,
                 provider_id=manifest.provider_id,
@@ -169,13 +203,14 @@ class ParticipantRegistry:
                 if current is not None:
                     current.manifest = manifest
                     current.confirmed_dead = False
-                    current.attachment_ready_epoch = None
+                    current.attachment_ready_epoch = attachment_ready_epoch
                     current.ready_epoch = None
                 else:
                     current = ParticipantRecord(
                         manifest,
                         peer,
                         registered_epoch,
+                        attachment_ready_epoch=attachment_ready_epoch,
                     )
                     self._participants[manifest.participant_id] = current
                 if gate is not None and required is not None:
@@ -477,8 +512,11 @@ class ParticipantRegistry:
                 raise ParticipantRequestError(
                     SelectionCode.AUTHORITY_PROOF_FAILED
                 )
-            if self._attachments is not None:
-                self._attachments.remove(
+            attachments = self._attachment_registry(
+                participant.manifest.provider_id
+            )
+            if attachments is not None:
+                attachments.remove(
                     participant_id,
                     participant.manifest.connection_generation,
                     peer,
@@ -554,7 +592,9 @@ class ParticipantRegistry:
                 participant,
                 self._gates.get(provider_id),
                 self._selected.load(provider_id),
-                attachment_required=self.requires_attachment(provider_id),
+                attachment_required=self.requires_finalized_attachment(
+                    provider_id
+                ),
             )
 
         with self._condition:
@@ -702,8 +742,7 @@ class ParticipantRegistry:
                 is not None
                 and (
                     participant.confirmed_dead
-                    or participant.attachment_ready_epoch
-                    == gate.pending_epoch
+                    or participant.attachment_ready_epoch == gate.pending_epoch
                 )
                 for participant_id in gate.required
             )
@@ -719,13 +758,13 @@ class ParticipantRegistry:
                 raise ParticipantRequestError(
                     SelectionCode.AUTHORITY_PROOF_FAILED
                 )
-            if not self.requires_attachment(finalized.provider_id):
+            if not self.requires_finalized_attachment(finalized.provider_id):
                 return
+            records = self._participants
             installed = self._prepare_attachments(
                 (
                     participant_id
-                    for participant_id, participant
-                    in self._participants.items()
+                    for participant_id, participant in records.items()
                     if participant.manifest.provider_id
                     is finalized.provider_id
                 ),
@@ -866,17 +905,15 @@ class ParticipantRegistry:
         operation_id: OperationId,
         authority: AuthorityReadyProof | FinalizedSelection,
     ) -> tuple[ParticipantId, ...]:
-        attachments = self._attachments
         installed: list[ParticipantId] = []
         for participant_id in participant_ids:
             participant = self._participants.get(participant_id)
             if participant is None:
                 continue
-            protected = attachments is not None and (
-                attachments.requires_endpoint(
-                    participant.manifest.provider_id
-                )
+            attachments = self._attachment_registry(
+                participant.manifest.provider_id
             )
+            protected = attachments is not None
             arguments = (
                 participant_id,
                 participant.manifest.connection_generation,
@@ -892,6 +929,15 @@ class ParticipantRegistry:
                 participant.attachment_ready_epoch = authority.epoch
                 installed.append(participant_id)
         return tuple(installed)
+
+    def _attachment_registry(
+        self,
+        provider_id: ProviderId,
+    ) -> ParticipantAttachmentRegistry | None:
+        for attachments in self._attachments:
+            if attachments.requires_endpoint(provider_id):
+                return attachments
+        return None
 
     def _open_participants(
         self,

@@ -219,6 +219,10 @@ class FramedTransport:
         """Encode and send one request frame."""
         self._connection.sendall(encode_request(request))
 
+    def send_payload(self, payload: bytes) -> None:
+        """Frame and send one already validated local payload."""
+        self._connection.sendall(encode_frame(payload))
+
     def send_request_with_attachment(
         self,
         request: ControlRequest,

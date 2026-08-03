@@ -1,6 +1,7 @@
 """Complete CLI ownership of one coordinated stock Codex TUI."""
 
 import os
+import socket
 import stat
 from collections.abc import Iterator, Mapping
 from pathlib import Path
@@ -18,6 +19,7 @@ from sidekick_usages.core.types import ProviderId
 from sidekick_usages.daemon.control.client import (
     ControlClient,
 )
+from sidekick_usages.daemon.control.protocol import FramedTransport
 from sidekick_usages.daemon.models.protocol import (
     AcceptedPayload,
     CompletedPayload,
@@ -50,6 +52,9 @@ from sidekick_usages.providers.codex.session.models import (
     CodexRelayAdmissionState,
     CodexRelayAuthority,
 )
+from sidekick_usages.providers.codex.session.quiescence import (
+    CodexParticipantProofChannel,
+)
 from sidekick_usages.providers.codex.session.relay import (
     CodexAdmissionRelay,
     CodexRelayError,
@@ -74,7 +79,10 @@ class _CodexParticipantControl:
         self._connection_generation = connection_generation
         self._lock = RLock()
 
-    def register(self) -> ParticipantRegistration:
+    def register(
+        self,
+        protected_endpoint: socket.socket,
+    ) -> ParticipantRegistration:
         """Register the exact CLI process as one Codex participant."""
         manifest = ParticipantManifest(
             participant_id=self._participant_id,
@@ -84,7 +92,10 @@ class _CodexParticipantControl:
             connection_generation=self._connection_generation,
         )
         payload = self._payload(
-            self._client.register_participant(manifest),
+            self._client.register_participant(
+                manifest,
+                protected_endpoint=protected_endpoint,
+            ),
             EventKind.PARTICIPANT_REGISTERED,
         )
         if (
@@ -253,6 +264,7 @@ class CodexSessionRuntime:
         self._readiness_session: CodexDaemonSession | None = None
         self._control_client: ControlClient | None = None
         self._subscription_client: ControlClient | None = None
+        self._proof_channel: CodexParticipantProofChannel | None = None
         self._notice_thread: Thread | None = None
         self._opened_once = False
 
@@ -296,6 +308,8 @@ class CodexSessionRuntime:
         control_client: ControlClient | None = None
         subscription_client: ControlClient | None = None
         relay: CodexAdmissionRelay | None = None
+        proof_channel: CodexParticipantProofChannel | None = None
+        supervisor_endpoint: socket.socket | None = None
         try:
             self._manager.session_config.qualify(
                 readiness_session,
@@ -322,7 +336,11 @@ class CodexSessionRuntime:
                 turn_id_factory=lambda: TurnId(str(uuid4())),
             )
             self._manager.revalidate(authority)
-            participant.register()
+            proof_channel, supervisor_endpoint = (
+                CodexParticipantProofChannel.create(FramedTransport)
+            )
+            participant.register(supervisor_endpoint)
+            supervisor_endpoint = None
             notices = subscription_client.subscribe_participant(
                 self._participant_id,
                 self._connection_generation,
@@ -334,11 +352,16 @@ class CodexSessionRuntime:
                 raise CodexRelayError(
                     SelectionCode.SELECTION_RECOVERY_REQUIRED
                 ) from None
-            self._apply_notice(relay, self._require_notice(initial_event))
+            self._apply_notice(
+                relay,
+                proof_channel,
+                self._require_notice(initial_event),
+            )
             self._relay = relay
             self._readiness_session = readiness_session
             self._control_client = control_client
             self._subscription_client = subscription_client
+            self._proof_channel = proof_channel
             thread = Thread(
                 target=self._consume_notices,
                 args=(notices,),
@@ -348,6 +371,10 @@ class CodexSessionRuntime:
             self._notice_thread = thread
             thread.start()
         except BaseException:
+            if supervisor_endpoint is not None:
+                supervisor_endpoint.close()
+            if proof_channel is not None:
+                proof_channel.close()
             if relay is not None:
                 relay.close()
             if subscription_client is not None:
@@ -363,6 +390,7 @@ class CodexSessionRuntime:
         failures: list[BaseException] = []
         resources = (
             self._subscription_client,
+            self._proof_channel,
             self._relay,
             self._control_client,
             self._readiness_session,
@@ -381,6 +409,7 @@ class CodexSessionRuntime:
         self._readiness_session = None
         self._control_client = None
         self._subscription_client = None
+        self._proof_channel = None
         self._notice_thread = None
         if thread is not None and thread.is_alive():
             failures.append(
@@ -396,15 +425,21 @@ class CodexSessionRuntime:
 
     def _consume_notices(self, notices: Iterator[ControlEvent]) -> None:
         relay = self._relay
-        if relay is None:
+        proof_channel = self._proof_channel
+        if relay is None or proof_channel is None:
             return
         try:
             for event in notices:
-                self._apply_notice(relay, self._require_notice(event))
+                self._apply_notice(
+                    relay,
+                    proof_channel,
+                    self._require_notice(event),
+                )
             if not self._closing.is_set():
                 relay.refuse_admission(
                     SelectionCode.SELECTION_RECOVERY_REQUIRED
                 )
+                relay.discard_quiescence()
         except BaseException as error:
             if not self._closing.is_set():
                 relay.refuse_admission(
@@ -412,10 +447,12 @@ class CodexSessionRuntime:
                     if isinstance(error, CodexRelayError)
                     else SelectionCode.SELECTION_RECOVERY_REQUIRED
                 )
+                relay.discard_quiescence()
 
     @staticmethod
     def _apply_notice(
         relay: CodexAdmissionRelay,
+        proof_channel: CodexParticipantProofChannel,
         notice: ParticipantNotice,
     ) -> None:
         if notice.kind is ParticipantNoticeKind.READY:
@@ -434,14 +471,17 @@ class CodexSessionRuntime:
             )
         elif notice.kind is ParticipantNoticeKind.OPEN:
             relay.open_epoch(notice.epoch)
+            relay.discard_quiescence()
         elif notice.kind is ParticipantNoticeKind.PREPARE:
             relay.prepare_admission()
+            proof_channel.serve_selection(relay, notice.epoch)
         elif notice.kind is ParticipantNoticeKind.STATUS:
             relay.refuse_admission(
                 SelectionCode.SELECTION_RECOVERY_REQUIRED
                 if notice.code is None
                 else notice.code
             )
+            relay.discard_quiescence()
         else:
             raise CodexRelayError(SelectionCode.AUTHORITY_PROOF_FAILED)
 

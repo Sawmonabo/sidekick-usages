@@ -23,6 +23,7 @@ from sidekick_usages.daemon.control.dispatch import (
     OperationEventHub,
     SupervisorDispatcher,
 )
+from sidekick_usages.daemon.control.protocol import FramedTransport
 from sidekick_usages.daemon.control.server import LocalControlServer
 from sidekick_usages.daemon.models.service import ServicePreparationReport
 from sidekick_usages.daemon.models.worker import ProviderLaunchers
@@ -84,9 +85,6 @@ from sidekick_usages.providers.codex.broker.external_auth.selection import (
 )
 from sidekick_usages.providers.codex.broker.responder import CodexRuntimeBroker
 from sidekick_usages.providers.codex.broker.service import CodexSharedRuntime
-from sidekick_usages.providers.codex.session.models import (
-    CodexLoadedThreadSnapshot,
-)
 
 _READINESS_TIMEOUT_SECONDS = 10.0
 _SUPERVISOR_JOIN_SECONDS = 10.0
@@ -227,7 +225,6 @@ def _runtime_factory(
     executable: CodexExecutable,
     session_home: Path,
     environment: Mapping[str, str],
-    loaded_threads: Callable[[], CodexLoadedThreadSnapshot],
 ) -> Callable[[Callable[[], bool]], CodexSharedRuntime]:
     """Build the shared-runtime factory used by resident test harnesses."""
     runtime_environment = dict(environment)
@@ -238,7 +235,6 @@ def _runtime_factory(
             session_home,
             environment=runtime_environment,
             cancelled=cancelled,
-            loaded_threads=loaded_threads,
         )
 
     return create
@@ -295,6 +291,7 @@ def _compose_broker(
         accounts,
         dispatcher,
         exchanges,
+        proof_transport_factory=FramedTransport,
         wall_time=clock.now,
         status_changed=status_changed,
     )
@@ -319,10 +316,6 @@ class FakeCodexBroker:
                 executable,
                 session_home,
                 environment,
-                lambda: CodexLoadedThreadSnapshot(
-                    revision=0,
-                    thread_ids=(),
-                ),
             ),
             clock,
             queue,
@@ -471,10 +464,6 @@ class FakeCodexSupervisor:
                 executable,
                 session_home,
                 environment,
-                lambda: CodexLoadedThreadSnapshot(
-                    revision=1,
-                    thread_ids=("thread-alpha",),
-                ),
             ),
             clock,
             queue,
@@ -483,6 +472,7 @@ class FakeCodexSupervisor:
             exchanges,
             self._wakeup.notify,
         )
+        participants.add_attachment_registry(broker.participant_proofs)
         scheduler = DurableScheduler(
             queue,
             results,

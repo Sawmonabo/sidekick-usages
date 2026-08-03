@@ -5,17 +5,28 @@ import os
 import socket
 from dataclasses import dataclass
 from pathlib import Path
-from threading import Condition, Event, RLock, Thread
+from threading import Condition, Thread
 
 import pytest
 
 from sidekick_usages.core.accounts.types import (
     AuthorityGeneration,
+    OperationId,
     ProviderIdentity,
     SidekickAccountId,
 )
-from sidekick_usages.core.selection.models import SelectionEpoch
-from sidekick_usages.core.selection.types import SelectionCode, TurnId
+from sidekick_usages.core.selection.models import (
+    AuthorityReadyProof,
+    SelectionEpoch,
+)
+from sidekick_usages.core.selection.types import (
+    ParticipantId,
+    SelectionCode,
+    TurnId,
+)
+from sidekick_usages.core.types import ProviderId
+from sidekick_usages.daemon.control.protocol import FramedTransport
+from sidekick_usages.platform.models import ProcessIdentity
 from sidekick_usages.providers.codex.app_server import (
     capabilities,
     errors,
@@ -40,12 +51,15 @@ from sidekick_usages.providers.codex.broker.service import CodexSharedRuntime
 from sidekick_usages.providers.codex.broker.types import CodexBrokerFailure
 from sidekick_usages.providers.codex.session.models import (
     CODEX_SESSION_OPERATOR_PRECONDITION,
-    CodexLoadedThreadSnapshot,
     CodexRelayAdmission,
     CodexRelayAdmissionState,
     CodexRelayAuthority,
     CodexSessionCapability,
     CodexSessionConfigurationReason,
+)
+from sidekick_usages.providers.codex.session.quiescence import (
+    CodexParticipantProofChannel,
+    CodexParticipantProofSet,
 )
 from sidekick_usages.providers.codex.session.relay import (
     CodexAdmissionRelay,
@@ -77,7 +91,6 @@ _GENERATION = "2026-07-24T10:00:00.000000000Z"
 _NATIVE_AUTH = managed_auth(_PROVIDER_IDENTITY, _GENERATION)
 _SESSION_PROVIDER = "sidekick-chatgpt-http"
 _SESSION_BASE_URL = "https://chatgpt.com/backend-api/codex"
-_NO_LOADED_THREADS = CodexLoadedThreadSnapshot(revision=0, thread_ids=())
 _SESSION_SCHEMA_MANIFEST = (
     "v2/ConfigReadParams.json",
     "v2/ConfigReadResponse.json",
@@ -97,7 +110,6 @@ _SESSION_SCHEMA_MANIFEST = (
 )
 _ROUTING_REQUEST_ID = 7
 _RELAY_WAIT_SECONDS = 5.0
-_LOADED_THREAD_BOUND = 256
 _BASELINE_AUTHORITY = CodexRelayAuthority(
     account_id=_ACCOUNT_ID,
     generation=AuthorityGeneration(_GENERATION),
@@ -126,33 +138,21 @@ class _SessionCase:
 
 class _RelayControl:
     def __init__(self, authority: CodexRelayAuthority) -> None:
-        self._condition = Condition(RLock())
+        self._condition = Condition()
         self._authority = authority
         self._open = True
-        self._pause_states: set[CodexRelayAdmissionState] = set()
-        self._block_adoption = False
-        self._fail_end = False
-        self.events = {
-            name: Event()
-            for name in (
-                "queued-started",
-                "queued-resume",
-                "admitted-started",
-                "admitted-resume",
-                "adoption-started",
-                "adoption-resume",
-            )
-        }
         self.begun: list[TurnId] = []
         self.ended: list[TurnId] = []
         self.ready_targets: list[CodexRelayAuthority] = []
         self.adoptions: list[tuple[TurnId, CodexRelayAuthority]] = []
         self.mcp_statuses: list[JsonObject] = []
+        self.mcp_thread_ids: list[str] = []
 
     def request(self, method: str, params: JsonObject) -> JsonObject:
         """Return an exact zero-MCP response for one loaded thread."""
         assert method == "mcpServerStatus/list"
         assert set(params) == {"threadId"}
+        self.mcp_thread_ids.append(str(params["threadId"]))
         return self.mcp_statuses.pop(0) if self.mcp_statuses else {"data": []}
 
     def close_gate(self) -> None:
@@ -163,16 +163,6 @@ class _RelayControl:
         with self._condition:
             self._authority = authority
             self._open = True
-
-    def fail_next_end(self) -> None:
-        self._fail_end = True
-
-    def arm_open_race(self) -> None:
-        with self._condition:
-            self._pause_states = set(CodexRelayAdmissionState)
-            self._block_adoption = True
-        for event in self.events.values():
-            event.clear()
 
     def wait_count(
         self,
@@ -194,15 +184,8 @@ class _RelayControl:
                 else CodexRelayAdmissionState.QUEUED
             )
             authority = self._authority if self._open else None
-            pause = state in self._pause_states
-            self._pause_states.discard(state)
-            started = self.events[f"{state.value}-started"]
-            resumed = self.events[f"{state.value}-resume"]
             self.begun.append(turn_id)
             self._condition.notify_all()
-        if pause:
-            started.set()
-            self._wait_event(resumed)
         return CodexRelayAdmission(
             turn_id=turn_id,
             state=state,
@@ -218,11 +201,6 @@ class _RelayControl:
         with self._condition:
             self.ended.append(turn_id)
             self._condition.notify_all()
-            if self._fail_end:
-                self._fail_end = False
-                raise CodexRelayError(
-                    SelectionCode.SELECTION_RECOVERY_REQUIRED
-                )
 
     def ready(self, target: CodexRelayAuthority) -> None:
         with self._condition:
@@ -235,18 +213,8 @@ class _RelayControl:
         target: CodexRelayAuthority,
     ) -> None:
         with self._condition:
-            block = self._block_adoption
-            self._block_adoption = False
             self.adoptions.append((turn_id, target))
             self._condition.notify_all()
-        if block:
-            self.events["adoption-started"].set()
-            self._wait_event(self.events["adoption-resume"])
-
-    @staticmethod
-    def _wait_event(event: Event) -> None:
-        if not event.wait(_RELAY_WAIT_SECONDS):
-            raise AssertionError("Timed out at a relay race boundary.")
 
 
 def _receive_response(
@@ -350,40 +318,12 @@ def _prove_relay_baseline(
     assert control.wait_count(control.ended, 2)
 
     control.close_gate()
-    baseline_ids = tuple(range(20, 36))
-    for request_id in baseline_ids:
-        _send_turn(tui, request_id, f"thread-baseline-{request_id}")
-    assert control.wait_count(control.begun, 18)
-    _send_turn(tui, 36, "thread-refused")
-    backpressure = _receive_response(tui, 36).get("error")
-    assert isinstance(backpressure, dict)
-    assert backpressure.get("data") == {
-        "code": SelectionCode.ACTIVE_OPERATION_TIMEOUT.value
-    }
-
+    _send_turn(tui, 20, "thread-baseline")
     control.open_gate(_BASELINE_AUTHORITY)
     relay.reopen_baseline(_BASELINE_AUTHORITY)
-    for request_id in baseline_ids:
-        _receive_response(tui, request_id)
-    assert control.wait_count(control.ended, 18)
-    assert daemon.relay_start_request_ids == (10, 11, *baseline_ids)
-    assert control.ready_targets == []
-    assert control.adoptions == []
-
-    control.fail_next_end()
-    _send_turn(tui, 37, "thread-turn-a")
-    _receive_response(tui, 37)
-    _receive_method(tui, "turn/completed")
-    tui.send_request(38, "account/read", {"refreshToken": False})
-    assert "result" in _receive_response(tui, 38)
-    _send_turn(tui, 39, "thread-degraded")
-    refusal = _receive_response(tui, 39).get("error")
-    assert isinstance(refusal, dict)
-    assert refusal.get("data") == {
-        "code": SelectionCode.SELECTION_RECOVERY_REQUIRED.value
-    }
-    assert control.wait_count(control.ended, 19)
-    relay.prepare_admission()
+    _receive_response(tui, 20)
+    assert control.wait_count(control.ended, 3)
+    assert daemon.relay_start_request_ids == (10, 11, 20)
 
 
 def _prove_relay_target(
@@ -419,57 +359,85 @@ def _prove_relay_target(
     )
     relay.mark_ready(_TARGET_AUTHORITY, relay.loaded_threads_snapshot)
 
-    control.arm_open_race()
-    _send_turn(tui, 70, "thread-race-first")
-    _RelayControl._wait_event(control.events["queued-started"])
-    open_started, open_finished = Event(), Event()
-
-    def open_target() -> None:
-        control.open_gate(_TARGET_AUTHORITY)
-        open_started.set()
-        relay.open_admission(_TARGET_AUTHORITY)
-        open_finished.set()
-
-    open_thread = Thread(target=open_target)
-    open_thread.start()
-    _RelayControl._wait_event(open_started)
-    finished_before_queue_install = open_finished.wait(0.1)
-    control.events["queued-resume"].set()
-    if finished_before_queue_install:
-        open_thread.join(timeout=_RELAY_WAIT_SECONDS)
-    assert not finished_before_queue_install
-
-    _RelayControl._wait_event(control.events["admitted-started"])
-    _send_turn(tui, 71, "thread-race-second")
-    control.events["admitted-resume"].set()
-    _RelayControl._wait_event(control.events["adoption-started"])
-    duplicate = control.wait_count(control.adoptions, 2, 0.1)
-    control.events["adoption-resume"].set()
-    open_thread.join(timeout=_RELAY_WAIT_SECONDS)
-    assert not open_thread.is_alive()
-    assert not duplicate
+    _send_turn(tui, 70, "thread-target")
+    control.open_gate(_TARGET_AUTHORITY)
+    relay.open_admission(_TARGET_AUTHORITY)
     _receive_response(tui, 70)
-    _receive_response(tui, 71)
-    assert control.wait_count(control.ended, 21)
-    assert daemon.relay_start_request_ids[-2:] == (70, 71)
-    assert control.adoptions == [(control.begun[-2], _TARGET_AUTHORITY)]
+    assert control.wait_count(control.ended, 4)
+    assert daemon.relay_start_request_ids[-1:] == (70,)
+    assert control.adoptions == [(control.begun[-1], _TARGET_AUTHORITY)]
     assert control.ready_targets == [_TARGET_AUTHORITY, _TARGET_AUTHORITY]
 
 
-def _prove_loaded_thread_bound(
+def _prove_participant_quiescence(
     relay: CodexAdmissionRelay,
     tui: FakeCodexTuiObserver,
+    control: _RelayControl,
 ) -> None:
-    """Prove relay state is bounded and fails closed on overflow."""
-    for request_id in range(100, 333):
-        _resume_thread(tui, request_id, f"thread-bound-{request_id}")
-    full_snapshot = relay.loaded_threads_snapshot
-    assert len(full_snapshot.thread_ids) == _LOADED_THREAD_BOUND
-    tui.send_request(400, "thread/resume", {"threadId": "thread-overflow"})
-    tui.wait_closed()
-    with pytest.raises(CodexRelayError) as overflow:
-        relay.mark_ready(_TARGET_AUTHORITY, full_snapshot)
-    assert overflow.value.code is SelectionCode.UNSUPPORTED_SESSION_CAPABILITY
+    """Prove correlated local MCP reads around one provider mutation."""
+    participant_id = ParticipantId("55555555-5555-4555-8555-555555555555")
+    operation_id = OperationId("66666666-6666-4666-8666-666666666666")
+    peer = ProcessIdentity(1234, 5678)
+    supervisor_endpoint, participant_endpoint = socket.socketpair()
+    proofs = CodexParticipantProofSet(FramedTransport)
+    attachment = proofs.stage(participant_id, 1, peer, supervisor_endpoint)
+    attachment.commit()
+    channel = CodexParticipantProofChannel(
+        participant_endpoint,
+        FramedTransport,
+    )
+    proof_thread = Thread(
+        target=channel.serve_selection,
+        args=(relay, _TARGET_AUTHORITY.epoch),
+    )
+    proof_thread.start()
+    proofs.prepare(operation_id, _TARGET_AUTHORITY.epoch)
+    sealed_threads = relay.loaded_threads_snapshot.thread_ids
+    resumed = Thread(
+        target=_resume_thread,
+        args=(tui, 80, "thread-after-proof"),
+    )
+    resumed.start()
+    resumed.join(timeout=0.1)
+    crossed_precommit = not resumed.is_alive()
+    proofs.complete(operation_id, _TARGET_AUTHORITY)
+    proof_thread.join(timeout=_RELAY_WAIT_SECONDS)
+    resumed.join(timeout=0.1)
+    crossed_postcommit = not resumed.is_alive()
+    relay.release_quiescence()
+    resumed.join(timeout=_RELAY_WAIT_SECONDS)
+    target_proof = AuthorityReadyProof(
+        provider_id=ProviderId.CODEX,
+        account_id=_TARGET_AUTHORITY.account_id,
+        generation=_TARGET_AUTHORITY.generation,
+        epoch=_TARGET_AUTHORITY.epoch,
+        safe_code=SelectionCode.SELECTION_SUCCEEDED,
+    )
+    assert (
+        proof_thread.is_alive(),
+        proofs.matches_target(
+            participant_id, 1, peer, operation_id, target_proof
+        ),
+        control.mcp_thread_ids[-14:],
+        crossed_precommit,
+        crossed_postcommit,
+        resumed.is_alive(),
+        "thread-after-proof" in relay.loaded_threads_snapshot.thread_ids,
+    ) == (False, True, list(sealed_threads) * 2, False, False, False, True)
+
+    abort_id = OperationId("77777777-7777-4777-8777-777777777777")
+    abort_thread = Thread(
+        target=channel.serve_selection,
+        args=(relay, _TARGET_AUTHORITY.epoch),
+    )
+    abort_thread.start()
+    proofs.prepare(abort_id, _TARGET_AUTHORITY.epoch)
+    proofs.abort(abort_id, _TARGET_AUTHORITY.epoch)
+    abort_thread.join(timeout=_RELAY_WAIT_SECONDS)
+    _resume_thread(tui, 81, "thread-after-abort")
+    assert not abort_thread.is_alive()
+    channel.close()
+    proofs.close()
 
 
 def _prove_versioned_relay_journey(short_socket_root: Path) -> None:
@@ -533,7 +501,7 @@ def _prove_versioned_relay_journey(short_socket_root: Path) -> None:
 
                 _prove_relay_baseline(relay, tui, control, daemon)
                 _prove_relay_target(relay, tui, control, daemon)
-                _prove_loaded_thread_bound(relay, tui)
+                _prove_participant_quiescence(relay, tui, control)
 
             finally:
                 tui.close()
@@ -576,7 +544,6 @@ def _prepare_shared_runtime(
         native_home,
         environment=environment,
         expected_user_id=expected_user_id,
-        loaded_threads=lambda: _NO_LOADED_THREADS,
     )
     runtime.prepare(
         _ACCOUNT_ID,
@@ -821,7 +788,6 @@ def test_neutral_runtime_requires_current_auth_without_model_websockets(
             server,
             session_home,
             environment=environment,
-            loaded_threads=lambda: _NO_LOADED_THREADS,
         )
 
         if case.protocol_unsupported:

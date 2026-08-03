@@ -5,7 +5,7 @@ from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from threading import RLock, Thread, current_thread
+from threading import Condition, RLock, Thread, current_thread
 from types import TracebackType
 from typing import Protocol, Self
 
@@ -119,6 +119,7 @@ class CodexAdmissionRelay:
         self._mcp_reader = mcp_reader
         self._turn_id_factory = turn_id_factory
         self._lock = RLock()
+        self._proof_condition = Condition(self._lock)
         self._server: CodexRelayServer | None = None
         self._downstream: CodexRelayFrameConnection | None = None
         self._upstream_thread: Thread | None = None
@@ -128,6 +129,7 @@ class CodexAdmissionRelay:
         self._realtime: dict[str, TurnId] = {}
         self._loaded_threads: set[str] = set()
         self._loaded_threads_revision = 0
+        self._proof_snapshot: CodexLoadedThreadSnapshot | None = None
         self._active: set[TurnId] = set()
         self._baseline_authority: CodexRelayAuthority | None = None
         self._ready_target: CodexRelayAuthority | None = None
@@ -181,6 +183,60 @@ class CodexAdmissionRelay:
         """Return an immutable revision-bound readiness input."""
         with self._lock:
             return self._loaded_threads_snapshot_locked()
+
+    def arm_quiescence(self) -> tuple[int, int, bool]:
+        """Arm the relay-local barrier and prove precommit quiescence."""
+        with self._proof_condition:
+            self._raise_if_unusable()
+            if self._proof_snapshot is not None:
+                raise CodexRelayError(SelectionCode.AUTHORITY_PROOF_FAILED)
+            snapshot = self._loaded_threads_snapshot_locked()
+            self._proof_snapshot = snapshot
+            if self._active:
+                return snapshot.revision, len(snapshot.thread_ids), False
+        return self._read_quiescence(snapshot)
+
+    def confirm_quiescence(self) -> tuple[int, int, bool]:
+        """Reprove the retained precommit snapshot before barrier release."""
+        with self._lock:
+            self._raise_if_unusable()
+            snapshot = self._proof_snapshot
+            if snapshot is None:
+                raise CodexRelayError(SelectionCode.AUTHORITY_PROOF_FAILED)
+        return self._read_quiescence(snapshot)
+
+    def release_quiescence(self) -> tuple[int, int, bool]:
+        """Release a retained proof barrier without another provider read."""
+        with self._proof_condition:
+            snapshot = self._proof_snapshot
+            if snapshot is None:
+                raise CodexRelayError(SelectionCode.AUTHORITY_PROOF_FAILED)
+            self._proof_snapshot = None
+            self._proof_condition.notify_all()
+            return snapshot.revision, len(snapshot.thread_ids), False
+
+    def discard_quiescence(self) -> None:
+        """Release a failed proof barrier without raising another failure."""
+        with self._proof_condition:
+            self._proof_snapshot = None
+            self._proof_condition.notify_all()
+
+    def _read_quiescence(
+        self,
+        snapshot: CodexLoadedThreadSnapshot,
+    ) -> tuple[int, int, bool]:
+        try:
+            self._require_zero_mcp(snapshot)
+        except CodexRelayError:
+            return snapshot.revision, len(snapshot.thread_ids), False
+        with self._lock:
+            self._raise_if_unusable()
+            current = self._loaded_threads_snapshot_locked()
+            return (
+                current.revision,
+                len(current.thread_ids),
+                not self._active and current == snapshot,
+            )
 
     def seed_baseline(self, authority: CodexRelayAuthority) -> None:
         """Seed one exact finalized authority before participant traffic."""
@@ -311,6 +367,8 @@ class CodexAdmissionRelay:
             if self._closed:
                 return
             self._closed = True
+            self._proof_snapshot = None
+            self._proof_condition.notify_all()
             downstream = self._downstream
             upstream_thread = self._upstream_thread
             server = self._server
@@ -404,7 +462,9 @@ class CodexAdmissionRelay:
             )
             return
         if method not in {TURN_START_METHOD, THREAD_REALTIME_START_METHOD}:
-            with self._lock:
+            with self._proof_condition:
+                while self._proof_snapshot is not None:
+                    self._proof_condition.wait()
                 self._raise_if_unusable()
                 self._ensure_loaded_thread_capacity_locked(routing.thread_id)
                 self._upstream.send(routing.raw)
@@ -728,6 +788,8 @@ class CodexAdmissionRelay:
                         SelectionCode.SELECTION_RECOVERY_REQUIRED
                     )
                 )
+            self._proof_snapshot = None
+            self._proof_condition.notify_all()
             downstream = self._downstream
         if downstream is not None:
             downstream.close()

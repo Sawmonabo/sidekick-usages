@@ -78,6 +78,10 @@ from sidekick_usages.providers.codex.broker.types import (
 from sidekick_usages.providers.codex.session.models import (
     CodexSessionPreparationReport,
 )
+from sidekick_usages.providers.codex.session.quiescence import (
+    CodexParticipantProofSet,
+    CodexProofTransportFactory,
+)
 from sidekick_usages.serialization.framing import clear_mutable_buffer
 
 CODEX_CALLBACK_RESPONSE_SECONDS = 8.0
@@ -106,6 +110,7 @@ class CodexRuntimeBroker:
         operations: CodexOperationDispatcher,
         exchanges: CodexWorkerExchangeFactory,
         *,
+        proof_transport_factory: CodexProofTransportFactory,
         wall_time: Callable[[], datetime],
         monotonic: Callable[[], float] = time.monotonic,
         status_changed: Callable[[], None] | None = None,
@@ -130,10 +135,14 @@ class CodexRuntimeBroker:
         self._active_operation: OperationId | None = None
         self._activation_instruction: CodexActivationInstruction | None = None
         self._activation_exchange: CodexWorkerExchange | None = None
+        self._participant_proofs = CodexParticipantProofSet(
+            proof_transport_factory
+        )
         self._selection = CodexSelectionBroker(
             exchanges,
             self._saved_authority,
             runtime_state,
+            self._participant_proofs,
             wall_time=wall_time,
             monotonic=monotonic,
         )
@@ -171,6 +180,11 @@ class CodexRuntimeBroker:
         """Return bounded operator recovery guidance when available."""
         with self._lock:
             return self._preparation_report
+
+    @property
+    def participant_proofs(self) -> CodexParticipantProofSet:
+        """Return the broker-owned Codex attachment registry."""
+        return self._participant_proofs
 
     def prepare_operation(self, operation: DueOperation) -> bool:
         """Prepare an exchange only after resident runtime qualification."""
@@ -292,6 +306,7 @@ class CodexRuntimeBroker:
                 thread.join(timeout=_BROKER_JOIN_SECONDS)
                 if thread.is_alive():
                     raise RuntimeError("Codex refresh broker did not stop.")
+            self._participant_proofs.close()
 
     def _run(self) -> None:
         runtime: CodexSharedRuntime | None = None

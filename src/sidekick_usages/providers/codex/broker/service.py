@@ -29,9 +29,6 @@ from sidekick_usages.providers.codex.app_server.errors import (
 from sidekick_usages.providers.codex.app_server.jsonrpc.types import (
     JsonRpcMessage,
 )
-from sidekick_usages.providers.codex.app_server.methods import (
-    MCP_SERVER_STATUS_LIST_METHOD,
-)
 from sidekick_usages.providers.codex.app_server.models import CodexExecutable
 from sidekick_usages.providers.codex.auth.generation import (
     codex_generation_order,
@@ -71,23 +68,13 @@ from sidekick_usages.providers.codex.session.home import (
     qualify_codex_session_home,
 )
 from sidekick_usages.providers.codex.session.models import (
-    CodexLoadedThreadSnapshot,
     CodexSessionCapability,
 )
 
 __all__ = (
-    "CodexLoadedThreadSupplier",
     "CodexSharedRuntime",
     "prepare_codex_session_home",
-    "unavailable_codex_loaded_threads",
 )
-
-type CodexLoadedThreadSupplier = Callable[[], CodexLoadedThreadSnapshot]
-
-
-def unavailable_codex_loaded_threads() -> CodexLoadedThreadSnapshot:
-    """Fail closed until the live relay snapshot owner is composed."""
-    raise CodexBrokerError(CodexBrokerFailure.PROTOCOL_UNSUPPORTED)
 
 
 def prepare_codex_session_home(
@@ -117,10 +104,8 @@ class CodexSharedRuntime:
     def __init__(
         self,
         manager: CodexDaemonManager,
-        loaded_threads: CodexLoadedThreadSupplier,
     ) -> None:
         self._manager = manager
-        self._loaded_threads = loaded_threads
         self._session: CodexDaemonSession | None = None
         self._authority: CodexDaemonAuthority | None = None
         self._expected: CodexProjectionExpectation | None = None
@@ -138,7 +123,6 @@ class CodexSharedRuntime:
         expected_user_id: int | None = None,
         peer_verifier: PeerVerifier | None = None,
         cancelled: Callable[[], bool] | None = None,
-        loaded_threads: CodexLoadedThreadSupplier,
     ) -> CodexSharedRuntime:
         """Probe the exact schema before composing the shared runtime."""
         try:
@@ -157,8 +141,7 @@ class CodexSharedRuntime:
                 expected_user_id=expected_user_id,
                 peer_verifier=peer_verifier,
                 cancelled=cancelled,
-            ),
-            loaded_threads,
+            )
         )
 
     @property
@@ -288,32 +271,6 @@ class CodexSharedRuntime:
             raise CodexBrokerError(CodexBrokerFailure.RUNTIME_CHANGED)
         self._revalidate_authority(authority)
 
-    def require_mcp_quiescent(self) -> None:
-        """Prove every relay-loaded thread has no resident MCP work."""
-        session = self._session
-        capability = self._session_capability
-        if (
-            session is None
-            or session.closed
-            or capability is None
-            or not capability.supported
-        ):
-            raise CodexBrokerError(CodexBrokerFailure.PROTOCOL_UNSUPPORTED)
-        loaded_threads = self._loaded_threads()
-        try:
-            for thread_id in loaded_threads.thread_ids:
-                result = session.request(
-                    MCP_SERVER_STATUS_LIST_METHOD,
-                    {"threadId": thread_id},
-                )
-                if set(result) != {"data"} or result.get("data") != []:
-                    raise CodexBrokerError(
-                        CodexBrokerFailure.PROTOCOL_UNSUPPORTED
-                    )
-        except CodexAppServerError as error:
-            self._drop_session()
-            raise codex_broker_error(error) from None
-
     def observe_auth(
         self,
         observed_at: datetime,
@@ -387,7 +344,6 @@ class CodexSharedRuntime:
             receipt = install_codex_projection(
                 session,
                 projection,
-                self._loaded_threads,
                 deadline=deadline,
             )
         except CodexAppServerError as error:

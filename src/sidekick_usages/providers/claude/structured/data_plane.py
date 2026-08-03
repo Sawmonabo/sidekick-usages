@@ -212,6 +212,11 @@ class ClaudeParticipantChannelRegistry:
         """Require protected endpoints only for Claude participants."""
         return provider_id is ProviderId.CLAUDE
 
+    @staticmethod
+    def requires_finalized_binding(provider_id: ProviderId) -> bool:
+        """Require Claude authority installation before baseline admission."""
+        return provider_id is ProviderId.CLAUDE
+
     def stage(
         self,
         participant_id: ParticipantId,

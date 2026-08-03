@@ -174,7 +174,6 @@ class SelectionCoordinator:
         self._bind_registered_participant(
             manifest.provider_id,
             registration,
-            requires_endpoint=requires_endpoint,
         )
         return registration
 
@@ -182,8 +181,6 @@ class SelectionCoordinator:
         self,
         provider_id: ProviderId,
         registration: ParticipantRegistration,
-        *,
-        requires_endpoint: bool,
     ) -> None:
         binder = self._adapter
         if registration.pending_epoch is not None:
@@ -195,7 +192,9 @@ class SelectionCoordinator:
             ):
                 binder.bind_participant(active)
             self._resume_if_recovered(provider_id)
-        elif requires_endpoint and isinstance(
+        elif self._participants.requires_finalized_attachment(
+            provider_id
+        ) and isinstance(
             binder, SelectionParticipantBinder
         ):
             finalized = self._selected.load(provider_id)
