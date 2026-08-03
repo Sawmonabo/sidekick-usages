@@ -5,6 +5,7 @@ import os
 import stat
 from collections.abc import Callable
 from pathlib import Path
+from threading import Lock
 
 from sidekick_usages import __version__
 from sidekick_usages.clock import Clock
@@ -15,7 +16,9 @@ from sidekick_usages.daemon.models.diagnostics import (
     DiagnosticEvent,
 )
 from sidekick_usages.daemon.models.scheduler import SchedulerCompletion
+from sidekick_usages.daemon.types.control import ControlFailurePhase
 from sidekick_usages.daemon.types.ports import OperationEventSink
+from sidekick_usages.daemon.types.protocol import ProtocolErrorCode
 from sidekick_usages.daemon.types.service import PackageVersion
 
 _LOG_BASENAME = "supervisor.jsonl"
@@ -33,9 +36,14 @@ class SanitizedDiagnosticLog:
             raise ValueError("Service log root must be absolute.")
         self._root = root
         self._path = root / _LOG_BASENAME
+        self._lock = Lock()
 
     def append(self, event: DiagnosticEvent) -> None:
         """Append one bounded no-secret event."""
+        with self._lock:
+            self._append(event)
+
+    def _append(self, event: DiagnosticEvent) -> None:
         payload = _encode_event(event)
         self._prepare_root()
         self._rotate_if_needed(len(payload))
@@ -60,6 +68,10 @@ class SanitizedDiagnosticLog:
 
     def clear(self) -> None:
         """Remove only known supervisor diagnostic files."""
+        with self._lock:
+            self._clear()
+
+    def _clear(self) -> None:
         if not self._root.exists():
             return
         self._require_safe_root()
@@ -220,6 +232,33 @@ class DiagnosticOperationSink(OperationEventSink):
                 operation_id=completion.operation_id,
                 phase="worker_recovered",
                 result=completion.failure_code or completion.outcome.value,
+                duration_milliseconds=0,
+                package_version=self._package_version,
+            )
+        )
+
+
+class ControlFailureDiagnosticSink:
+    """Persist generic control failures without request or exception data."""
+
+    def __init__(
+        self,
+        log: SanitizedDiagnosticLog,
+        clock: Clock,
+        *,
+        package_version: str = __version__,
+    ) -> None:
+        self._log = log
+        self._clock = clock
+        self._package_version = PackageVersion(package_version)
+
+    def failed(self, phase: ControlFailurePhase) -> None:
+        """Record one bounded generic control failure."""
+        self._log.append(
+            DiagnosticEvent(
+                observed_at=self._clock.now(),
+                phase=phase.value,
+                result=ProtocolErrorCode.DISPATCH_FAILED.value,
                 duration_milliseconds=0,
                 package_version=self._package_version,
             )

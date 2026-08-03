@@ -27,6 +27,7 @@ from sidekick_usages.daemon.runtime.codex import (
 )
 from sidekick_usages.daemon.runtime.diagnostics import (
     CompositeOperationSink,
+    ControlFailureDiagnosticSink,
     DiagnosticOperationSink,
     SanitizedDiagnosticLog,
 )
@@ -186,7 +187,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         queue,
         selection_recovery=selection_recovery,
     )
-    events = OperationEventHub()
+    diagnostic_log = SanitizedDiagnosticLog(paths.service_logs)
+    control_diagnostics = ControlFailureDiagnosticSink(diagnostic_log, clock)
+    events = OperationEventHub(control_diagnostics.failed)
     exchanges = WorkerExchangeRegistry(time.monotonic)
     workers = WorkerPool(
         SubprocessWorkerLauncher(),
@@ -234,7 +237,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             CompositeOperationSink(
                 events,
                 DiagnosticOperationSink(
-                    SanitizedDiagnosticLog(paths.service_logs),
+                    diagnostic_log,
                     clock,
                     time.monotonic,
                 ),
@@ -259,6 +262,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         paths.runtime_directory,
         paths.supervisor_socket,
         dispatcher,
+        failure_reporter=control_diagnostics.failed,
     )
     runtime = SupervisorRuntime(
         server,

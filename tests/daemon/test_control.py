@@ -87,6 +87,7 @@ from sidekick_usages.daemon.selection.models import (
     TurnEndRequest,
 )
 from sidekick_usages.daemon.selection.ports import SelectionSupervisorPort
+from sidekick_usages.daemon.types.control import ControlFailurePhase
 from sidekick_usages.daemon.types.lifecycle import (
     ServiceBackendId,
     ServiceComponentState,
@@ -119,6 +120,7 @@ from tests.fakes.daemon.control import (
     VerifiedPeer,
     exercise_blocked_stream_cancellation,
     exercise_closed_subscription_monitor,
+    exercise_control_cancellation_failures,
     rejected_protocol_response,
     serve_protocol_connection,
 )
@@ -136,8 +138,9 @@ from tests.support.time import REFERENCE_TIME, FixedClock
 class _OperatorSelection(SelectionSupervisorPort):
     """Return one immediate result through the operator control surface."""
 
-    def __init__(self) -> None:
+    def __init__(self, failure: Exception | None = None) -> None:
         self.operation_id: OperationId | None = None
+        self._failure = failure
 
     def select(
         self,
@@ -146,6 +149,8 @@ class _OperatorSelection(SelectionSupervisorPort):
         target_account_id: SidekickAccountId,
     ) -> SelectionResult:
         """Record and complete one exact synthetic selection."""
+        if self._failure is not None:
+            raise self._failure
         self.operation_id = operation_id
         return SelectionResult(
             operation_id=operation_id,
@@ -162,6 +167,10 @@ class _OperatorSelection(SelectionSupervisorPort):
             started_at=REFERENCE_TIME,
             completed_at=REFERENCE_TIME,
         )
+
+    def fail(self) -> None:
+        """Make the next synthetic selection expose a programming fault."""
+        self._failure = ValueError("synthetic fault")
 
 
 def _verified(request: ControlRequest) -> VerifiedControlRequest:
@@ -292,7 +301,6 @@ def test_authenticated_control_stream_frames_completes_and_cancels(
         _verified(fragmented_request),
     )
     assert dispatcher.cancellations == [accepted.request_id]
-
     state = foundation_state(tmp_path)
     resident = ResidentState()
     durable_dispatcher = SupervisorDispatcher(
@@ -303,6 +311,11 @@ def test_authenticated_control_stream_frames_completes_and_cancels(
         RuntimeClock(),
         Event().set,
         Event().set,
+    )
+    exercise_control_cancellation_failures(
+        _verified(fragmented_request),
+        state,
+        resident,
     )
     approved_request = replace(
         fragmented_request,
@@ -505,11 +518,12 @@ def test_select_accepts_with_the_correlated_operation_id(
     operation_id = OperationId("9265897c-7881-47af-b69e-575823b33c3f")
     target = SidekickAccountId("2999e642-0299-4f73-9187-01b3d240e3d8")
     selection = _OperatorSelection()
+    control_failures: list[ControlFailurePhase] = []
     state = foundation_state(tmp_path)
     dispatcher = SupervisorDispatcher(
         state.queue,
         ServiceStateStore(state.paths.service_state),
-        OperationEventHub(),
+        OperationEventHub(control_failures.append),
         ResidentState(),
         RuntimeClock(),
         Event().set,
@@ -532,6 +546,11 @@ def test_select_accepts_with_the_correlated_operation_id(
     assert isinstance(completed.payload, SelectionResult)
     assert completed.payload.operation_id == operation_id
     assert selection.operation_id == operation_id
+    selection.fail()
+    failed = tuple(dispatcher.dispatch(_verified(request)))[-1]
+    assert isinstance(failed.payload, FailedPayload)
+    assert failed.payload.code == ProtocolErrorCode.DISPATCH_FAILED.value
+    assert control_failures == [ControlFailurePhase.DISPATCH]
 
 
 def _dispatch_failure_code(
@@ -550,9 +569,8 @@ def _dispatch_failure_code(
         Event().set,
         Event().set,
     )
-    (event,) = tuple(
-        dispatcher.dispatch(VerifiedControlRequest(request, peer))
-    )
+    events = tuple(dispatcher.dispatch(VerifiedControlRequest(request, peer)))
+    event = events[-1]
     assert isinstance(event.payload, FailedPayload)
     return event.payload.code
 
