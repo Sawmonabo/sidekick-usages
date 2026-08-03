@@ -15,7 +15,7 @@ from sidekick_usages.core.selection.models import (
     FinalizedSelection,
     OpenSelectionOperation,
 )
-from sidekick_usages.core.selection.types import OperationKind
+from sidekick_usages.core.selection.types import OperationKind, SelectionPhase
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.daemon.models.worker import WorkerResult
 from sidekick_usages.daemon.types.worker import WorkerOutcome
@@ -35,6 +35,38 @@ from tests.fakes.claude.managed import (
     claude_profile_status,
     credential_payload,
 )
+from tests.support.time import REFERENCE_TIME
+
+
+def existing_selection_operation(
+    scenario: ClaudeActivationScenario,
+) -> tuple[OpenSelectionOperation, FinalizedSelection]:
+    """Build one open selection from the synthetic finalized baseline."""
+    baseline = scenario.selected.load(ProviderId.CLAUDE)
+    if baseline is None:
+        raise AssertionError("Synthetic Claude baseline is unavailable.")
+    return (
+        OpenSelectionOperation(
+            operation_id=scenario.operation.operation_id,
+            provider_id=ProviderId.CLAUDE,
+            baseline_account_id=baseline.account_id,
+            target_account_id=scenario.target.account_id,
+            prepared_generation=None,
+            target_generation=None,
+            baseline_epoch=baseline.epoch,
+            pending_epoch=baseline.epoch.next(),
+            phase=SelectionPhase.PREVALIDATING,
+            required_participant_ids=(),
+            ready_participant_ids=(),
+            lost_after_commit_participant_ids=(),
+            confirmed_dead_before_commit_count=0,
+            confirmed_dead_before_commit_code=None,
+            outcome_code=None,
+            started_at=REFERENCE_TIME,
+            updated_at=REFERENCE_TIME,
+        ),
+        baseline,
+    )
 
 
 def first_selection_scenario(

@@ -97,6 +97,7 @@ from sidekick_usages.daemon.worker.runtime import (
     worker_failure,
     worker_success,
 )
+from sidekick_usages.daemon.worker.selection import SelectionWorkerBoundary
 from sidekick_usages.http.client import HttpClient
 from sidekick_usages.paths import ApplicationPaths, discover_application_paths
 from sidekick_usages.persistence.accounts.store import AccountStore
@@ -122,7 +123,10 @@ from sidekick_usages.persistence.supervisor.observation import (
 )
 from sidekick_usages.persistence.supervisor.queue import OperationQueueStore
 from sidekick_usages.persistence.supervisor.results import WorkerResultStore
-from sidekick_usages.persistence.supervisor.selection import SelectedStateStore
+from sidekick_usages.persistence.supervisor.selection import (
+    SelectedStateStore,
+    SelectionOperationStore,
+)
 from sidekick_usages.providers.claude.managed.executable import (
     discover_claude_executable_from_launcher,
 )
@@ -143,6 +147,9 @@ _PROVIDER_OPERATION_KINDS = frozenset(
         OperationKind.ACTIVATE,
         OperationKind.RECONCILE,
         OperationKind.RECONCILE_NATIVE,
+        OperationKind.SELECTION_PREVALIDATE,
+        OperationKind.SELECTION_COMMIT,
+        OperationKind.SELECTION_READBACK,
     }
 )
 _ACCOUNT_OPERATION_KINDS = frozenset(
@@ -320,6 +327,7 @@ class _ProviderOperationExecutor:
         store: AccountStore,
         selected: SelectedStateStore,
         journals: ActivationJournalStore,
+        selection: SelectionWorkerBoundary,
         exchange: WorkerExchangeChannel | None,
         clock: Clock,
         provider_launchers: ProviderLaunchers,
@@ -329,6 +337,7 @@ class _ProviderOperationExecutor:
         self._store = store
         self._selected = selected
         self._journals = journals
+        self._selection = selection
         self._exchange = exchange
         self._clock = clock
         self._provider_launchers = provider_launchers
@@ -339,6 +348,8 @@ class _ProviderOperationExecutor:
         authority: ProviderMutationAuthority,
     ) -> WorkerResult:
         """Compose and execute one provider operation under its held lock."""
+        if operation.kind.is_selection_worker:
+            return self._execute_selection(operation, authority)
         if (
             operation.kind is OperationKind.RECONCILE_NATIVE
             and operation.provider_id is ProviderId.CODEX
@@ -391,6 +402,33 @@ class _ProviderOperationExecutor:
             )
             return executor.execute(operation, authority)
         raise ValueError("Provider worker operation is unsupported.")
+
+    def _execute_selection(
+        self,
+        operation: DueOperation,
+        authority: ProviderMutationAuthority,
+    ) -> WorkerResult:
+        """Run one journal-bound provider selection phase."""
+        active, baseline = self._selection.context(operation)
+        if operation.provider_id is not ProviderId.CLAUDE:
+            raise ValueError("Selection worker provider is unsupported.")
+        executor = _claude_selection_executor(
+            operation,
+            self._paths,
+            self._persistence,
+            self._store,
+            self._selected,
+            self._journals,
+            self._clock,
+            self._provider_launchers.claude,
+        )
+        result = executor.execute_selection(
+            operation,
+            active,
+            baseline,
+            authority,
+        )
+        return self._selection.finish(operation, active, result)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -504,6 +542,12 @@ def _run_provider_operation(
             paths.activation_journals,
             paths.durable_operations,
         )
+        selection = SelectionWorkerBoundary(
+            SelectionOperationStore(paths.selection_journals),
+            selected,
+            journals,
+            clock,
+        )
         return run_provider_worker(
             operation_id,
             queue,
@@ -516,6 +560,7 @@ def _run_provider_operation(
                     store,
                     selected,
                     journals,
+                    selection,
                 ),
                 timeout_seconds=_PROVIDER_AUTHORITY_TIMEOUT_SECONDS,
             ),
@@ -525,6 +570,7 @@ def _run_provider_operation(
                 store,
                 selected,
                 journals,
+                selection,
                 exchange,
                 clock,
                 provider_launchers,
@@ -594,6 +640,9 @@ def _claude_selection_executor(
         OperationKind.ACTIVATE,
         OperationKind.RECONCILE,
         OperationKind.RECONCILE_NATIVE,
+        OperationKind.SELECTION_PREVALIDATE,
+        OperationKind.SELECTION_COMMIT,
+        OperationKind.SELECTION_READBACK,
     }:
         raise ValueError("Claude selection operation is unsupported.")
     runtime = ClaudeActivationRuntime(environment=os.environ)
@@ -645,8 +694,26 @@ def _provider_account_ids(
     store: AccountStore,
     selected: SelectedStateStore,
     journals: ActivationJournalStore,
+    selection: SelectionWorkerBoundary,
 ) -> tuple[SidekickAccountId, ...]:
     """Resolve the exact provider-first account lock set before execution."""
+    if operation.kind.is_selection_worker:
+        return selection.account_ids(operation)
+    return _legacy_provider_account_ids(
+        operation,
+        store,
+        selected,
+        journals,
+    )
+
+
+def _legacy_provider_account_ids(
+    operation: DueOperation,
+    store: AccountStore,
+    selected: SelectedStateStore,
+    journals: ActivationJournalStore,
+) -> tuple[SidekickAccountId, ...]:
+    """Resolve existing activation and reconciliation account locks."""
     if operation.kind is OperationKind.CODEX_CALLBACK:
         return (operation.required_account_id,)
     if operation.kind is OperationKind.RECONCILE_NATIVE:

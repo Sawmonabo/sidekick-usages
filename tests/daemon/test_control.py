@@ -118,6 +118,7 @@ from tests.fakes.daemon.control import (
     RejectedPeer,
     VerifiedPeer,
     exercise_blocked_stream_cancellation,
+    exercise_closed_subscription_monitor,
     rejected_protocol_response,
     serve_protocol_connection,
 )
@@ -285,6 +286,11 @@ def test_authenticated_control_stream_frames_completes_and_cancels(
     )
     recorded_payload = dispatcher.requests[0].payload
     assert isinstance(recorded_payload, ActivationPayload)
+    assert dispatcher.cancellations == [accepted.request_id]
+    exercise_closed_subscription_monitor(
+        dispatcher,
+        _verified(fragmented_request),
+    )
     assert dispatcher.cancellations == [accepted.request_id]
 
     state = foundation_state(tmp_path)

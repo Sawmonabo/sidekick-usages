@@ -3,13 +3,14 @@
 import os
 import socket
 import sys
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from threading import Event
+from threading import Event, Thread
 
 from sidekick_usages.core.accounts.types import OperationId
+from sidekick_usages.core.selection.types import OperationKind
 from sidekick_usages.daemon.control.server import LocalControlServer
 from sidekick_usages.daemon.models.control import VerifiedControlRequest
 from sidekick_usages.daemon.models.protocol import (
@@ -35,6 +36,7 @@ from sidekick_usages.daemon.types.worker import (
 )
 from sidekick_usages.daemon.worker.pool import WorkerLaunchPlanner
 from sidekick_usages.paths import ApplicationPaths
+from sidekick_usages.persistence.supervisor.queue import OperationQueueStore
 from sidekick_usages.persistence.supervisor.results import WorkerResultStore
 from sidekick_usages.persistence.supervisor.service import ServiceStateStore
 from tests.fakes.daemon.control import VerifiedPeer
@@ -181,6 +183,89 @@ class FakeWorkerLauncher:
         if succeeded:
             notify_exit()
         return handle
+
+
+class EntrypointWorkerLauncher:
+    """Run the real isolated entrypoint behind a controllable handle."""
+
+    def __init__(self, execute: Callable[[OperationId], int]) -> None:
+        self._execute = execute
+        self.specs: list[WorkerLaunchSpec] = []
+
+    def launch(
+        self,
+        spec: WorkerLaunchSpec,
+        notify_exit: ExitNotifier,
+    ) -> WorkerHandle:
+        """Execute one operation-ID-only worker launch contract."""
+        self.specs.append(spec)
+        exit_code = self._execute(spec.operation_id)
+        handle = FakeWorkerHandle(
+            spec.operation_id,
+            [],
+            exit_code,
+            False,
+        )
+        notify_exit()
+        return handle
+
+
+def entrypoint_worker_launcher(
+    queue: OperationQueueStore,
+    execute: Callable[[OperationId], int],
+) -> tuple[EntrypointWorkerLauncher, list[OperationKind]]:
+    """Build an entrypoint launcher that records durable phase kinds."""
+    kinds: list[OperationKind] = []
+
+    def run(operation_id: OperationId) -> int:
+        due = queue.find(operation_id)
+        if due is None:
+            raise AssertionError("Launched selection phase is unavailable.")
+        kinds.append(due.kind)
+        return execute(operation_id)
+
+    return EntrypointWorkerLauncher(run), kinds
+
+
+def run_scheduled_gateway_call[T](
+    call: Callable[[], T],
+    wake: Event,
+    scheduler: DurableScheduler,
+) -> T:
+    """Complete one blocking gateway call through the real scheduler."""
+    values: list[T] = []
+    failures: list[Exception] = []
+
+    def invoke() -> None:
+        try:
+            values.append(call())
+        except Exception as error:
+            failures.append(error)
+
+    wake.clear()
+    thread = Thread(target=invoke, daemon=True)
+    thread.start()
+    run_scheduler_phase(wake, scheduler)
+    thread.join(2)
+    if failures:
+        raise failures[0]
+    if thread.is_alive() or len(values) != 1:
+        raise AssertionError("Selection gateway phase did not complete.")
+    return values[0]
+
+
+def run_scheduler_phase(
+    wake: Event,
+    scheduler: DurableScheduler,
+) -> None:
+    """Dispatch and collect one exact woken selection worker phase."""
+    if not wake.wait(2):
+        raise AssertionError("Selection gateway did not wake its scheduler.")
+    wake.clear()
+    if len(scheduler.dispatch_due()) != 1:
+        raise AssertionError("Selection scheduler did not dispatch one phase.")
+    if len(scheduler.collect()) != 1:
+        raise AssertionError("Selection scheduler did not collect one phase.")
 
 
 class _NoopControlDispatcher:

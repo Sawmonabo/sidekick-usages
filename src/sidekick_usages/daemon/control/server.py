@@ -170,12 +170,12 @@ class ControlSubscriptionMonitor:
             if command.register:
                 if connection not in subscriptions:
                     subscriptions[connection] = command.subscription
-                    with suppress(OSError):
+                    with suppress(OSError, ValueError):
                         selector.register(connection, selectors.EVENT_READ)
                 continue
             if connection in subscriptions:
                 subscriptions.pop(connection)
-                with suppress(KeyError, OSError):
+                with suppress(KeyError, OSError, ValueError):
                     selector.unregister(connection)
 
     def _cancel(
@@ -185,7 +185,7 @@ class ControlSubscriptionMonitor:
         connection: socket.socket,
     ) -> None:
         subscription = subscriptions.pop(connection, None)
-        with suppress(KeyError, OSError):
+        with suppress(KeyError, OSError, ValueError):
             selector.unregister(connection)
         if subscription is not None:
             self._cancel_subscription(subscription)

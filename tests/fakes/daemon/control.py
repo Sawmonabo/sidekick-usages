@@ -10,6 +10,7 @@ from sidekick_usages.core.accounts.types import OperationId, RequestId
 from sidekick_usages.daemon.control.client import ControlClient
 from sidekick_usages.daemon.control.server import (
     ControlConnection,
+    ControlSubscription,
     ControlSubscriptionMonitor,
 )
 from sidekick_usages.daemon.models.control import VerifiedControlRequest
@@ -209,6 +210,22 @@ def serve_protocol_connection(
         ).serve()
     finally:
         monitor.close()
+
+
+def exercise_closed_subscription_monitor(
+    dispatcher: ControlDispatcher,
+    context: VerifiedControlRequest,
+) -> None:
+    """Retire a closed stream before queued commands are applied."""
+    monitor = ControlSubscriptionMonitor(dispatcher)
+    server, client = socket.socketpair()
+    subscription = ControlSubscription(server, context)
+    monitor.register(subscription)
+    monitor.unregister(subscription)
+    server.close()
+    monitor.start()
+    monitor.close()
+    client.close()
 
 
 def rejected_protocol_response(
