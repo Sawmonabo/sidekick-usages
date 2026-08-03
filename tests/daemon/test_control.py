@@ -649,11 +649,11 @@ def test_participant_codec_uses_only_kernel_process_identity(
         provider_id=ProviderId.CLAUDE,
         operation_id=operation_id,
         finalized_account_id=account_id,
-        finalized_epoch=SelectionEpoch(7),
+        finalized_epoch=epoch,
         target_account_id=account_id,
         pending_epoch=epoch,
-        phase=SelectionPhase.AWAITING_READY,
-        code=None,
+        phase=SelectionPhase.RECOVERING,
+        code=SelectionCode.SELECTION_RECOVERY_REQUIRED,
         registered_count=3,
         reachable_count=2,
         required_count=3,
@@ -663,16 +663,17 @@ def test_participant_codec_uses_only_kernel_process_identity(
         active_turn_count=1,
         queued_turn_count=1,
     )
+    participant_registration = ParticipantRegistration(
+        participant_id=participant_id,
+        provider_id=ProviderId.CLAUDE,
+        connection_generation=1,
+        registered_epoch=SelectionEpoch(7),
+        pending_epoch=epoch,
+    )
     event_payloads: tuple[tuple[EventKind, EventPayload], ...] = (
         (
             EventKind.PARTICIPANT_REGISTERED,
-            ParticipantRegistration(
-                participant_id=participant_id,
-                provider_id=ProviderId.CLAUDE,
-                connection_generation=1,
-                registered_epoch=SelectionEpoch(7),
-                pending_epoch=epoch,
-            ),
+            participant_registration,
         ),
         (
             EventKind.TURN_ADMISSION,
@@ -718,6 +719,7 @@ def test_participant_codec_uses_only_kernel_process_identity(
             status,
         ),
     )
+    encoded = b""
     for kind, payload in event_payloads:
         event = ControlEvent(
             protocol_version=PROTOCOL_VERSION,
@@ -739,8 +741,22 @@ def test_participant_codec_uses_only_kernel_process_identity(
             epoch=epoch,
             code=SelectionCode.SELECTION_SUCCEEDED,
         )
-    with pytest.raises(ValueError, match="Active selection status"):
-        replace(status, phase=None)
+    bad_status = encoded.replace(b'"pending_epoch":8', b'"pending_epoch":10')
+    invalid_contracts = (
+        lambda: replace(status, phase=None),
+        lambda: replace(status, registered_count=17),
+        lambda: replace(
+            participant_registration,
+            pending_epoch=SelectionEpoch(10),
+        ),
+        lambda: decode_event(bad_status),
+    )
+    for invalid_contract in invalid_contracts:
+        with pytest.raises(
+            ValueError,
+            match=r"status|registration|malformed_frame",
+        ):
+            invalid_contract()
 
     forged = encoded_registration.replace(
         b'"participant_id"',

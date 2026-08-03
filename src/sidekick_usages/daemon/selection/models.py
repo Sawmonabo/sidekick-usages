@@ -18,6 +18,9 @@ from sidekick_usages.core.selection.types import (
 from sidekick_usages.core.types import ProviderId
 
 _MAX_GENERATION = 2**63 - 1
+MAX_ACTIVE_TURNS_PER_PROVIDER = 128
+MAX_PARTICIPANTS_PER_PROVIDER = 16
+MAX_PENDING_BEGINS_PER_PROVIDER = 128
 SUPPORTED_PARTICIPANT_CAPABILITY_VERSION = 1
 
 
@@ -97,13 +100,15 @@ class ParticipantRegistration:
     pending_epoch: SelectionEpoch | None
 
     def __post_init__(self) -> None:
-        """Require a pending epoch to advance the registered epoch."""
+        """Require one legal normal or recovery epoch relation."""
         _require_generation(self.connection_generation)
-        if (
-            self.pending_epoch is not None
-            and self.pending_epoch.value <= self.registered_epoch.value
-        ):
-            raise ValueError("Participant pending epoch is not newer.")
+        if self.pending_epoch is not None and self.pending_epoch.value not in {
+            self.registered_epoch.value,
+            self.registered_epoch.value + 1,
+        }:
+            raise ValueError(
+                "Participant registration epoch relation is invalid."
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -266,6 +271,81 @@ class SelectionStatus:
             value is not None for value in active
         ):
             raise ValueError("Active selection status is incomplete.")
+        active_operation = self.operation_id is not None
+        if self.code is not None and not active_operation:
+            raise ValueError("Selection status code requires an operation.")
+        self._require_epoch_relation(active_operation)
+        self._require_phase_state(active_operation)
+        self._require_counts()
+
+    def _require_epoch_relation(self, active_operation: bool) -> None:
+        """Require exact normal or target-selected recovery epochs."""
+        if not active_operation:
+            return
+        if self.pending_epoch is None or self.phase is None:
+            raise ValueError("Active selection status is incomplete.")
+        if self.finalized_epoch is None:
+            if self.pending_epoch != SelectionEpoch(1):
+                raise ValueError("Selection status epoch relation is invalid.")
+            return
+        normal = self.pending_epoch.value == self.finalized_epoch.value + 1
+        recovery = (
+            self.pending_epoch == self.finalized_epoch
+            and self.target_account_id == self.finalized_account_id
+            and self.phase
+            in {SelectionPhase.AWAITING_READY, SelectionPhase.RECOVERING}
+        )
+        if not normal and not recovery:
+            raise ValueError("Selection status epoch relation is invalid.")
+
+    def _require_phase_state(self, active_operation: bool) -> None:
+        """Require code and gate facts owned by the exact active phase."""
+        if not active_operation:
+            if (
+                self.required_count
+                or self.ready_count
+                or self.queued_turn_count
+            ):
+                raise ValueError(
+                    "Selection status active gate facts require an operation."
+                )
+            return
+        if self.phase is None:
+            raise ValueError("Active selection status is incomplete.")
+        allowed_codes: frozenset[SelectionCode | None]
+        if self.phase is SelectionPhase.AWAITING_READY:
+            allowed_codes = frozenset(
+                {None, SelectionCode.PARTICIPANT_LOST_AFTER_COMMIT}
+            )
+        elif self.phase is SelectionPhase.RECOVERING:
+            allowed_codes = frozenset(
+                {SelectionCode.SELECTION_RECOVERY_REQUIRED}
+            )
+        else:
+            allowed_codes = frozenset({None})
+        if self.code not in allowed_codes:
+            raise ValueError("Selection status phase and code disagree.")
+        if self.phase is SelectionPhase.PREVALIDATING and (
+            self.required_count or self.ready_count or self.queued_turn_count
+        ):
+            raise ValueError("Prevalidation cannot claim active gate facts.")
+        if (
+            self.phase
+            not in {
+                SelectionPhase.AWAITING_READY,
+                SelectionPhase.RECOVERING,
+            }
+            and self.ready_count
+        ):
+            raise ValueError("Precommit selection cannot claim readiness.")
+        if (
+            self.code is SelectionCode.PARTICIPANT_LOST_AFTER_COMMIT
+            and self.ready_count >= self.required_count
+        ):
+            raise ValueError("Lost-participant status requires a lost member.")
+
+    def _require_counts(self) -> None:
+        """Require bounded counts with coherent semantic ownership."""
         counts = (
             self.registered_count,
             self.reachable_count,
@@ -278,13 +358,31 @@ class SelectionStatus:
         )
         if any(type(value) is not int or value < 0 for value in counts):
             raise ValueError("Selection status counts are invalid.")
+        participant_counts = counts[:6]
+        if (
+            any(
+                value > MAX_PARTICIPANTS_PER_PROVIDER
+                for value in participant_counts
+            )
+            or self.active_turn_count > MAX_ACTIVE_TURNS_PER_PROVIDER
+            or (self.queued_turn_count > MAX_PENDING_BEGINS_PER_PROVIDER)
+        ):
+            raise ValueError("Selection status count exceeds its bound.")
         if (
             self.reachable_count + self.unreachable_count
             > self.registered_count
+            or self.required_count > self.registered_count
             or self.ready_count > self.required_count
+            or self.ready_count > self.reachable_count
             or self.adopted_count > self.registered_count
         ):
             raise ValueError("Selection status counts are incoherent.")
+        if self.finalized_epoch is None and (
+            self.adopted_count or self.active_turn_count
+        ):
+            raise ValueError(
+                "Unselected status cannot claim turns or adoption."
+            )
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

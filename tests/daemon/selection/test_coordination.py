@@ -47,6 +47,7 @@ from sidekick_usages.daemon.selection.models import (
     ParticipantReadyProof,
     ParticipantReadyRequest,
     ParticipantRegistration,
+    ParticipantRequestError,
     SelectionRequestError,
     TurnAdmissionState,
     TurnBeginRequest,
@@ -316,6 +317,16 @@ def _build_journey(tmp_path: Path) -> _Journey:
         registry.begin_turn(TurnBeginRequest(PARTICIPANT_A, 1, TURN_A))
         == first_turn
     )
+    registry.adopt(
+        PARTICIPANT_A,
+        1,
+        ParticipantAdoptionProof(
+            turn_id=TURN_A,
+            account_id=baseline.account_id,
+            generation=baseline.generation,
+            epoch=baseline.epoch,
+        ),
+    )
     adapter = _SelectionAdapter()
     process_inspector = _ProcessInspector()
     recovery_handoffs: list[ProviderId] = []
@@ -372,6 +383,7 @@ def _assert_journey_result(
         TurnBeginRequest(PARTICIPANT_B, 1, TURN_B)
     )
     if opens_target:
+        assert journey.registry.snapshot(PROVIDER_ID).adopted_count == 0
         assert next_turn.state is TurnAdmissionState.ADMITTED
         assert next_turn.epoch == SelectionEpoch(8)
         assert (
@@ -390,6 +402,7 @@ def _assert_journey_result(
                 epoch=SelectionEpoch(8),
             ),
         )
+        assert journey.registry.snapshot(PROVIDER_ID).adopted_count == 1
         reopened = journey.coordinator.subscribe(
             new_request_id(),
             ParticipantConnectionRequest(PARTICIPANT_B, 1),
@@ -466,6 +479,29 @@ def _arm_postcommit_loss(journey: _Journey, loss_state: str) -> None:
     journey.operations.block_complete_once = True
     journey.operations.crash_after_complete_once = True
     journey.process_inspector.dead.add(_process(3))
+
+
+def _prove_initial_unselected_subscription(
+    selected: SelectedStateStore,
+) -> None:
+    """Require failed epoch-zero subscription to remain retryable."""
+    registry = ParticipantRegistry(selected)
+    registry.register(_manifest(PARTICIPANT_A), _process(1))
+    request = ParticipantConnectionRequest(PARTICIPANT_A, 1)
+    failed = registry.subscribe(new_request_id(), request)
+    with pytest.raises(ParticipantRequestError):
+        next(failed)
+    snapshot = registry.snapshot(PROVIDER_ID)
+    assert (
+        snapshot.registered_count,
+        snapshot.reachable_count,
+        snapshot.adopted_count,
+        snapshot.unreachable_participant_ids,
+    ) == (1, 0, 0, (PARTICIPANT_A,))
+    registry.close_admission(PROVIDER_ID, SelectionEpoch(1))
+    retry = registry.subscribe(new_request_id(), request)
+    assert next(retry).kind is ParticipantNoticeKind.PREPARE
+    retry.close()
 
 
 def _disconnect_during_final_seal(
@@ -655,6 +691,8 @@ def test_recovery_finalizes_forward_from_target_provider_proof(
         seed_finalized_selections(paths, baseline)
     baseline_epoch = SelectionEpoch(0) if baseline is None else baseline.epoch
     selected = SelectedStateStore(paths.selected_state)
+    if not baseline_exists:
+        _prove_initial_unselected_subscription(selected)
     journal = SelectionOperationStore(paths.selection_journals)
     operation = OpenSelectionOperation(
         operation_id=OPERATION_ID,
@@ -734,9 +772,24 @@ def test_recovery_finalizes_forward_from_target_provider_proof(
     assert finalized.account_id == TARGET_ACCOUNT_ID
     assert finalized.epoch == baseline_epoch.next()
     assert journal.load(PROVIDER_ID).active is None
-    registration = registry.register(_manifest(PARTICIPANT_A), _process(1))
+    restore = registry.restore_admission
+    with pytest.raises(ParticipantRequestError):
+        restore(PROVIDER_ID, finalized.epoch, CONFLICT_ACCOUNT_ID, ())
+    restore(PROVIDER_ID, finalized.epoch, TARGET_ACCOUNT_ID, (PARTICIPANT_A,))
+    missing = registry.snapshot(PROVIDER_ID)
+    assert missing.registered_count == 1
+    assert missing.reachable_count == 0
+    assert missing.unreachable_participant_ids == (PARTICIPANT_A,)
+    persisted_epochs: list[SelectionEpoch] = []
+    registration = registry.register(
+        _manifest(PARTICIPANT_A),
+        _process(1),
+        persist_required=persisted_epochs.append,
+    )
     assert registration.registered_epoch == baseline_epoch.next()
-    assert registration.pending_epoch is None
+    assert registration.pending_epoch == registration.registered_epoch
+    assert persisted_epochs == [registration.registered_epoch]
+    registry.reopen_baseline(PROVIDER_ID)
     registry.register(_manifest(PARTICIPANT_B), _process(2))
     registry.close_admission(PROVIDER_ID, baseline_epoch.next().next())
     registry.confirm_dead(PARTICIPANT_A, _process(1))
