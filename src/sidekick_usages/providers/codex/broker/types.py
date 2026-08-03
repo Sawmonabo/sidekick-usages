@@ -33,6 +33,7 @@ class CodexBrokerFailure(StrEnum):
     INSTALLATION_UNSUPPORTED = "installation_unsupported"
     VERSION_UNSUPPORTED = "version_unsupported"
     PROTOCOL_UNSUPPORTED = "protocol_unsupported"
+    SESSION_CONFIGURATION_REQUIRED = "session_configuration_required"
     LIFECYCLE_FAILED = "lifecycle_failed"
     LIFECYCLE_MALFORMED = "lifecycle_malformed"
     DAEMON_UNMANAGED = "daemon_unmanaged"

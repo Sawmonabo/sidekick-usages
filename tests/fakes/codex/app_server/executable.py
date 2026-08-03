@@ -178,6 +178,30 @@ def configure_codex_daemon_lifecycle(
     return FakeCodexDaemonLifecycle(root)
 
 
+def write_resident_session_config(
+    home: Path,
+    *,
+    model_provider: str,
+) -> None:
+    """Seed the immutable launch config of an already-running fake."""
+    payload = {
+        "model_provider": model_provider,
+        "model_providers": {
+            "sidekick-chatgpt-http": {
+                "name": "OpenAI",
+                "base_url": "https://chatgpt.com/backend-api/codex",
+                "wire_api": "responses",
+                "requires_openai_auth": True,
+                "supports_websockets": False,
+            }
+        },
+    }
+    (home / SESSION_CONFIG_FILE).write_text(
+        json.dumps(payload),
+        encoding="utf-8",
+    )
+
+
 def write_fake_codex(
     tmp_path: Path,
     schema_root: Path,
@@ -233,7 +257,7 @@ def write_fake_codex(
                 auth_path.write_text(payload, encoding="utf-8")
                 os.chmod(auth_path, 0o600)
 
-            def daemon_lifecycle(operation):
+            def daemon_lifecycle(operation, session_config):
                 configured = json.loads(
                     DAEMON_CONFIG_FILE.read_text(encoding="utf-8")
                 )
@@ -263,6 +287,12 @@ def write_fake_codex(
                     )
                 else:
                     status = "running"
+                if status == "started" or operation == "restart":
+                    home = Path(os.environ["CODEX_HOME"])
+                    (home / SESSION_CONFIG_FILE).write_text(
+                        json.dumps(session_config),
+                        encoding="utf-8",
+                    )
                 event = {{"operation": operation, "status": status}}
                 with DAEMON_EVENTS_FILE.open("a", encoding="utf-8") as stream:
                     stream.write(json.dumps(event) + "\\n")
@@ -318,20 +348,14 @@ def write_fake_codex(
                 shutil.copytree(SCHEMA_ROOT, output, dirs_exist_ok=True)
                 raise SystemExit
             command, session_config = command_and_config(sys.argv[1:])
-            if command[:2] == ["app-server", "daemon"]:
-                home = Path(os.environ["CODEX_HOME"])
-                (home / SESSION_CONFIG_FILE).write_text(
-                    json.dumps(session_config),
-                    encoding="utf-8",
-                )
             if command == ["app-server", "daemon", "start"]:
-                daemon_lifecycle("start")
+                daemon_lifecycle("start", session_config)
                 raise SystemExit
             if command == ["app-server", "daemon", "restart"]:
-                daemon_lifecycle("restart")
+                daemon_lifecycle("restart", session_config)
                 raise SystemExit
             if command == ["app-server", "daemon", "version"]:
-                daemon_lifecycle("version")
+                daemon_lifecycle("version", session_config)
                 raise SystemExit
             if sys.argv[1:] != ["app-server"]:
                 raise SystemExit(2)

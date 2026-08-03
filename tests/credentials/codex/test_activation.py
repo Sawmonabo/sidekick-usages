@@ -328,24 +328,27 @@ def test_codex_activation_recovers_at_official_mutation_boundary(
             real_worker_executable(),
         )
         supervisor.start()
-        supervisor.wait_until_ready()
-        interrupt_activation_at_install(
-            supervisor,
-            daemon,
-            fixture.paths,
-            _FIRST_ACTIVATION_ID,
-            MANAGED_ACCOUNT_ID,
-        )
+        try:
+            supervisor.wait_until_ready()
+            interrupt_activation_at_install(
+                supervisor,
+                daemon,
+                fixture.paths,
+                _FIRST_ACTIVATION_ID,
+                MANAGED_ACCOUNT_ID,
+            )
 
-        assert daemon.installed_account_ids[-1] == PROVIDER_IDENTITY
-        _require_selected(
-            selected,
-            ACCOUNT_A_ID,
-            ACCOUNT_A_PROVIDER_IDENTITY,
-            GENERATION,
-        )
-        assert journals.load(ProviderId.CODEX).active is not None
-        installed_before_recovery = len(daemon.installed_account_ids)
+            assert daemon.installed_account_ids[-1] == PROVIDER_IDENTITY
+            _require_selected(
+                selected,
+                ACCOUNT_A_ID,
+                ACCOUNT_A_PROVIDER_IDENTITY,
+                GENERATION,
+            )
+            assert journals.load(ProviderId.CODEX).active is not None
+            installed_before_recovery = len(daemon.installed_account_ids)
+        finally:
+            supervisor.close()
 
         daemon.pause_next_install()
         with FakeCodexSupervisor(

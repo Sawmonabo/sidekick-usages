@@ -36,6 +36,12 @@ from sidekick_usages.providers.codex.app_server.types import (
 from sidekick_usages.providers.codex.broker.errors import CodexBrokerError
 from sidekick_usages.providers.codex.broker.service import CodexSharedRuntime
 from sidekick_usages.providers.codex.broker.types import CodexBrokerFailure
+from sidekick_usages.providers.codex.session.models import (
+    CODEX_SESSION_OPERATOR_PRECONDITION,
+    CodexSessionCapability,
+    CodexSessionConfigurationReason,
+)
+from sidekick_usages.serialization.json import JsonObject
 from tests.fakes.codex.app_server.daemon import FakeCodexDaemon
 from tests.fakes.codex.app_server.executable import (
     RAW_PROVIDER_SECRET,
@@ -43,6 +49,7 @@ from tests.fakes.codex.app_server.executable import (
     write_fake_codex,
     write_fake_managed_codex,
 )
+from tests.fakes.codex.app_server.model import SyntheticCodexModelAttempt
 from tests.fakes.codex.app_server.schema import write_codex_schema
 from tests.fakes.codex.auth import managed_auth
 from tests.support.platform import REQUIRES_MANAGED_RUNTIME
@@ -58,6 +65,24 @@ _GENERATION = "2026-07-24T10:00:00.000000000Z"
 _NATIVE_AUTH = managed_auth(_PROVIDER_IDENTITY, _GENERATION)
 _SESSION_PROVIDER = "sidekick-chatgpt-http"
 _SESSION_BASE_URL = "https://chatgpt.com/backend-api/codex"
+_SYNTHETIC_MODEL_ATTEMPTS = 2
+_SESSION_SCHEMA_MANIFEST = (
+    "v2/ConfigReadParams.json",
+    "v2/ConfigReadResponse.json",
+    "v2/ModelProviderCapabilitiesReadParams.json",
+    "v2/ModelProviderCapabilitiesReadResponse.json",
+    "v2/TurnStartParams.json",
+    "v2/TurnStartResponse.json",
+    "v2/TurnStartedNotification.json",
+    "v2/TurnCompletedNotification.json",
+    "v2/ThreadRealtimeStartParams.json",
+    "v2/ThreadRealtimeStartResponse.json",
+    "v2/ThreadRealtimeStartedNotification.json",
+    "v2/ThreadRealtimeClosedNotification.json",
+    "v2/ListMcpServerStatusParams.json",
+    "v2/ListMcpServerStatusResponse.json",
+    "v2/McpServerStatusUpdatedNotification.json",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,9 +92,31 @@ class _SessionCase:
     base_url: str | None = None
     requires_openai_auth: bool | None = None
     supports_websockets: bool | None = None
-    model_transport: str | None = None
-    auth_resolution: str | None = None
+    user_config: JsonObject | None = None
+    project_config: JsonObject | None = None
+    configuration_required: bool = False
+    protocol_unsupported: bool = False
     supported: bool = False
+
+
+def _prove_synthetic_current_auth_http(
+    capability: CodexSessionCapability,
+) -> None:
+    """Prove only the synthetic model-attempt selection boundary."""
+    accounts = (
+        ProviderIdentity("synthetic-account-a"),
+        ProviderIdentity("synthetic-account-b"),
+    )
+    current_accounts = iter(accounts)
+    model_attempt = SyntheticCodexModelAttempt(
+        capability,
+        lambda: next(current_accounts),
+    )
+    model_attempt.attempt()
+    model_attempt.attempt()
+    assert model_attempt.auth_resolutions == _SYNTHETIC_MODEL_ATTEMPTS
+    assert model_attempt.http_accounts == accounts
+    assert model_attempt.websocket_opens == 0
 
 
 def _prepare_shared_runtime(
@@ -140,6 +187,9 @@ def test_versioned_codex_app_server_boundary_is_complete(
         assert str(executable.version) == _NEWER_CODEX_VERSION
         assert verification_calls == _CAPABILITY_EXECUTABLE_VERIFICATIONS
         assert len(capabilities.schema_hash) == SCHEMA_HASH_HEX_LENGTH
+        assert capabilities.session_schema_manifest == (
+            _SESSION_SCHEMA_MANIFEST
+        )
         assert result["requiresOpenaiAuth"] is True
         assert isinstance(notification, JsonRpcNotification)
         assert notification.method == "account/updated"
@@ -208,32 +258,57 @@ def test_codex_app_server_boundary_fails_closed_and_redacted(
             id="direct-http-current-auth",
         ),
         pytest.param(
-            _SessionCase(version="0.145.0"),
+            _SessionCase(
+                version="0.145.0",
+                protocol_unsupported=True,
+            ),
             id="wrong-version",
         ),
         pytest.param(
-            _SessionCase(model_provider="user-provider"),
+            _SessionCase(
+                model_provider="user-provider",
+                configuration_required=True,
+            ),
             id="overridden-provider",
         ),
         pytest.param(
-            _SessionCase(base_url="https://example.invalid/codex"),
+            _SessionCase(
+                base_url="https://example.invalid/codex",
+                configuration_required=True,
+            ),
             id="wrong-base-url",
         ),
         pytest.param(
-            _SessionCase(requires_openai_auth=False),
+            _SessionCase(
+                requires_openai_auth=False,
+                configuration_required=True,
+            ),
             id="missing-openai-auth",
         ),
         pytest.param(
-            _SessionCase(supports_websockets=True),
+            _SessionCase(
+                supports_websockets=True,
+                configuration_required=True,
+            ),
             id="websockets-enabled",
         ),
         pytest.param(
-            _SessionCase(model_transport="websocket"),
-            id="websocket-attempted",
+            _SessionCase(
+                user_config={"model_provider": "user-provider"},
+                configuration_required=True,
+            ),
+            id="user-protected-override",
         ),
         pytest.param(
-            _SessionCase(auth_resolution="cached"),
-            id="cached-auth-attempted",
+            _SessionCase(
+                project_config={
+                    "model_providers": {
+                        _SESSION_PROVIDER: {"base_url": "project-url"}
+                    }
+                },
+                configuration_required=True,
+            ),
+            id="project-protected-override",
         ),
     ],
 )
@@ -268,8 +343,8 @@ def test_neutral_runtime_requires_current_auth_without_model_websockets(
         base_url=case.base_url,
         requires_openai_auth=case.requires_openai_auth,
         supports_websockets=case.supports_websockets,
-        model_transport=case.model_transport,
-        auth_resolution=case.auth_resolution,
+        user_config=case.user_config,
+        project_config=case.project_config,
     ) as daemon:
         configure_codex_daemon_lifecycle(
             tmp_path,
@@ -282,6 +357,37 @@ def test_neutral_runtime_requires_current_auth_without_model_websockets(
             session_home,
             environment=environment,
         )
+
+        if case.protocol_unsupported:
+            with pytest.raises(CodexBrokerError) as unsupported:
+                runtime.qualify_session_transport()
+            assert (
+                unsupported.value.code
+                is CodexBrokerFailure.PROTOCOL_UNSUPPORTED
+            )
+            runtime.close()
+            return
+        if case.configuration_required:
+            with pytest.raises(CodexBrokerError) as refused:
+                runtime.qualify_session_transport()
+            assert (
+                refused.value.code
+                is CodexBrokerFailure.SESSION_CONFIGURATION_REQUIRED
+            )
+            report = refused.value.preparation_report
+            assert report is not None
+            assert report.reason in {
+                CodexSessionConfigurationReason.PROTECTED_OVERRIDE,
+                CodexSessionConfigurationReason.RESIDENT_CONFIG_STALE,
+            }
+            assert report.dry_run is True
+            assert (
+                report.operator_steps[0] == CODEX_SESSION_OPERATOR_PRECONDITION
+            )
+            assert session_settings.read_bytes() == unrelated_settings
+            assert not (runtime.codex_home / "auth.json").exists()
+            runtime.close()
+            return
 
         capability = runtime.qualify_session_transport()
 
@@ -303,37 +409,11 @@ def test_neutral_runtime_requires_current_auth_without_model_websockets(
             if case.supports_websockets is None
             else case.supports_websockets
         )
-        assert capability.model_transport == (
-            case.model_transport
-            if case.model_transport is not None
-            else (
-                "websocket" if case.supports_websockets is True else "http"
-            )
-        )
-        assert capability.auth_resolution == (
-            case.auth_resolution
-            if case.auth_resolution is not None
-            else (
-                "none"
-                if case.requires_openai_auth is False
-                else "perAttempt"
-            )
-        )
         assert capability.supported is case.supported
+        if case.supported:
+            _prove_synthetic_current_auth_http(capability)
         assert session_settings.read_bytes() == unrelated_settings
         assert not (runtime.codex_home / "auth.json").exists()
-        if not case.supported:
-            with pytest.raises(CodexBrokerError) as blocked:
-                runtime.prepare(
-                    _ACCOUNT_ID,
-                    ProviderIdentity(_PROVIDER_IDENTITY),
-                    AuthorityGeneration(_GENERATION),
-                )
-            assert (
-                blocked.value.code
-                is CodexBrokerFailure.PROTOCOL_UNSUPPORTED
-            )
-            assert daemon.installed_account_ids == ()
         runtime.close()
 
 
@@ -450,5 +530,4 @@ def test_shared_codex_runtime_self_heals_and_rejects_unsafe_authority(
     assert lifecycle.restart_count == 1
     assert lifecycle.version_count == 1
     assert daemon.config_read_count == 1
-    assert daemon.model_transport_attempts == (("http", None, "perAttempt"),)
     assert not (native_home / "auth.json").exists()

@@ -294,11 +294,14 @@ class CodexRuntimeBroker:
                     runtime = _drop_runtime(runtime)
                     self._native_auth.reset()
                     self._native_preparation.reset()
-                    self._stop.wait(reconnect_seconds)
-                    reconnect_seconds = min(
-                        reconnect_seconds * 2,
-                        _BROKER_RECONNECT_MAX_SECONDS,
-                    )
+                    if _terminal_configuration_failure(error):
+                        self._stop.wait()
+                    else:
+                        self._stop.wait(reconnect_seconds)
+                        reconnect_seconds = min(
+                            reconnect_seconds * 2,
+                            _BROKER_RECONNECT_MAX_SECONDS,
+                        )
         finally:
             self._set_qualified(False)
             self._set_ready(False)
@@ -835,3 +838,10 @@ def _drop_runtime(
 ) -> None:
     if runtime is not None:
         runtime.close()
+
+
+def _terminal_configuration_failure(error: BaseException) -> bool:
+    return (
+        isinstance(error, CodexBrokerError)
+        and error.code is CodexBrokerFailure.SESSION_CONFIGURATION_REQUIRED
+    )

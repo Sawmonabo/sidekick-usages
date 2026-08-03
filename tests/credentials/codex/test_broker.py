@@ -51,10 +51,12 @@ from sidekick_usages.providers.codex.broker.external_auth.refresh import (
     CODEX_REFRESH_ERROR_CODE,
 )
 from sidekick_usages.providers.codex.broker.service import CodexSharedRuntime
+from sidekick_usages.providers.codex.broker.types import CodexBrokerFailure
 from tests.fakes.codex.app_server.daemon import FakeCodexDaemon
 from tests.fakes.codex.app_server.executable import (
     configure_codex_daemon_lifecycle,
     write_fake_managed_codex,
+    write_resident_session_config,
     write_worker_router,
 )
 from tests.fakes.codex.app_server.schema import write_codex_schema
@@ -94,6 +96,7 @@ pytestmark = REQUIRES_MANAGED_RUNTIME
 
 _MAINTENANCE_OPERATION_ID = OperationId("77777777-7777-4777-8777-777777777777")
 _IDLE_BROKER_OBSERVATION_SECONDS = 0.6
+_TERMINAL_FAILURE_OBSERVATION_SECONDS = 1.5
 _CALLBACK_RESPONSE_BOUND_SECONDS = 8.0
 _INITIAL_LIFECYCLE_CALLS = 2
 _RECOVERED_LIFECYCLE_CALLS = 3
@@ -232,6 +235,59 @@ def test_resident_broker_fails_closed_without_resolvable_authority(
             ) == (True, False, None, ())
 
 
+def test_stale_resident_config_is_terminal_until_operator_restart(
+    tmp_path: Path,
+    short_socket_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = broker_finalized_fixture(
+        tmp_path,
+        short_socket_root,
+        monkeypatch,
+    )
+    write_resident_session_config(
+        fixture.session_home,
+        model_provider="stale-resident-provider",
+    )
+
+    with FakeCodexDaemon(
+        fixture.session_home,
+        app_server_version="0.146.0",
+    ) as daemon:
+        lifecycle = configure_codex_daemon_lifecycle(
+            fixture.provider_root,
+            fixture.session_home,
+            daemon.socket_path,
+            app_server_version="0.146.0",
+            already_running=True,
+        )
+        with FakeCodexBroker(
+            fixture.paths,
+            fixture.executable,
+            fixture.session_home,
+            fixture.environment,
+        ) as broker:
+            broker.wait_until_failure(
+                CodexBrokerFailure.SESSION_CONFIGURATION_REQUIRED.value
+            )
+            observed = (
+                lifecycle.start_statuses,
+                lifecycle.version_count,
+                lifecycle.restart_count,
+            )
+            time.sleep(_TERMINAL_FAILURE_OBSERVATION_SECONDS)
+            assert broker.failure_code == (
+                CodexBrokerFailure.SESSION_CONFIGURATION_REQUIRED.value
+            )
+            assert (
+                lifecycle.start_statuses,
+                lifecycle.version_count,
+                lifecycle.restart_count,
+            ) == observed
+
+    assert observed == (("alreadyRunning",), 1, 0)
+
+
 def test_shared_codex_runtime_is_idempotent_and_rehydrates(
     tmp_path: Path,
     short_socket_root: Path,
@@ -316,10 +372,6 @@ def test_shared_codex_runtime_is_idempotent_and_rehydrates(
         observer_b.wait_for_account_update()
         assert daemon.installed_account_ids == (PROVIDER_IDENTITY,)
         assert daemon.ready_account_read_count == _INITIAL_READY_READS
-        assert daemon.model_transport_attempts[:2] == (
-            ("http", None, "perAttempt"),
-            ("http", PROVIDER_IDENTITY, "perAttempt"),
-        )
         assert lifecycle.start_statuses == ("started", "alreadyRunning")
         assert lifecycle.version_count == _INITIAL_LIFECYCLE_CALLS
 

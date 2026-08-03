@@ -177,6 +177,19 @@ class FakeCodexBroker:
                 raise AssertionError("Fake broker did not qualify.")
             time.sleep(min(_WAIT_INTERVAL_SECONDS, remaining))
 
+    def wait_until_failure(self, expected: str) -> None:
+        """Wait until one exact terminal qualification failure is retained."""
+        deadline = time.monotonic() + _READINESS_TIMEOUT_SECONDS
+        while self.failure_code != expected:
+            if self.available:
+                raise AssertionError("Fake broker unexpectedly qualified.")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise AssertionError(
+                    "Fake broker did not retain the expected failure."
+                )
+            time.sleep(min(_WAIT_INTERVAL_SECONDS, remaining))
+
     def __enter__(self) -> Self:
         """Start and return this harness."""
         self._broker.start()

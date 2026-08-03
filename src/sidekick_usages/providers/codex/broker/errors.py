@@ -8,6 +8,12 @@ from sidekick_usages.providers.codex.app_server.types import (
     CodexAppServerFailure,
 )
 from sidekick_usages.providers.codex.broker.types import CodexBrokerFailure
+from sidekick_usages.providers.codex.session.errors import (
+    CodexSessionConfigurationError,
+)
+from sidekick_usages.providers.codex.session.models import (
+    CodexSessionPreparationReport,
+)
 
 _FAILURE_MESSAGES = {
     CodexBrokerFailure.PLATFORM_UNSUPPORTED: (
@@ -21,6 +27,9 @@ _FAILURE_MESSAGES = {
     ),
     CodexBrokerFailure.PROTOCOL_UNSUPPORTED: (
         "The shared Codex daemon lacks the required authentication protocol."
+    ),
+    CodexBrokerFailure.SESSION_CONFIGURATION_REQUIRED: (
+        "The neutral Codex session requires operator preparation."
     ),
     CodexBrokerFailure.LIFECYCLE_FAILED: (
         "The official Codex daemon lifecycle command failed."
@@ -83,11 +92,30 @@ _APP_SERVER_FAILURES = {
 class CodexBrokerError(UsageError):
     """One shared-runtime failure containing no provider material."""
 
-    def __init__(self, code: CodexBrokerFailure) -> None:
+    def __init__(
+        self,
+        code: CodexBrokerFailure,
+        preparation_report: CodexSessionPreparationReport | None = None,
+    ) -> None:
+        if (preparation_report is None) is (
+            code is CodexBrokerFailure.SESSION_CONFIGURATION_REQUIRED
+        ):
+            raise ValueError("Codex preparation report and code disagree.")
         self.code = code
+        self.preparation_report = preparation_report
         super().__init__(_FAILURE_MESSAGES[code])
 
 
 def codex_broker_error(error: CodexAppServerError) -> CodexBrokerError:
     """Translate an app-server failure at the broker boundary."""
     return CodexBrokerError(_APP_SERVER_FAILURES[error.code])
+
+
+def codex_session_configuration_error(
+    error: CodexSessionConfigurationError,
+) -> CodexBrokerError:
+    """Translate one token-free session preparation refusal."""
+    return CodexBrokerError(
+        CodexBrokerFailure.SESSION_CONFIGURATION_REQUIRED,
+        error.report,
+    )

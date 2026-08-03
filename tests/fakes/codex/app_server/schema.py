@@ -44,7 +44,7 @@ def write_codex_schema(root: Path, *, external_auth: bool) -> None:
         "turn/completed",
         "thread/realtime/started",
         "thread/realtime/closed",
-        "mcpServerStatus/updated",
+        "mcpServer/startupStatus/updated",
     )
     server_notifications["properties"] = {"emittedAtMs": {"type": "integer"}}
     schemas_by_path: dict[str, JsonObject] = {
@@ -124,58 +124,110 @@ def write_codex_schema(root: Path, *, external_auth: bool) -> None:
             required=("accessToken", "chatgptAccountId"),
         ),
         "v2/ConfigReadParams.json": _object_schema(
-            {"includeLayers": {"type": "boolean"}}
+            {
+                "cwd": {"type": _json_values("string", "null")},
+                "includeLayers": {"type": "boolean"},
+            }
         ),
         "v2/ConfigReadResponse.json": _object_schema(
             {
                 "config": {"type": "object"},
-                "layers": {"type": "array"},
+                "layers": {"type": _json_values("array", "null")},
+                "origins": {"type": "object"},
             },
-            required=("config", "layers"),
+            required=("config", "origins"),
+            definitions={
+                "ConfigLayer": _object_schema(
+                    {
+                        "config": {"type": "object"},
+                        "name": {"type": "object"},
+                        "version": {"type": "string"},
+                    },
+                    required=("config", "name", "version"),
+                ),
+                "ConfigLayerMetadata": _object_schema(
+                    {
+                        "name": {"type": "object"},
+                        "version": {"type": "string"},
+                    },
+                    required=("name", "version"),
+                ),
+                "ConfigLayerSource": {
+                    "oneOf": [
+                        _variant("user", "file"),
+                        _variant("project", "dotCodexFolder"),
+                        _variant("sessionFlags"),
+                    ]
+                },
+            },
         ),
-        "v2/ModelProviderCapabilitiesReadParams.json": _object_schema(
-            {"modelProvider": {"type": "string"}},
-            required=("modelProvider",),
-        ),
+        "v2/ModelProviderCapabilitiesReadParams.json": _object_schema({}),
         "v2/ModelProviderCapabilitiesReadResponse.json": _object_schema(
             {
-                "authResolution": {"type": "string"},
-                "modelTransport": {"type": "string"},
-                "supportsWebsockets": {"type": "boolean"},
+                "imageGeneration": {"type": "boolean"},
+                "namespaceTools": {"type": "boolean"},
+                "webSearch": {"type": "boolean"},
             },
-            required=(
-                "authResolution",
-                "modelTransport",
-                "supportsWebsockets",
-            ),
+            required=("imageGeneration", "namespaceTools", "webSearch"),
         ),
         "v2/TurnStartParams.json": _object_schema(
-            {"threadId": {"type": "string"}},
-            required=("threadId",),
+            {
+                "input": {"type": "array"},
+                "threadId": {"type": "string"},
+            },
+            required=("input", "threadId"),
+        ),
+        "v2/TurnStartResponse.json": _object_schema(
+            {"turn": {"type": "object"}},
+            required=("turn",),
         ),
         "v2/TurnStartedNotification.json": _object_schema(
-            {"turn": {"type": "object"}},
-            required=("turn",),
+            {
+                "threadId": {"type": "string"},
+                "turn": {"type": "object"},
+            },
+            required=("threadId", "turn"),
         ),
         "v2/TurnCompletedNotification.json": _object_schema(
-            {"turn": {"type": "object"}},
-            required=("turn",),
+            {
+                "threadId": {"type": "string"},
+                "turn": {"type": "object"},
+            },
+            required=("threadId", "turn"),
         ),
         "v2/ThreadRealtimeStartParams.json": _object_schema(
-            {"threadId": {"type": "string"}},
-            required=("threadId",),
+            {
+                "outputModality": {"type": "string"},
+                "threadId": {"type": "string"},
+            },
+            required=("outputModality", "threadId"),
         ),
+        "v2/ThreadRealtimeStartResponse.json": _object_schema({}),
         "v2/ThreadRealtimeStartedNotification.json": _object_schema(
-            {"threadId": {"type": "string"}},
-            required=("threadId",),
+            {
+                "threadId": {"type": "string"},
+                "version": {"type": "string"},
+            },
+            required=("threadId", "version"),
         ),
         "v2/ThreadRealtimeClosedNotification.json": _object_schema(
             {"threadId": {"type": "string"}},
             required=("threadId",),
         ),
-        "v2/McpServerStatusListResponse.json": _object_schema(
+        "v2/ListMcpServerStatusParams.json": _object_schema(
+            {"threadId": {"type": _json_values("string", "null")}}
+        ),
+        "v2/ListMcpServerStatusResponse.json": _object_schema(
             {"data": {"type": "array"}},
             required=("data",),
+        ),
+        "v2/McpServerStatusUpdatedNotification.json": _object_schema(
+            {
+                "name": {"type": "string"},
+                "status": {"type": "string"},
+                "threadId": {"type": _json_values("string", "null")},
+            },
+            required=("name", "status"),
         ),
         "ClientRequest.json": _method_schema(
             "initialize",

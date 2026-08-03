@@ -4,7 +4,11 @@ from pathlib import Path
 from threading import RLock
 
 from sidekick_usages.errors import InvalidPayloadError
-from sidekick_usages.serialization.json import JsonObject, decode_json_object
+from sidekick_usages.serialization.json import (
+    JsonObject,
+    JsonValue,
+    decode_json_object,
+)
 from tests.fakes.codex.app_server.executable import SESSION_CONFIG_FILE
 
 
@@ -19,21 +23,18 @@ class FakeCodexSession:
         base_url: str | None,
         requires_openai_auth: bool | None,
         supports_websockets: bool | None,
-        model_transport: str | None,
-        auth_resolution: str | None,
+        user_config: JsonObject | None = None,
+        project_config: JsonObject | None = None,
     ) -> None:
         self._codex_home = codex_home
         self._model_provider = model_provider
         self._base_url = base_url
         self._requires_openai_auth = requires_openai_auth
         self._supports_websockets = supports_websockets
-        self._model_transport = model_transport
-        self._auth_resolution = auth_resolution
+        self._user_config = user_config
+        self._project_config = project_config
         self._lock = RLock()
         self._config_read_count = 0
-        self._model_transport_attempts: list[
-            tuple[str, str | None, str]
-        ] = []
 
     @property
     def config_read_count(self) -> int:
@@ -41,51 +42,58 @@ class FakeCodexSession:
         with self._lock:
             return self._config_read_count
 
-    @property
-    def model_transport_attempts(
-        self,
-    ) -> tuple[tuple[str, str | None, str], ...]:
-        """Return safe model transport and current-auth observations."""
-        with self._lock:
-            return tuple(self._model_transport_attempts)
-
-    def read_config(self) -> tuple[str, JsonObject]:
-        """Return the effective provider definition and record its read."""
-        provider, definition = self._effective_provider()
+    def read_config(self) -> JsonObject:
+        """Return exact resident config layers and record their read."""
+        session_config = self._resident_config()
         with self._lock:
             self._config_read_count += 1
-        return provider, definition
-
-    def read_model_capabilities(
-        self,
-        active_account_id: str | None,
-    ) -> tuple[str, JsonObject]:
-        """Return and record the attempted model transport contract."""
-        provider, definition = self._effective_provider()
-        supports = definition["supportsWebsockets"]
-        requires_auth = definition["requiresOpenaiAuth"]
-        if not isinstance(supports, bool) or not isinstance(
-            requires_auth,
-            bool,
-        ):
-            raise AssertionError("Codex fake provider config is malformed.")
-        transport = self._model_transport
-        if transport is None:
-            transport = "websocket" if supports else "http"
-        auth_resolution = self._auth_resolution
-        if auth_resolution is None:
-            auth_resolution = "perAttempt" if requires_auth else "none"
-        with self._lock:
-            self._model_transport_attempts.append(
-                (transport, active_account_id, auth_resolution)
+        layers: list[JsonValue] = []
+        if self._user_config is not None:
+            layers.append(
+                self._layer(
+                    {
+                        "type": "user",
+                        "file": str(self._codex_home / "config.toml"),
+                    },
+                    self._user_config,
+                )
             )
-        return provider, {
-            "authResolution": auth_resolution,
-            "modelTransport": transport,
-            "supportsWebsockets": supports,
+        if self._project_config is not None:
+            layers.append(
+                self._layer(
+                    {
+                        "type": "project",
+                        "dotCodexFolder": str(
+                            self._codex_home / "project" / ".codex"
+                        ),
+                    },
+                    self._project_config,
+                )
+            )
+        session_source: JsonObject = {"type": "sessionFlags"}
+        layers.append(self._layer(session_source, session_config))
+        origin: JsonObject = {
+            "name": session_source,
+            "version": "0.146.0",
+        }
+        return {
+            "config": {"model_provider": session_config.get("model_provider")},
+            "layers": layers,
+            "origins": {
+                "model_provider": origin,
+                "model_providers.sidekick-chatgpt-http": origin,
+            },
         }
 
-    def _effective_provider(self) -> tuple[str, JsonObject]:
+    def read_model_capabilities(self) -> JsonObject:
+        """Return exact release-shaped provider feature capabilities."""
+        return {
+            "imageGeneration": True,
+            "namespaceTools": True,
+            "webSearch": True,
+        }
+
+    def _resident_config(self) -> JsonObject:
         path = self._codex_home / SESSION_CONFIG_FILE
         try:
             root = decode_json_object(path.read_bytes())
@@ -106,27 +114,38 @@ class FakeCodexSession:
         ):
             raise AssertionError("Codex fake provider config is malformed.")
         configured_definition = configured_providers.get(
-            configured_provider
+            "sidekick-chatgpt-http"
         )
         if not isinstance(configured_definition, dict):
             raise AssertionError("Codex fake provider config is malformed.")
         definition: JsonObject = {
             "name": configured_definition.get("name"),
-            "baseUrl": (
+            "base_url": (
                 self._base_url
                 if self._base_url is not None
                 else configured_definition.get("base_url")
             ),
-            "wireApi": configured_definition.get("wire_api"),
-            "requiresOpenaiAuth": (
+            "wire_api": configured_definition.get("wire_api"),
+            "requires_openai_auth": (
                 self._requires_openai_auth
                 if self._requires_openai_auth is not None
                 else configured_definition.get("requires_openai_auth")
             ),
-            "supportsWebsockets": (
+            "supports_websockets": (
                 self._supports_websockets
                 if self._supports_websockets is not None
                 else configured_definition.get("supports_websockets")
             ),
         }
-        return provider, definition
+        return {
+            "model_provider": provider,
+            "model_providers": {"sidekick-chatgpt-http": definition},
+        }
+
+    @staticmethod
+    def _layer(name: JsonObject, config: JsonObject) -> JsonObject:
+        return {
+            "config": config,
+            "name": name,
+            "version": "0.146.0",
+        }

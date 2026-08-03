@@ -49,7 +49,8 @@ from sidekick_usages.daemon.worker.pool import (
     WorkerPool,
     resolve_worker_executable,
 )
-from sidekick_usages.paths import discover_application_paths
+from sidekick_usages.paths import ApplicationPaths, discover_application_paths
+from sidekick_usages.persistence.accounts.reader import AccountIndexReader
 from sidekick_usages.persistence.accounts.store import AccountStore
 from sidekick_usages.persistence.private.credentials import (
     PrivateCredentialTree,
@@ -74,7 +75,10 @@ from sidekick_usages.providers.codex.app_server.executable import (
     discover_codex_executable_from_launcher,
 )
 from sidekick_usages.providers.codex.broker.responder import CodexRuntimeBroker
-from sidekick_usages.providers.codex.broker.service import CodexSharedRuntime
+from sidekick_usages.providers.codex.broker.service import (
+    CodexSharedRuntime,
+    prepare_codex_session_home,
+)
 
 _EXIT_OK = 0
 _INVALID_INVOCATION_EXIT_CODE = 2
@@ -96,10 +100,18 @@ def _signal_stop(
 
 
 def _create_codex_runtime(
-    session_home: Path,
+    paths: ApplicationPaths,
     launcher: Path | None,
     cancelled: Callable[[], bool],
 ) -> CodexSharedRuntime:
+    session_home = prepare_codex_session_home(
+        paths,
+        lambda root: PrivateCredentialTree(
+            root,
+            account_path=paths.accounts,
+        ),
+        AccountIndexReader(paths.accounts).load,
+    )
     executable = discover_codex_executable_from_launcher(
         launcher,
         os.environ,
@@ -178,7 +190,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     broker = CodexRuntimeBroker(
         partial(
             _create_codex_runtime,
-            paths.codex_session_home,
+            paths,
             provider_launchers.codex,
         ),
         RuntimeStateReader(

@@ -37,6 +37,7 @@ from sidekick_usages.providers.codex.broker.daemon import CodexDaemonManager
 from sidekick_usages.providers.codex.broker.errors import (
     CodexBrokerError,
     codex_broker_error,
+    codex_session_configuration_error,
 )
 from sidekick_usages.providers.codex.broker.external_auth.installation import (
     install_codex_projection,
@@ -55,9 +56,17 @@ from sidekick_usages.providers.codex.broker.models import (
 from sidekick_usages.providers.codex.broker.ports import CodexProjection
 from sidekick_usages.providers.codex.broker.types import CodexBrokerFailure
 from sidekick_usages.providers.codex.broker.wire import CodexDaemonSession
+from sidekick_usages.providers.codex.session.errors import (
+    CodexSessionConfigurationError,
+)
+from sidekick_usages.providers.codex.session.home import (
+    prepare_codex_session_home,
+)
 from sidekick_usages.providers.codex.session.models import (
     CodexSessionCapability,
 )
+
+__all__ = ("CodexSharedRuntime", "prepare_codex_session_home")
 
 
 class CodexSharedRuntime:
@@ -165,6 +174,9 @@ class CodexSharedRuntime:
                     self._manager.session_schema_supported
                 ),
             )
+        except CodexSessionConfigurationError as error:
+            self._drop_session()
+            raise codex_session_configuration_error(error) from None
         except CodexAppServerError as error:
             self._drop_session()
             raise codex_broker_error(error) from None

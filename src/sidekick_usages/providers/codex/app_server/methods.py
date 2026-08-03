@@ -10,10 +10,8 @@ CONFIG_READ_METHOD = "config/read"
 INITIALIZED_METHOD = "initialized"
 INITIALIZE_METHOD = "initialize"
 MCP_SERVER_STATUS_LIST_METHOD = "mcpServerStatus/list"
-MCP_SERVER_STATUS_UPDATED_METHOD = "mcpServerStatus/updated"
-MODEL_PROVIDER_CAPABILITIES_READ_METHOD = (
-    "modelProvider/capabilities/read"
-)
+MCP_SERVER_STATUS_UPDATED_METHOD = "mcpServer/startupStatus/updated"
+MODEL_PROVIDER_CAPABILITIES_READ_METHOD = "modelProvider/capabilities/read"
 THREAD_REALTIME_CLOSED_METHOD = "thread/realtime/closed"
 THREAD_REALTIME_START_METHOD = "thread/realtime/start"
 THREAD_REALTIME_STARTED_METHOD = "thread/realtime/started"

@@ -54,8 +54,8 @@ class FakeCodexDaemon:
         base_url: str | None = None,
         requires_openai_auth: bool | None = None,
         supports_websockets: bool | None = None,
-        model_transport: str | None = None,
-        auth_resolution: str | None = None,
+        user_config: JsonObject | None = None,
+        project_config: JsonObject | None = None,
     ) -> None:
         self._codex_home = codex_home
         self._version = app_server_version
@@ -65,8 +65,8 @@ class FakeCodexDaemon:
             base_url=base_url,
             requires_openai_auth=requires_openai_auth,
             supports_websockets=supports_websockets,
-            model_transport=model_transport,
-            auth_resolution=auth_resolution,
+            user_config=user_config,
+            project_config=project_config,
         )
         self._lock = RLock()
         self._server: Server | None = None
@@ -120,13 +120,6 @@ class FakeCodexDaemon:
     def config_read_count(self) -> int:
         """Return effective resident-config readbacks."""
         return self._session.config_read_count
-
-    @property
-    def model_transport_attempts(
-        self,
-    ) -> tuple[tuple[str, str | None, str], ...]:
-        """Return safe model transport and current-auth observations."""
-        return self._session.model_transport_attempts
 
     @property
     def external_logins(self) -> tuple[tuple[str, str], ...]:
@@ -383,18 +376,12 @@ class FakeCodexDaemon:
     ) -> None:
         if request.get("params") != {"includeLayers": True}:
             raise AssertionError("Codex fake config read is invalid.")
-        provider, definition = self._session.read_config()
+        result = self._session.read_config()
         _send(
             connection,
             {
                 "id": _request_id(request),
-                "result": {
-                    "config": {
-                        "modelProvider": provider,
-                        "modelProviders": {provider: definition},
-                    },
-                    "layers": [],
-                },
+                "result": result,
             },
         )
 
@@ -403,15 +390,11 @@ class FakeCodexDaemon:
         connection: ServerConnection,
         request: JsonObject,
     ) -> None:
-        with self._lock:
-            active_account_id = self._active_account_id
-        provider, result = self._session.read_model_capabilities(
-            active_account_id
-        )
-        if request.get("params") != {"modelProvider": provider}:
+        if request.get("params") != {}:
             raise AssertionError(
                 "Codex fake model-capability read is invalid."
             )
+        result = self._session.read_model_capabilities()
         _send(
             connection,
             {
