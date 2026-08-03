@@ -33,6 +33,7 @@ from sidekick_usages.daemon.selection.models import (
     ParticipantNotice,
     ParticipantReadyRequest,
     ParticipantRegistration,
+    ParticipantSnapshot,
     SelectionRequestError,
     SelectionStatus,
     TurnAdmission,
@@ -45,6 +46,7 @@ from sidekick_usages.daemon.selection.ports import (
     SelectionJournal,
 )
 from sidekick_usages.daemon.selection.registry import ParticipantRegistry
+from sidekick_usages.persistence.errors import PersistenceError
 from sidekick_usages.platform.models import ProcessIdentity
 from sidekick_usages.platform.peer import OperatingSystemProcessInspector
 from sidekick_usages.platform.types import (
@@ -300,6 +302,9 @@ class SelectionCoordinator:
                 )
             if self._resume_recovery is not None:
                 self._resume_recovery(provider_id)
+                recovered = self._completed_replay(active)
+                if recovered is not None:
+                    return recovered
             raise SelectionRequestError(
                 SelectionCode.SELECTION_RECOVERY_REQUIRED
             )
@@ -501,24 +506,19 @@ class SelectionCoordinator:
             if not self._participants.ready_resolved(provider_id):
                 return self._recovering(operation)
         snapshot = self._participants.seal_ready(provider_id)
-        operation = self._persist(
-            operation,
-            replace(
-                operation,
-                phase=SelectionPhase.AWAITING_READY,
-                required_participant_ids=snapshot.required_participant_ids,
-                ready_participant_ids=snapshot.ready_participant_ids,
-                lost_after_commit_participant_ids=(
-                    snapshot.confirmed_dead_participant_ids
-                ),
-                outcome_code=(
-                    None
-                    if not snapshot.confirmed_dead_participant_ids
-                    else SelectionCode.PARTICIPANT_LOST_AFTER_COMMIT
-                ),
-                updated_at=self._clock.now(),
-            ),
-        )
+        snapshot_persisted = False
+        try:
+            try:
+                operation = self._persist(
+                    operation,
+                    self._snapshot_operation(operation, snapshot),
+                )
+                snapshot_persisted = True
+            finally:
+                if not snapshot_persisted:
+                    self._participants.unseal(provider_id)
+        except PersistenceError:
+            return self._recovering(operation)
         finalized = FinalizedSelection(
             provider_id=provider_id,
             account_id=prepared.target_account_id,
@@ -631,22 +631,7 @@ class SelectionCoordinator:
             snapshot = self._participants.snapshot(operation.provider_id)
             operation = self._persist(
                 operation,
-                replace(
-                    operation,
-                    required_participant_ids=(
-                        snapshot.required_participant_ids
-                    ),
-                    ready_participant_ids=snapshot.ready_participant_ids,
-                    lost_after_commit_participant_ids=(
-                        snapshot.confirmed_dead_participant_ids
-                    ),
-                    outcome_code=(
-                        None
-                        if not snapshot.confirmed_dead_participant_ids
-                        else SelectionCode.PARTICIPANT_LOST_AFTER_COMMIT
-                    ),
-                    updated_at=self._clock.now(),
-                ),
+                self._snapshot_operation(operation, snapshot),
             )
         result = self._result(operation, SelectionOutcome.RECOVERY_REQUIRED)
         try:
@@ -667,6 +652,76 @@ class SelectionCoordinator:
     def _completion_is_durable(self, result: SelectionResult) -> bool:
         document = self._journal.load(result.provider_id)
         return document.active is None and result in document.history
+
+    def _snapshot_operation(
+        self,
+        operation: OpenSelectionOperation,
+        snapshot: ParticipantSnapshot,
+    ) -> OpenSelectionOperation:
+        return replace(
+            operation,
+            required_participant_ids=snapshot.required_participant_ids,
+            ready_participant_ids=snapshot.ready_participant_ids,
+            lost_after_commit_participant_ids=(
+                snapshot.confirmed_dead_participant_ids
+            ),
+            outcome_code=(
+                None
+                if not snapshot.confirmed_dead_participant_ids
+                else SelectionCode.PARTICIPANT_LOST_AFTER_COMMIT
+            ),
+            updated_at=self._clock.now(),
+        )
+
+    def _completed_replay(
+        self,
+        operation: OpenSelectionOperation,
+    ) -> SelectionResult | None:
+        document = self._journal.load(operation.provider_id)
+        result = next(
+            (
+                item
+                for item in reversed(document.history)
+                if item.operation_id == operation.operation_id
+            ),
+            None,
+        )
+        if (
+            document.active is not None
+            or result is None
+            or result.target_account_id != operation.target_account_id
+        ):
+            return None
+        finalized = self._selected.load(operation.provider_id)
+        if (
+            result.outcome
+            in {
+                SelectionOutcome.READY,
+                SelectionOutcome.PARTICIPANT_LOST_AFTER_COMMIT,
+            }
+            and finalized is not None
+            and result.target_generation is not None
+            and (
+                finalized.account_id,
+                finalized.epoch,
+                finalized.generation,
+            )
+            == (
+                result.target_account_id,
+                result.epoch,
+                result.target_generation,
+            )
+        ):
+            return result
+        if result.outcome is SelectionOutcome.FAILED_OLD_EPOCH and (
+            finalized is None
+            if operation.baseline_account_id is None
+            else finalized is not None
+            and (finalized.account_id, finalized.epoch)
+            == (operation.baseline_account_id, operation.baseline_epoch)
+        ):
+            return result
+        return None
 
     def _latest(
         self,
