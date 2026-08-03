@@ -121,6 +121,7 @@ from tests.fakes.daemon.control import (
     VerifiedPeer,
     exercise_blocked_stream_cancellation,
     exercise_closed_subscription_monitor,
+    foundation_dispatcher,
     rejected_protocol_response,
     serve_protocol_connection,
 )
@@ -306,15 +307,7 @@ def test_authenticated_control_stream_frames_completes_and_cancels(
     )
     assert dispatcher.cancellations == [accepted.request_id]
     state, resident = foundation_state(tmp_path), ResidentState()
-    durable_dispatcher = SupervisorDispatcher(
-        state.queue,
-        ServiceStateStore(state.paths.service_state),
-        OperationEventHub(),
-        resident,
-        RuntimeClock(),
-        Event().set,
-        Event().set,
-    )
+    durable_dispatcher = foundation_dispatcher(state, resident)
     _assert_monitor(state, resident)
     approved_request = replace(
         fragmented_request,
@@ -558,15 +551,7 @@ def _dispatch_failure_code(
 ) -> str:
     """Return one safe dispatcher refusal without a selection adapter."""
     state = foundation_state(root)
-    dispatcher = SupervisorDispatcher(
-        state.queue,
-        ServiceStateStore(state.paths.service_state),
-        OperationEventHub(),
-        ResidentState(),
-        RuntimeClock(),
-        Event().set,
-        Event().set,
-    )
+    dispatcher = foundation_dispatcher(state, ResidentState())
     events = tuple(dispatcher.dispatch(VerifiedControlRequest(request, peer)))
     event = events[-1]
     assert isinstance(event.payload, FailedPayload)

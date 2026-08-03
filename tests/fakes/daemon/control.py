@@ -392,6 +392,22 @@ def _service_event(
     )
 
 
+def foundation_dispatcher(
+    state: FoundationState,
+    resident: ResidentService,
+) -> SupervisorDispatcher:
+    """Compose the default dispatcher for one foundation state graph."""
+    return SupervisorDispatcher(
+        state.queue,
+        ServiceStateStore(state.paths.service_state),
+        OperationEventHub(),
+        resident,
+        FixedClock(),
+        Event().set,
+        Event().set,
+    )
+
+
 def serve_protocol_connection(
     connection: socket.socket,
     verifier: PeerVerifier,
