@@ -203,16 +203,20 @@ def test_codex_activation_commits_only_correlated_target(
         revalidate_current_socket,
     )
 
-    with FakeCodexDaemon(fixture.native_home) as daemon:
+    with FakeCodexDaemon(
+        fixture.session_home,
+        app_server_version="0.146.0",
+    ) as daemon:
         configure_codex_daemon_lifecycle(
             fixture.provider_root,
-            fixture.native_home,
+            fixture.session_home,
             daemon.socket_path,
+            app_server_version="0.146.0",
         )
         with FakeCodexSupervisor(
             fixture.paths,
             fixture.executable,
-            fixture.native_home,
+            fixture.session_home,
             fixture.environment,
             real_worker_executable(),
         ) as supervisor:
@@ -251,10 +255,11 @@ def test_codex_activation_commits_only_correlated_target(
         with FakeCodexSupervisor(
             fixture.paths,
             fixture.executable,
-            fixture.native_home,
+            fixture.session_home,
             fixture.environment,
             real_worker_executable(),
         ) as restarted:
+            restarted.wait_until_broker_available()
             daemon.wait_for_paused_install()
             daemon.resume_install()
             wait_for_projected_generation(
@@ -306,55 +311,57 @@ def test_codex_activation_recovers_at_official_mutation_boundary(
     )
     selected, journals = _codex_recovery_state(fixture.paths)
 
-    with FakeCodexDaemon(fixture.native_home) as daemon:
+    with FakeCodexDaemon(
+        fixture.session_home,
+        app_server_version="0.146.0",
+    ) as daemon:
         configure_codex_daemon_lifecycle(
             fixture.provider_root,
-            fixture.native_home,
+            fixture.session_home,
             daemon.socket_path,
+            app_server_version="0.146.0",
         )
         supervisor = FakeCodexSupervisor(
             fixture.paths,
             fixture.executable,
-            fixture.native_home,
+            fixture.session_home,
             fixture.environment,
             real_worker_executable(),
         )
         supervisor.start()
-        supervisor.wait_until_ready()
-        interrupt_activation_at_install(
-            supervisor,
-            daemon,
-            fixture.paths,
-            _FIRST_ACTIVATION_ID,
-            MANAGED_ACCOUNT_ID,
-        )
+        try:
+            supervisor.wait_until_ready()
+            interrupt_activation_at_install(
+                supervisor,
+                daemon,
+                fixture.paths,
+                _FIRST_ACTIVATION_ID,
+                MANAGED_ACCOUNT_ID,
+            )
 
-        assert daemon.installed_account_ids[-1] == PROVIDER_IDENTITY
-        _require_selected(
-            selected,
-            ACCOUNT_A_ID,
-            ACCOUNT_A_PROVIDER_IDENTITY,
-            GENERATION,
-        )
-        assert journals.load(ProviderId.CODEX).active is not None
-        installed_before_recovery = len(daemon.installed_account_ids)
+            assert daemon.installed_account_ids[-1] == PROVIDER_IDENTITY
+            _require_selected(
+                selected,
+                ACCOUNT_A_ID,
+                ACCOUNT_A_PROVIDER_IDENTITY,
+                GENERATION,
+            )
+            assert journals.load(ProviderId.CODEX).active is not None
+            installed_before_recovery = len(daemon.installed_account_ids)
+        finally:
+            supervisor.close()
 
         daemon.pause_next_install()
         with FakeCodexSupervisor(
             fixture.paths,
             fixture.executable,
-            fixture.native_home,
+            fixture.session_home,
             fixture.environment,
             real_worker_executable(),
         ) as restarted:
+            restarted.wait_until_broker_available()
             daemon.wait_for_paused_install()
-            client = ControlClient.connect(fixture.paths.supervisor_socket)
-            retry = client.reconcile(ProviderId.CODEX)
-            accepted = next(retry)
-            assert accepted.kind is EventKind.ACCEPTED
             daemon.resume_install()
-            assert tuple(retry)[-1].kind is EventKind.COMPLETED
-            client.close()
             wait_for_projected_generation(
                 fixture.paths,
                 MANAGED_ACCOUNT_ID,

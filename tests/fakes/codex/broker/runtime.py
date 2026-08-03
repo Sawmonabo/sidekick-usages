@@ -183,8 +183,15 @@ def _broker_fixture(
         "# Codex defaults to file-backed CLI authentication.\n",
         encoding="utf-8",
     )
+    session_home = paths.codex_session_home
+    session_home.mkdir(parents=True, mode=0o700)
     write_codex_schema(schema_root, external_auth=True)
-    write_fake_managed_codex(provider_root, schema_root, native_home)
+    write_fake_managed_codex(
+        provider_root,
+        schema_root,
+        session_home,
+        version="0.146.0",
+    )
     account_a = managed_saved_account(
         ACCOUNT_A_ID,
         ACCOUNT_A_AUTHORITY_ID,
@@ -226,6 +233,7 @@ def _broker_fixture(
         private,
         provider_root,
         native_home,
+        session_home,
         native_auth,
     )
 

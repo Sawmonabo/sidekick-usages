@@ -200,6 +200,13 @@ def _service_lines(health: SupervisorHealth) -> tuple[Text, ...]:
     ]
     if health.broker_failure_code is not None:
         lines.append(Text(f"  broker failure: {health.broker_failure_code}"))
+    preparation = health.broker_preparation_report
+    if preparation is not None:
+        lines.append(Text(f"  broker preparation: {preparation.reason}"))
+        lines.extend(
+            Text(f"    dry-run step: {step}")
+            for step in preparation.operator_steps
+        )
     return tuple(lines)
 
 

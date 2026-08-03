@@ -19,6 +19,7 @@ from websockets.sync.server import (
     unix_serve,
 )
 
+from sidekick_usages.core.accounts.types import ProviderIdentity
 from sidekick_usages.errors import InvalidPayloadError
 from sidekick_usages.providers.codex.account.types import CodexAuthMode
 from sidekick_usages.providers.codex.broker.responder import (
@@ -26,6 +27,7 @@ from sidekick_usages.providers.codex.broker.responder import (
 )
 from sidekick_usages.serialization.json import JsonObject, decode_json_object
 from tests.fakes.codex.app_server.models import FakeCodexRefreshResponse
+from tests.fakes.codex.app_server.session import FakeCodexSession
 from tests.fakes.codex.auth import managed_auth
 
 _CLIENT_TIMEOUT_SECONDS = 5.0
@@ -49,9 +51,24 @@ class FakeCodexDaemon:
         codex_home: Path,
         *,
         app_server_version: str = "0.145.0",
+        model_provider: str | None = None,
+        base_url: str | None = None,
+        requires_openai_auth: bool | None = None,
+        supports_websockets: bool | None = None,
+        user_config: JsonObject | None = None,
+        project_config: JsonObject | None = None,
     ) -> None:
         self._codex_home = codex_home
         self._version = app_server_version
+        self._session = FakeCodexSession(
+            codex_home,
+            model_provider=model_provider,
+            base_url=base_url,
+            requires_openai_auth=requires_openai_auth,
+            supports_websockets=supports_websockets,
+            user_config=user_config,
+            project_config=project_config,
+        )
         self._lock = RLock()
         self._server: Server | None = None
         self._thread: Thread | None = None
@@ -65,6 +82,7 @@ class FakeCodexDaemon:
         self._originator: str | None = None
         self._ready_account_read_count = 0
         self._auth_status_read_count = 0
+        self._model_auth_read_count = 0
         self._next_server_request_id = 0
         self._refresh_event: Event | None = None
         self._refresh_request_id: int | None = None
@@ -99,6 +117,17 @@ class FakeCodexDaemon:
         """Return effective native-auth observations."""
         with self._lock:
             return self._auth_status_read_count
+
+    @property
+    def model_auth_read_count(self) -> int:
+        """Return synthetic model reads of current external auth."""
+        with self._lock:
+            return self._model_auth_read_count
+
+    @property
+    def config_read_count(self) -> int:
+        """Return effective resident-config readbacks."""
+        return self._session.config_read_count
 
     @property
     def external_logins(self) -> tuple[tuple[str, str], ...]:
@@ -163,6 +192,25 @@ class FakeCodexDaemon:
                 },
             }
         )
+
+    def install_external_auth(
+        self,
+        provider_identity: ProviderIdentity,
+        generation: str,
+    ) -> None:
+        """Install synthetic auth through the daemon mutation boundary."""
+        account_id = str(provider_identity)
+        access_token = _auth_access_token(managed_auth(account_id, generation))
+        self._record_external_auth(account_id, access_token)
+
+    def read_current_external_auth(self) -> ProviderIdentity:
+        """Read the daemon's actual current external-auth identity."""
+        with self._lock:
+            active = self._active_account_id
+            self._model_auth_read_count += 1
+        if active is None:
+            raise AssertionError("Fake Codex daemon has no current auth.")
+        return ProviderIdentity(active)
 
     def connect_tui(self) -> FakeCodexTuiObserver:
         """Connect one initialized official-shaped TUI observer."""
@@ -316,24 +364,71 @@ class FakeCodexDaemon:
         method = request.get("method")
         if method is None:
             self._accept_refresh_response(connection, request)
-            return
-        if method == "initialize":
+        elif method == "initialize":
             self._initialize(connection, request)
-            return
-        if method == "initialized":
+        elif method == "initialized":
             with self._lock:
                 self._initialized.add(connection)
-            return
-        if method == "account/login/start":
+        elif method == "account/login/start":
             self._install(connection, request)
-            return
-        if method == "account/read":
+        elif method == "account/read":
             self._read_account(connection, request)
-            return
-        if method == "getAuthStatus":
+        elif method == "getAuthStatus":
             self._get_auth_status(connection, request)
-            return
-        raise AssertionError("Codex fake received an unsupported method.")
+        elif not self._dispatch_session_qualification(
+            connection,
+            request,
+            method,
+        ):
+            raise AssertionError("Codex fake received an unsupported method.")
+
+    def _dispatch_session_qualification(
+        self,
+        connection: ServerConnection,
+        request: JsonObject,
+        method: object,
+    ) -> bool:
+        if method == "config/read":
+            self._read_config(connection, request)
+            return True
+        if method == "modelProvider/capabilities/read":
+            self._read_model_capabilities(connection, request)
+            return True
+        return False
+
+    def _read_config(
+        self,
+        connection: ServerConnection,
+        request: JsonObject,
+    ) -> None:
+        if request.get("params") != {"includeLayers": True}:
+            raise AssertionError("Codex fake config read is invalid.")
+        result = self._session.read_config()
+        _send(
+            connection,
+            {
+                "id": _request_id(request),
+                "result": result,
+            },
+        )
+
+    def _read_model_capabilities(
+        self,
+        connection: ServerConnection,
+        request: JsonObject,
+    ) -> None:
+        if request.get("params") != {}:
+            raise AssertionError(
+                "Codex fake model-capability read is invalid."
+            )
+        result = self._session.read_model_capabilities()
+        _send(
+            connection,
+            {
+                "id": _request_id(request),
+                "result": result,
+            },
+        )
 
     def _initialize(
         self,
@@ -462,10 +557,7 @@ class FakeCodexDaemon:
             or _token_account_id(access_token) != account_id
         ):
             raise AssertionError("Codex fake projection is inconsistent.")
-        with self._lock:
-            self._active_account_id = account_id
-            self._active_access_token = access_token
-            self._installed_account_ids.append(account_id)
+        self._record_external_auth(account_id, access_token)
         _send(
             connection,
             {
@@ -502,6 +594,17 @@ class FakeCodexDaemon:
             ):
                 raise AssertionError("Fake Codex install was not resumed.")
             self._install_resumed.set()
+
+    def _record_external_auth(
+        self,
+        account_id: str,
+        access_token: str,
+    ) -> None:
+        """Record one external-auth installation used by all fake paths."""
+        with self._lock:
+            self._active_account_id = account_id
+            self._active_access_token = access_token
+            self._installed_account_ids.append(account_id)
 
     def _read_account(
         self,

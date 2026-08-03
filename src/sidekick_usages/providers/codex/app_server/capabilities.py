@@ -23,16 +23,30 @@ from sidekick_usages.providers.codex.app_server.methods import (
     ACCOUNT_LOGIN_START_METHOD,
     ACCOUNT_READ_METHOD,
     ACCOUNT_UPDATED_METHOD,
+    CONFIG_READ_METHOD,
     INITIALIZE_METHOD,
     INITIALIZED_METHOD,
+    MCP_SERVER_STATUS_LIST_METHOD,
+    MCP_SERVER_STATUS_UPDATED_METHOD,
+    MODEL_PROVIDER_CAPABILITIES_READ_METHOD,
+    THREAD_REALTIME_CLOSED_METHOD,
+    THREAD_REALTIME_START_METHOD,
+    THREAD_REALTIME_STARTED_METHOD,
+    TURN_COMPLETED_METHOD,
+    TURN_START_METHOD,
+    TURN_STARTED_METHOD,
 )
 from sidekick_usages.providers.codex.app_server.models import (
     CodexAppServerCapabilities,
     CodexExecutable,
+    CodexVersion,
 )
 from sidekick_usages.providers.codex.app_server.process import (
     minimal_codex_environment,
     run_quiet_codex_command,
+)
+from sidekick_usages.providers.codex.app_server.release import (
+    CODEX_SESSION_VERSION,
 )
 from sidekick_usages.providers.codex.app_server.session import (
     CodexAppServerSession,
@@ -62,6 +76,23 @@ SCHEMA_FILES = (
     "ClientNotification.json",
     "ServerRequest.json",
     "ServerNotification.json",
+)
+_SESSION_SCHEMA_FILES = (
+    "v2/ConfigReadParams.json",
+    "v2/ConfigReadResponse.json",
+    "v2/ModelProviderCapabilitiesReadParams.json",
+    "v2/ModelProviderCapabilitiesReadResponse.json",
+    "v2/TurnStartParams.json",
+    "v2/TurnStartResponse.json",
+    "v2/TurnStartedNotification.json",
+    "v2/TurnCompletedNotification.json",
+    "v2/ThreadRealtimeStartParams.json",
+    "v2/ThreadRealtimeStartResponse.json",
+    "v2/ThreadRealtimeStartedNotification.json",
+    "v2/ThreadRealtimeClosedNotification.json",
+    "v2/ListMcpServerStatusParams.json",
+    "v2/ListMcpServerStatusResponse.json",
+    "v2/McpServerStatusUpdatedNotification.json",
 )
 _MAX_SCHEMA_FILE_BYTES = 512 * 1024
 _MAX_SCHEMA_DEPTH = 32
@@ -105,12 +136,23 @@ def probe_codex_capabilities(
             process_group=process_group,
             cancelled=cancelled,
         )
-        raw_schemas, schemas = _read_required_schemas(schema_directory)
+        schema_files = _schema_files(executable.version)
+        raw_schemas, schemas = _read_required_schemas(
+            schema_directory,
+            schema_files,
+        )
         _validate_required_capabilities(schemas)
-        schema_hash = _hash_schemas(raw_schemas)
+        session_schema_supported = executable.version == CODEX_SESSION_VERSION
+        if session_schema_supported:
+            _validate_session_capabilities(schemas)
+        schema_hash = _hash_schemas(raw_schemas, schema_files)
         capabilities = CodexAppServerCapabilities(
             executable=executable,
             schema_hash=schema_hash,
+            session_schema_supported=session_schema_supported,
+            session_schema_manifest=(
+                _SESSION_SCHEMA_FILES if session_schema_supported else ()
+            ),
         )
         try:
             with CodexAppServerSession.open(
@@ -132,10 +174,11 @@ def probe_codex_capabilities(
 
 def _read_required_schemas(
     schema_directory: Path,
+    schema_files: tuple[str, ...],
 ) -> tuple[dict[str, bytes], dict[str, JsonObject]]:
     raw_schemas: dict[str, bytes] = {}
     schemas: dict[str, JsonObject] = {}
-    for relative in SCHEMA_FILES:
+    for relative in schema_files:
         path = schema_directory / relative
         try:
             file_status = path.lstat()
@@ -160,6 +203,12 @@ def _read_required_schemas(
         raw_schemas[relative] = payload
         schemas[relative] = schema
     return raw_schemas, schemas
+
+
+def _schema_files(version: CodexVersion) -> tuple[str, ...]:
+    if version == CODEX_SESSION_VERSION:
+        return (*SCHEMA_FILES, *_SESSION_SCHEMA_FILES)
+    return SCHEMA_FILES
 
 
 def _validate_required_capabilities(
@@ -281,9 +330,181 @@ def _validate_required_capabilities(
     )
 
 
-def _hash_schemas(raw_schemas: dict[str, bytes]) -> str:
+def _validate_session_capabilities(
+    schemas: dict[str, JsonObject],
+) -> None:
+    _validate_session_config_schemas(schemas)
+    _validate_session_model_schema(schemas)
+    _validate_session_turn_schemas(schemas)
+    _validate_session_realtime_schemas(schemas)
+    _validate_session_mcp_schemas(schemas)
+    _validate_session_methods(schemas)
+
+
+def _validate_session_config_schemas(
+    schemas: dict[str, JsonObject],
+) -> None:
+    """Require the exact 0.146 layered config schema."""
+    config_params = schemas["v2/ConfigReadParams.json"]
+    _require_property(config_params, "includeLayers", "boolean")
+    _require_property(config_params, "cwd", "string")
+    config_response = schemas["v2/ConfigReadResponse.json"]
+    _require_names(config_response, "required", ("config", "origins"))
+    _require_property(config_response, "config", "object")
+    _require_property(config_response, "layers", "array")
+    _require_property(config_response, "origins", "object")
+    _require_definition_names(
+        config_response,
+        "ConfigLayer",
+        ("config", "name", "version"),
+    )
+    _require_definition_names(
+        config_response,
+        "ConfigLayerMetadata",
+        ("name", "version"),
+    )
+    _require_variant(config_response, "user", ("file", "type"))
+    _require_variant(
+        config_response,
+        "project",
+        ("dotCodexFolder", "type"),
+    )
+    _require_variant(config_response, "sessionFlags", ("type",))
+
+
+def _validate_session_model_schema(
+    schemas: dict[str, JsonObject],
+) -> None:
+    """Require only the real provider-feature schema members."""
+    provider_params = schemas["v2/ModelProviderCapabilitiesReadParams.json"]
+    if not _schema_allows_type(
+        provider_params,
+        provider_params,
+        "object",
+        depth=0,
+    ):
+        _unsupported()
+    provider_response = schemas[
+        "v2/ModelProviderCapabilitiesReadResponse.json"
+    ]
+    _require_names(
+        provider_response,
+        "required",
+        ("imageGeneration", "namespaceTools", "webSearch"),
+    )
+    for name in ("imageGeneration", "namespaceTools", "webSearch"):
+        _require_property(provider_response, name, "boolean")
+
+
+def _validate_session_turn_schemas(
+    schemas: dict[str, JsonObject],
+) -> None:
+    """Require correlated turn request, response, and notifications."""
+    turn_start = schemas["v2/TurnStartParams.json"]
+    _require_names(turn_start, "required", ("input", "threadId"))
+    _require_property(turn_start, "input", "array")
+    _require_property(turn_start, "threadId", "string")
+    turn_response = schemas["v2/TurnStartResponse.json"]
+    _require_names(turn_response, "required", ("turn",))
+    _require_property(turn_response, "turn", "object")
+    for relative in (
+        "v2/TurnStartedNotification.json",
+        "v2/TurnCompletedNotification.json",
+    ):
+        _require_names(schemas[relative], "required", ("threadId", "turn"))
+        _require_property(schemas[relative], "threadId", "string")
+        _require_property(schemas[relative], "turn", "object")
+
+
+def _validate_session_realtime_schemas(
+    schemas: dict[str, JsonObject],
+) -> None:
+    """Require the exact realtime request and event shapes."""
+    realtime_start = schemas["v2/ThreadRealtimeStartParams.json"]
+    _require_names(
+        realtime_start,
+        "required",
+        ("outputModality", "threadId"),
+    )
+    _require_property(realtime_start, "outputModality", "string")
+    _require_property(realtime_start, "threadId", "string")
+    realtime_response = schemas["v2/ThreadRealtimeStartResponse.json"]
+    if not _schema_allows_type(
+        realtime_response,
+        realtime_response,
+        "object",
+        depth=0,
+    ):
+        _unsupported()
+    realtime_started = schemas["v2/ThreadRealtimeStartedNotification.json"]
+    _require_names(
+        realtime_started,
+        "required",
+        ("threadId", "version"),
+    )
+    _require_property(realtime_started, "threadId", "string")
+    _require_property(realtime_started, "version", "string")
+    realtime_closed = schemas["v2/ThreadRealtimeClosedNotification.json"]
+    _require_names(realtime_closed, "required", ("threadId",))
+    _require_property(realtime_closed, "threadId", "string")
+
+
+def _validate_session_mcp_schemas(
+    schemas: dict[str, JsonObject],
+) -> None:
+    """Require the 0.146 MCP list and updated-event payloads."""
+    mcp_params = schemas["v2/ListMcpServerStatusParams.json"]
+    _require_property(mcp_params, "threadId", "string")
+    mcp_response = schemas["v2/ListMcpServerStatusResponse.json"]
+    _require_names(mcp_response, "required", ("data",))
+    _require_property(mcp_response, "data", "array")
+    mcp_updated = schemas["v2/McpServerStatusUpdatedNotification.json"]
+    _require_names(mcp_updated, "required", ("name", "status"))
+    _require_property(mcp_updated, "name", "string")
+    _require_property(mcp_updated, "status", "string")
+    _require_property(mcp_updated, "threadId", "string")
+
+
+def _validate_session_methods(schemas: dict[str, JsonObject]) -> None:
+    """Require every correlated session method in its method union."""
+    for method in (
+        CONFIG_READ_METHOD,
+        MODEL_PROVIDER_CAPABILITIES_READ_METHOD,
+        TURN_START_METHOD,
+        THREAD_REALTIME_START_METHOD,
+        MCP_SERVER_STATUS_LIST_METHOD,
+    ):
+        _require_method(schemas["ClientRequest.json"], method)
+    for method in (
+        TURN_STARTED_METHOD,
+        TURN_COMPLETED_METHOD,
+        THREAD_REALTIME_STARTED_METHOD,
+        THREAD_REALTIME_CLOSED_METHOD,
+        MCP_SERVER_STATUS_UPDATED_METHOD,
+    ):
+        _require_method(schemas["ServerNotification.json"], method)
+
+
+def _require_definition_names(
+    schema: JsonObject,
+    definition: str,
+    expected: tuple[str, ...],
+) -> None:
+    definitions = schema.get("definitions")
+    if not isinstance(definitions, dict):
+        _unsupported()
+    candidate = definitions.get(definition)
+    if not isinstance(candidate, dict):
+        _unsupported()
+    _require_names(candidate, "required", expected)
+
+
+def _hash_schemas(
+    raw_schemas: dict[str, bytes],
+    schema_files: tuple[str, ...],
+) -> str:
     digest = hashlib.sha256()
-    for relative in SCHEMA_FILES:
+    for relative in schema_files:
         digest.update(relative.encode("utf-8"))
         digest.update(b"\0")
         digest.update(raw_schemas[relative])

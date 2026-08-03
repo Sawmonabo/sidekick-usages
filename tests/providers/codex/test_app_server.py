@@ -2,6 +2,7 @@
 
 import json
 import os
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -35,6 +36,12 @@ from sidekick_usages.providers.codex.app_server.types import (
 from sidekick_usages.providers.codex.broker.errors import CodexBrokerError
 from sidekick_usages.providers.codex.broker.service import CodexSharedRuntime
 from sidekick_usages.providers.codex.broker.types import CodexBrokerFailure
+from sidekick_usages.providers.codex.session.models import (
+    CODEX_SESSION_OPERATOR_PRECONDITION,
+    CodexSessionCapability,
+    CodexSessionConfigurationReason,
+)
+from sidekick_usages.serialization.json import JsonObject
 from tests.fakes.codex.app_server.daemon import FakeCodexDaemon
 from tests.fakes.codex.app_server.executable import (
     RAW_PROVIDER_SECRET,
@@ -42,6 +49,7 @@ from tests.fakes.codex.app_server.executable import (
     write_fake_codex,
     write_fake_managed_codex,
 )
+from tests.fakes.codex.app_server.model import SyntheticCodexModelAttempt
 from tests.fakes.codex.app_server.schema import write_codex_schema
 from tests.fakes.codex.auth import managed_auth
 from tests.support.platform import REQUIRES_MANAGED_RUNTIME
@@ -55,6 +63,63 @@ _ACCOUNT_ID = SidekickAccountId("33333333-3333-4333-8333-333333333333")
 _PROVIDER_IDENTITY = "workspace-account-alpha"
 _GENERATION = "2026-07-24T10:00:00.000000000Z"
 _NATIVE_AUTH = managed_auth(_PROVIDER_IDENTITY, _GENERATION)
+_SESSION_PROVIDER = "sidekick-chatgpt-http"
+_SESSION_BASE_URL = "https://chatgpt.com/backend-api/codex"
+_SYNTHETIC_MODEL_ATTEMPTS = 2
+_SESSION_SCHEMA_MANIFEST = (
+    "v2/ConfigReadParams.json",
+    "v2/ConfigReadResponse.json",
+    "v2/ModelProviderCapabilitiesReadParams.json",
+    "v2/ModelProviderCapabilitiesReadResponse.json",
+    "v2/TurnStartParams.json",
+    "v2/TurnStartResponse.json",
+    "v2/TurnStartedNotification.json",
+    "v2/TurnCompletedNotification.json",
+    "v2/ThreadRealtimeStartParams.json",
+    "v2/ThreadRealtimeStartResponse.json",
+    "v2/ThreadRealtimeStartedNotification.json",
+    "v2/ThreadRealtimeClosedNotification.json",
+    "v2/ListMcpServerStatusParams.json",
+    "v2/ListMcpServerStatusResponse.json",
+    "v2/McpServerStatusUpdatedNotification.json",
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _SessionCase:
+    version: str = "0.146.0"
+    model_provider: str | None = None
+    base_url: str | None = None
+    requires_openai_auth: bool | None = None
+    supports_websockets: bool | None = None
+    user_config: JsonObject | None = None
+    project_config: JsonObject | None = None
+    configuration_required: bool = False
+    protocol_unsupported: bool = False
+    supported: bool = False
+
+
+def _prove_synthetic_current_auth_http(
+    capability: CodexSessionCapability,
+    daemon: FakeCodexDaemon,
+) -> None:
+    """Prove only the synthetic model-attempt selection boundary."""
+    accounts = (
+        ProviderIdentity("synthetic-account-a"),
+        ProviderIdentity("synthetic-account-b"),
+    )
+    model_attempt = SyntheticCodexModelAttempt(
+        capability,
+        daemon.read_current_external_auth,
+    )
+    daemon.install_external_auth(accounts[0], "synthetic-generation-a")
+    model_attempt.attempt()
+    daemon.install_external_auth(accounts[1], "synthetic-generation-b")
+    model_attempt.attempt()
+    assert daemon.model_auth_read_count == _SYNTHETIC_MODEL_ATTEMPTS
+    assert model_attempt.auth_resolutions == _SYNTHETIC_MODEL_ATTEMPTS
+    assert model_attempt.http_accounts == accounts
+    assert model_attempt.websocket_opens == 0
 
 
 def _prepare_shared_runtime(
@@ -125,6 +190,9 @@ def test_versioned_codex_app_server_boundary_is_complete(
         assert str(executable.version) == _NEWER_CODEX_VERSION
         assert verification_calls == _CAPABILITY_EXECUTABLE_VERIFICATIONS
         assert len(capabilities.schema_hash) == SCHEMA_HASH_HEX_LENGTH
+        assert capabilities.session_schema_manifest == (
+            _SESSION_SCHEMA_MANIFEST
+        )
         assert result["requiresOpenaiAuth"] is True
         assert isinstance(notification, JsonRpcNotification)
         assert notification.method == "account/updated"
@@ -183,6 +251,173 @@ def test_codex_app_server_boundary_fails_closed_and_redacted(
     process_id = int((tmp_path / "app-server.pid").read_text())
     with pytest.raises(ProcessLookupError):
         os.kill(process_id, 0)
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        pytest.param(
+            _SessionCase(supported=True),
+            id="direct-http-current-auth",
+        ),
+        pytest.param(
+            _SessionCase(
+                version="0.145.0",
+                protocol_unsupported=True,
+            ),
+            id="wrong-version",
+        ),
+        pytest.param(
+            _SessionCase(
+                model_provider="user-provider",
+                configuration_required=True,
+            ),
+            id="overridden-provider",
+        ),
+        pytest.param(
+            _SessionCase(
+                base_url="https://example.invalid/codex",
+                configuration_required=True,
+            ),
+            id="wrong-base-url",
+        ),
+        pytest.param(
+            _SessionCase(
+                requires_openai_auth=False,
+                configuration_required=True,
+            ),
+            id="missing-openai-auth",
+        ),
+        pytest.param(
+            _SessionCase(
+                supports_websockets=True,
+                configuration_required=True,
+            ),
+            id="websockets-enabled",
+        ),
+        pytest.param(
+            _SessionCase(
+                user_config={"model_provider": "user-provider"},
+                configuration_required=True,
+            ),
+            id="user-protected-override",
+        ),
+        pytest.param(
+            _SessionCase(
+                project_config={
+                    "model_providers": {
+                        _SESSION_PROVIDER: {"base_url": "project-url"}
+                    }
+                },
+                configuration_required=True,
+            ),
+            id="project-protected-override",
+        ),
+    ],
+)
+def test_neutral_runtime_requires_current_auth_without_model_websockets(
+    tmp_path: Path,
+    short_socket_root: Path,
+    case: _SessionCase,
+) -> None:
+    schema_root = tmp_path / "schema"
+    session_home = short_socket_root / "session"
+    session_home.mkdir()
+    session_settings = session_home / "config.toml"
+    unrelated_settings = b'model = "gpt-test"\n'
+    session_settings.write_bytes(unrelated_settings)
+    write_codex_schema(schema_root, external_auth=True)
+    write_fake_managed_codex(
+        tmp_path,
+        schema_root,
+        session_home,
+        version=case.version,
+    )
+    environment = {
+        "HOME": str(tmp_path),
+        "PATH": os.pathsep.join((str(tmp_path), os.environ["PATH"])),
+    }
+    executable = discover_codex_executable(environment)
+
+    with FakeCodexDaemon(
+        session_home,
+        app_server_version=case.version,
+        model_provider=case.model_provider,
+        base_url=case.base_url,
+        requires_openai_auth=case.requires_openai_auth,
+        supports_websockets=case.supports_websockets,
+        user_config=case.user_config,
+        project_config=case.project_config,
+    ) as daemon:
+        configure_codex_daemon_lifecycle(
+            tmp_path,
+            session_home,
+            daemon.socket_path,
+            app_server_version=case.version,
+        )
+        runtime = CodexSharedRuntime.create(
+            executable,
+            session_home,
+            environment=environment,
+        )
+
+        if case.protocol_unsupported:
+            with pytest.raises(CodexBrokerError) as unsupported:
+                runtime.qualify_session_transport()
+            assert (
+                unsupported.value.code
+                is CodexBrokerFailure.PROTOCOL_UNSUPPORTED
+            )
+            runtime.close()
+            return
+        if case.configuration_required:
+            with pytest.raises(CodexBrokerError) as refused:
+                runtime.qualify_session_transport()
+            assert (
+                refused.value.code
+                is CodexBrokerFailure.SESSION_CONFIGURATION_REQUIRED
+            )
+            report = refused.value.preparation_report
+            assert report is not None
+            assert report.reason in {
+                CodexSessionConfigurationReason.PROTECTED_OVERRIDE,
+                CodexSessionConfigurationReason.RESIDENT_CONFIG_STALE,
+            }
+            assert report.dry_run is True
+            assert (
+                report.operator_steps[0] == CODEX_SESSION_OPERATOR_PRECONDITION
+            )
+            assert session_settings.read_bytes() == unrelated_settings
+            assert not (runtime.codex_home / "auth.json").exists()
+            runtime.close()
+            return
+
+        capability = runtime.qualify_session_transport()
+
+        assert capability.model_provider == (
+            _SESSION_PROVIDER
+            if case.model_provider is None
+            else case.model_provider
+        )
+        assert capability.base_url == (
+            _SESSION_BASE_URL if case.base_url is None else case.base_url
+        )
+        assert capability.requires_openai_auth is (
+            True
+            if case.requires_openai_auth is None
+            else case.requires_openai_auth
+        )
+        assert capability.supports_websockets is (
+            False
+            if case.supports_websockets is None
+            else case.supports_websockets
+        )
+        assert capability.supported is case.supported
+        if case.supported:
+            _prove_synthetic_current_auth_http(capability, daemon)
+        assert session_settings.read_bytes() == unrelated_settings
+        assert not (runtime.codex_home / "auth.json").exists()
+        runtime.close()
 
 
 def test_shared_codex_runtime_self_heals_and_rejects_unsafe_authority(
@@ -263,19 +498,27 @@ def test_shared_codex_runtime_self_heals_and_rejects_unsafe_authority(
     native_home = short_socket_root / "update"
     native_home.mkdir()
     write_codex_schema(schema_root, external_auth=True)
-    write_fake_managed_codex(root, schema_root, native_home)
+    write_fake_managed_codex(
+        root,
+        schema_root,
+        native_home,
+        version="0.146.0",
+    )
     environment = {
         "HOME": str(root),
         "PATH": os.pathsep.join((str(root), os.environ["PATH"])),
     }
     executable = discover_codex_executable(environment)
-    with FakeCodexDaemon(native_home) as daemon:
+    with FakeCodexDaemon(
+        native_home,
+        app_server_version="0.146.0",
+    ) as daemon:
         lifecycle = configure_codex_daemon_lifecycle(
             root,
             native_home,
             daemon.socket_path,
             app_server_version="0.144.0",
-            cli_version="0.145.0",
+            cli_version="0.146.0",
             already_running=True,
         )
         runtime = _prepare_shared_runtime(
@@ -289,3 +532,5 @@ def test_shared_codex_runtime_self_heals_and_rejects_unsafe_authority(
     assert lifecycle.start_statuses == ("alreadyRunning",)
     assert lifecycle.restart_count == 1
     assert lifecycle.version_count == 1
+    assert daemon.config_read_count == 1
+    assert not (native_home / "auth.json").exists()

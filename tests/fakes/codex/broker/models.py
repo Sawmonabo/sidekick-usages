@@ -28,4 +28,5 @@ class FakeCodexBrokerFixture:
     private: PrivateCredentialTree = field(repr=False)
     provider_root: Path
     native_home: Path
+    session_home: Path
     native_auth: Path

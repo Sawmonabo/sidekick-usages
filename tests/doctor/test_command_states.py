@@ -26,6 +26,7 @@ from sidekick_usages.core.types import (
     ExitCode,
     ProviderId,
 )
+from sidekick_usages.daemon.models.service import ServicePreparationReport
 from sidekick_usages.daemon.types.lifecycle import ServiceComponentState
 from sidekick_usages.persistence.credentials.refresh.artifacts import (
     CredentialRefreshStateKind,
@@ -35,6 +36,7 @@ from sidekick_usages.persistence.lookup.store import (
 )
 from sidekick_usages.persistence.models.status import PersistenceFailure
 from sidekick_usages.persistence.types.error import PersistenceCode
+from sidekick_usages.serialization.json import JsonObject
 from sidekick_usages.usage.lookup.diagnostics.models import (
     MetricsRefreshCause,
     MetricsRefreshDiagnostic,
@@ -236,6 +238,23 @@ def test_json_represents_current_store_failure(tmp_path: Path) -> None:
     assert refresh_result.exit_code == ExitCode.SYSTEM_ERROR
 
 
+def _assert_broker_preparation_text(output: str) -> None:
+    assert "broker failure: session_configuration_required" in output
+    assert "broker preparation: resident_config_stale" in output
+    assert "dry-run step: Restart Sidekick after preparation." in output
+
+
+def _assert_broker_preparation_json(payload: JsonObject) -> None:
+    service = payload["service"]
+    assert isinstance(service, dict)
+    assert service["broker_failure_code"] == "session_configuration_required"
+    assert service["broker_preparation_report"] == {
+        "dry_run": True,
+        "operator_steps": ["Restart Sidekick after preparation."],
+        "reason": "resident_config_stale",
+    }
+
+
 def test_filters_are_composable(tmp_path: Path) -> None:
     saved_accounts, claude_saved, other_codex_saved = _seed_filter_scope(
         tmp_path
@@ -306,7 +325,11 @@ def test_filters_are_composable(tmp_path: Path) -> None:
             _SUPERVISOR_HEALTH,
             queue=ServiceComponentState.HEALTHY,
             broker=ServiceComponentState.UNHEALTHY,
-            broker_failure_code="version_unsupported",
+            broker_failure_code="session_configuration_required",
+            broker_preparation_report=ServicePreparationReport(
+                reason="resident_config_stale",
+                operator_steps=("Restart Sidekick after preparation.",),
+            ),
         ),
     )
 
@@ -315,7 +338,7 @@ def test_filters_are_composable(tmp_path: Path) -> None:
     )
     assert no_account_result.exit_code == ExitCode.SCHEDULER_ERROR
     assert "provider capabilities\n  codex:" in claude_output.getvalue()
-    assert "broker failure: version_unsupported" in claude_output.getvalue()
+    _assert_broker_preparation_text(claude_output.getvalue())
     claude_output.seek(0)
     claude_output.truncate()
     codex_json_result = claude_harness.invoke(
@@ -323,10 +346,7 @@ def test_filters_are_composable(tmp_path: Path) -> None:
     )
     codex_payload = json.loads(claude_output.getvalue())
     assert codex_json_result.exit_code == ExitCode.SCHEDULER_ERROR
-    assert (
-        codex_payload["service"]["broker_failure_code"]
-        == "version_unsupported"
-    )
+    _assert_broker_preparation_json(codex_payload)
     claude_output.seek(0)
     claude_output.truncate()
     claude_result = claude_harness.invoke(
@@ -336,7 +356,10 @@ def test_filters_are_composable(tmp_path: Path) -> None:
     claude_payload = json.loads(claude_output.getvalue())
     assert claude_result.exit_code == ExitCode.MANUAL_ACTION
     assert claude_payload["service"]["broker"] == "not_required"
-    assert claude_payload["service"]["broker_failure_code"] is None
+    assert (
+        claude_payload["service"]["broker_failure_code"],
+        claude_payload["service"]["broker_preparation_report"],
+    ) == (None, None)
     assert [
         result["provider"]
         for result in claude_payload["provider_capabilities"]

@@ -284,7 +284,7 @@ class CodexDaemonSession:
         try:
             initialize_codex_app_server(
                 connection,
-                manager.native_home,
+                manager.codex_home,
                 authority.executable.version,
             )
             manager.revalidate(authority)

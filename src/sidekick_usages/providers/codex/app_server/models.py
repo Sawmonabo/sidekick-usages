@@ -59,6 +59,8 @@ class CodexAppServerCapabilities:
 
     executable: CodexExecutable
     schema_hash: str
+    session_schema_supported: bool = False
+    session_schema_manifest: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         """Require a lowercase SHA-256 compatibility fingerprint."""
@@ -67,3 +69,5 @@ class CodexAppServerCapabilities:
             for character in self.schema_hash
         ):
             raise ValueError("Codex schema fingerprint is invalid.")
+        if self.session_schema_supported != bool(self.session_schema_manifest):
+            raise ValueError("Codex session schema manifest is inconsistent.")

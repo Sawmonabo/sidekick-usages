@@ -21,6 +21,22 @@ from sidekick_usages.persistence.supervisor.authority import (
 from sidekick_usages.platform.types import ProcessGroup
 
 
+class ResidentPreparationReport(Protocol):
+    """Bounded provider report projected into supervisor state."""
+
+    @property
+    def reason_value(self) -> str:
+        """Return the stable provider-neutral recovery reason."""
+
+    @property
+    def operator_steps(self) -> tuple[str, ...]:
+        """Return bounded token-free operator steps."""
+
+    @property
+    def dry_run(self) -> bool:
+        """Return whether the report performs no recovery mutation."""
+
+
 class ResidentService(Protocol):
     """One supervisor-owned service independent of dashboard connections."""
 
@@ -31,6 +47,10 @@ class ResidentService(Protocol):
     @property
     def failure_code(self) -> str | None:
         """Return the current safe typed availability failure."""
+
+    @property
+    def preparation_report(self) -> ResidentPreparationReport | None:
+        """Return bounded operator recovery guidance when available."""
 
     def start(self) -> None:
         """Start after singleton control ownership is established."""

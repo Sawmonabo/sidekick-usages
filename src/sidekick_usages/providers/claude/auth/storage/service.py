@@ -68,6 +68,11 @@ _KEYCHAIN_PLATFORMS = frozenset(
 )
 
 
+def claude_credential_basename() -> str:
+    """Return the canonical Claude credential basename for composition."""
+    return CLAUDE_CREDENTIAL_FILE
+
+
 def read_protected_claude_credential(
     capabilities: ClaudeCapabilities,
     files: ClaudeCredentialFileSource,

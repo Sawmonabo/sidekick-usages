@@ -15,6 +15,7 @@ from sidekick_usages.daemon.control.dispatch import (
     SupervisorDispatcher,
 )
 from sidekick_usages.daemon.control.server import LocalControlServer
+from sidekick_usages.daemon.models.service import ServicePreparationReport
 from sidekick_usages.daemon.models.worker import ProviderLaunchers
 from sidekick_usages.daemon.runtime.codex import (
     DurableCodexOperationDispatcher,
@@ -61,7 +62,7 @@ _WAIT_INTERVAL_SECONDS = 0.01
 
 def _runtime_factory(
     executable: CodexExecutable,
-    native_home: Path,
+    session_home: Path,
     environment: Mapping[str, str],
 ) -> Callable[[Callable[[], bool]], CodexSharedRuntime]:
     """Build the shared-runtime factory used by resident test harnesses."""
@@ -70,7 +71,7 @@ def _runtime_factory(
     def create(cancelled: Callable[[], bool]) -> CodexSharedRuntime:
         return CodexSharedRuntime.create(
             executable,
-            native_home,
+            session_home,
             environment=runtime_environment,
             cancelled=cancelled,
         )
@@ -129,7 +130,7 @@ class FakeCodexBroker:
         self,
         paths: ApplicationPaths,
         executable: CodexExecutable,
-        native_home: Path,
+        session_home: Path,
         environment: Mapping[str, str],
     ) -> None:
         clock = SystemClock()
@@ -137,7 +138,7 @@ class FakeCodexBroker:
         observations = RuntimeAuthObservationStore(paths.durable_operations)
         self._broker = _compose_broker(
             paths,
-            _runtime_factory(executable, native_home, environment),
+            _runtime_factory(executable, session_home, environment),
             clock,
             queue,
             ActivationJournalStore(
@@ -177,6 +178,19 @@ class FakeCodexBroker:
                 raise AssertionError("Fake broker did not qualify.")
             time.sleep(min(_WAIT_INTERVAL_SECONDS, remaining))
 
+    def wait_until_failure(self, expected: str) -> None:
+        """Wait until one exact terminal qualification failure is retained."""
+        deadline = time.monotonic() + _READINESS_TIMEOUT_SECONDS
+        while self.failure_code != expected:
+            if self.available:
+                raise AssertionError("Fake broker unexpectedly qualified.")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise AssertionError(
+                    "Fake broker did not retain the expected failure."
+                )
+            time.sleep(min(_WAIT_INTERVAL_SECONDS, remaining))
+
     def __enter__(self) -> Self:
         """Start and return this harness."""
         self._broker.start()
@@ -200,7 +214,7 @@ class FakeCodexSupervisor:
         self,
         paths: ApplicationPaths,
         executable: CodexExecutable,
-        native_home: Path,
+        session_home: Path,
         environment: Mapping[str, str],
         worker_executable: Path,
     ) -> None:
@@ -237,7 +251,7 @@ class FakeCodexSupervisor:
         )
         broker = _compose_broker(
             paths,
-            _runtime_factory(executable, native_home, environment),
+            _runtime_factory(executable, session_home, environment),
             clock,
             queue,
             journals,
@@ -300,6 +314,12 @@ class FakeCodexSupervisor:
         """Return the broker's retained safe typed failure."""
         return self._broker.failure_code
 
+    @property
+    def broker_preparation_report(self) -> ServicePreparationReport | None:
+        """Return the persisted supervised recovery guidance."""
+        state = self._service_state.load()
+        return None if state is None else state.preparation_report
+
     def start(self) -> None:
         """Start the production runtime in one owned background thread."""
         if self._thread is not None:
@@ -320,6 +340,16 @@ class FakeCodexSupervisor:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise AssertionError("Fake supervisor did not become ready.")
+            self._stop.wait(min(_WAIT_INTERVAL_SECONDS, remaining))
+
+    def wait_until_broker_available(self) -> None:
+        """Wait for the runtime without requiring journal reconciliation."""
+        deadline = time.monotonic() + _READINESS_TIMEOUT_SECONDS
+        while not self.broker_available:
+            self._raise_failure()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise AssertionError("Fake broker did not become available.")
             self._stop.wait(min(_WAIT_INTERVAL_SECONDS, remaining))
 
     def wait_until_broker_failure(self, failure_code: str) -> None:

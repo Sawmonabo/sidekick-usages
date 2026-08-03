@@ -51,10 +51,16 @@ from sidekick_usages.providers.codex.broker.external_auth.refresh import (
     CODEX_REFRESH_ERROR_CODE,
 )
 from sidekick_usages.providers.codex.broker.service import CodexSharedRuntime
+from sidekick_usages.providers.codex.broker.types import CodexBrokerFailure
+from sidekick_usages.providers.codex.session.models import (
+    CODEX_SESSION_OPERATOR_PRECONDITION,
+    CodexSessionConfigurationReason,
+)
 from tests.fakes.codex.app_server.daemon import FakeCodexDaemon
 from tests.fakes.codex.app_server.executable import (
     configure_codex_daemon_lifecycle,
     write_fake_managed_codex,
+    write_resident_session_config,
     write_worker_router,
 )
 from tests.fakes.codex.app_server.schema import write_codex_schema
@@ -94,6 +100,7 @@ pytestmark = REQUIRES_MANAGED_RUNTIME
 
 _MAINTENANCE_OPERATION_ID = OperationId("77777777-7777-4777-8777-777777777777")
 _IDLE_BROKER_OBSERVATION_SECONDS = 0.6
+_TERMINAL_FAILURE_OBSERVATION_SECONDS = 1.5
 _CALLBACK_RESPONSE_BOUND_SECONDS = 8.0
 _INITIAL_LIFECYCLE_CALLS = 2
 _RECOVERED_LIFECYCLE_CALLS = 3
@@ -206,16 +213,20 @@ def test_resident_broker_fails_closed_without_resolvable_authority(
     paths = fixture.paths
     _persist_broker_gate(paths, fixture.native_home, gate)
 
-    with FakeCodexDaemon(fixture.native_home) as daemon:
+    with FakeCodexDaemon(
+        fixture.session_home,
+        app_server_version="0.146.0",
+    ) as daemon:
         configure_codex_daemon_lifecycle(
             fixture.provider_root,
-            fixture.native_home,
+            fixture.session_home,
             daemon.socket_path,
+            app_server_version="0.146.0",
         )
         with FakeCodexBroker(
             paths,
             fixture.executable,
-            fixture.native_home,
+            fixture.session_home,
             fixture.environment,
         ) as broker:
             broker.wait_until_available()
@@ -228,18 +239,89 @@ def test_resident_broker_fails_closed_without_resolvable_authority(
             ) == (True, False, None, ())
 
 
+def test_stale_resident_config_is_terminal_until_operator_restart(
+    tmp_path: Path,
+    short_socket_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = broker_finalized_fixture(
+        tmp_path,
+        short_socket_root,
+        monkeypatch,
+    )
+    write_resident_session_config(
+        fixture.session_home,
+        model_provider="stale-resident-provider",
+    )
+
+    with FakeCodexDaemon(
+        fixture.session_home,
+        app_server_version="0.146.0",
+    ) as daemon:
+        lifecycle = configure_codex_daemon_lifecycle(
+            fixture.provider_root,
+            fixture.session_home,
+            daemon.socket_path,
+            app_server_version="0.146.0",
+            already_running=True,
+        )
+        with FakeCodexSupervisor(
+            fixture.paths,
+            fixture.executable,
+            fixture.session_home,
+            fixture.environment,
+            real_worker_executable(),
+        ) as supervisor:
+            supervisor.wait_until_broker_failure(
+                CodexBrokerFailure.SESSION_CONFIGURATION_REQUIRED.value
+            )
+            report = supervisor.broker_preparation_report
+            assert report is not None
+            assert report.reason == (
+                CodexSessionConfigurationReason.RESIDENT_CONFIG_STALE.value
+            )
+            assert report.dry_run is True
+            assert (
+                report.operator_steps[0] == CODEX_SESSION_OPERATOR_PRECONDITION
+            )
+            observed = (
+                lifecycle.start_statuses,
+                lifecycle.version_count,
+                lifecycle.restart_count,
+            )
+            time.sleep(_TERMINAL_FAILURE_OBSERVATION_SECONDS)
+            assert supervisor.broker_failure_code == (
+                CodexBrokerFailure.SESSION_CONFIGURATION_REQUIRED.value
+            )
+            assert supervisor.broker_preparation_report == report
+            assert (
+                lifecycle.start_statuses,
+                lifecycle.version_count,
+                lifecycle.restart_count,
+            ) == observed
+
+    assert observed == (("alreadyRunning",), 1, 0)
+
+
 def test_shared_codex_runtime_is_idempotent_and_rehydrates(
     tmp_path: Path,
     short_socket_root: Path,
 ) -> None:
     schema_root = tmp_path / "schema"
-    native_home = short_socket_root / "native"
+    native_home = short_socket_root / "native-authority"
     native_home.mkdir()
     native_auth = native_home / "auth.json"
     native_auth.write_bytes(NATIVE_AUTH_SENTINEL)
     os.chmod(native_auth, 0o600)
+    session_home = short_socket_root / "session"
+    session_home.mkdir()
     write_codex_schema(schema_root, external_auth=True)
-    write_fake_managed_codex(tmp_path, schema_root, native_home)
+    write_fake_managed_codex(
+        tmp_path,
+        schema_root,
+        session_home,
+        version="0.146.0",
+    )
     environment = {
         "HOME": str(tmp_path),
         "PATH": os.pathsep.join((str(tmp_path), os.environ["PATH"])),
@@ -272,15 +354,19 @@ def test_shared_codex_runtime_is_idempotent_and_rehydrates(
         environment=environment,
     )
 
-    with FakeCodexDaemon(native_home) as daemon:
+    with FakeCodexDaemon(
+        session_home,
+        app_server_version="0.146.0",
+    ) as daemon:
         lifecycle = configure_codex_daemon_lifecycle(
             tmp_path,
-            native_home,
+            session_home,
             daemon.socket_path,
+            app_server_version="0.146.0",
         )
         runtime = CodexSharedRuntime.create(
             executable,
-            native_home,
+            session_home,
             environment=environment,
         )
         observer_a = daemon.connect_tui()
@@ -332,6 +418,7 @@ def test_shared_codex_runtime_is_idempotent_and_rehydrates(
         runtime.close()
 
     assert native_auth.read_bytes() == NATIVE_AUTH_SENTINEL
+    assert not (session_home / "auth.json").exists()
 
 
 def test_resident_broker_refreshes_and_recovers_provider_ahead_state(
@@ -348,19 +435,23 @@ def test_resident_broker_refreshes_and_recovers_provider_ahead_state(
     paths = fixture.paths
     finalized_before = _finalized_codex_selection(paths)
 
-    with FakeCodexDaemon(fixture.native_home) as daemon:
+    with FakeCodexDaemon(
+        fixture.session_home,
+        app_server_version="0.146.0",
+    ) as daemon:
         lifecycle = configure_codex_daemon_lifecycle(
             fixture.provider_root,
-            fixture.native_home,
+            fixture.session_home,
             daemon.socket_path,
             app_server_version="0.144.0",
+            cli_version="0.146.0",
         )
         observer_a = daemon.connect_tui()
         observer_b = daemon.connect_tui()
         with FakeCodexSupervisor(
             paths,
             fixture.executable,
-            fixture.native_home,
+            fixture.session_home,
             fixture.environment,
             real_worker_executable(),
         ) as supervisor:
@@ -368,8 +459,9 @@ def test_resident_broker_refreshes_and_recovers_provider_ahead_state(
             assert not supervisor.broker_available
             configure_codex_daemon_lifecycle(
                 fixture.provider_root,
-                fixture.native_home,
+                fixture.session_home,
                 daemon.socket_path,
+                app_server_version="0.146.0",
                 managed=False,
             )
             supervisor.wait_until_ready()
@@ -434,7 +526,7 @@ def test_resident_broker_refreshes_and_recovers_provider_ahead_state(
         with FakeCodexSupervisor(
             paths,
             fixture.executable,
-            fixture.native_home,
+            fixture.session_home,
             fixture.environment,
             real_worker_executable(),
         ) as restarted:
@@ -486,18 +578,22 @@ def test_callback_preempts_stubborn_same_home_maintenance(
     )
     queue = OperationQueueStore(paths.durable_operations)
 
-    with FakeCodexDaemon(fixture.native_home) as daemon:
+    with FakeCodexDaemon(
+        fixture.session_home,
+        app_server_version="0.146.0",
+    ) as daemon:
         configure_codex_daemon_lifecycle(
             fixture.provider_root,
-            fixture.native_home,
+            fixture.session_home,
             daemon.socket_path,
+            app_server_version="0.146.0",
         )
         observer_a = daemon.connect_tui()
         observer_b = daemon.connect_tui()
         with FakeCodexSupervisor(
             paths,
             fixture.executable,
-            fixture.native_home,
+            fixture.session_home,
             fixture.environment,
             route.executable,
         ) as supervisor:

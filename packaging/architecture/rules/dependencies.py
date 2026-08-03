@@ -38,8 +38,10 @@ _ISOLATED_WORKER_FILES = frozenset(
 _SUPERVISOR_ENTRYPOINT_FILE = "src/sidekick_usages/entrypoints/supervisor.py"
 _SUPERVISOR_PROVIDER_IMPORTS = frozenset(
     {
+        "sidekick_usages.providers.claude.auth.storage.service",
         "sidekick_usages.providers.codex.app_server.executable",
         "sidekick_usages.providers.codex.auth.home",
+        "sidekick_usages.providers.codex.auth.storage",
         "sidekick_usages.providers.codex.broker.responder",
         "sidekick_usages.providers.codex.broker.service",
     }

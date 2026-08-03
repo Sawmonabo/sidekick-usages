@@ -72,6 +72,9 @@ from sidekick_usages.providers.codex.broker.types import (
     CodexBrokerFailure,
     CodexCallbackMode,
 )
+from sidekick_usages.providers.codex.session.models import (
+    CodexSessionPreparationReport,
+)
 from sidekick_usages.serialization.framing import clear_mutable_buffer
 
 CODEX_CALLBACK_RESPONSE_SECONDS = 8.0
@@ -120,6 +123,7 @@ class CodexRuntimeBroker:
         self._lock = Lock()
         self._thread: Thread | None = None
         self._failure_code: str | None = None
+        self._preparation_report: CodexSessionPreparationReport | None = None
         self._active_operation: OperationId | None = None
         self._activation_instruction: CodexActivationInstruction | None = None
         self._activation_exchange: CodexWorkerExchange | None = None
@@ -151,6 +155,12 @@ class CodexRuntimeBroker:
         """Return the current safe typed qualification failure."""
         with self._lock:
             return self._failure_code
+
+    @property
+    def preparation_report(self) -> CodexSessionPreparationReport | None:
+        """Return bounded operator recovery guidance when available."""
+        with self._lock:
+            return self._preparation_report
 
     def prepare_operation(self, operation: DueOperation) -> bool:
         """Prepare an exchange only after resident runtime qualification."""
@@ -282,23 +292,19 @@ class CodexRuntimeBroker:
                     RuntimeError,
                     ValueError,
                 ) as error:
-                    self._record_failure(
-                        error.code.value
-                        if isinstance(
-                            error,
-                            CodexAppServerError | CodexBrokerError,
-                        )
-                        else None
-                    )
+                    self._record_failure(error)
                     self._set_ready(False)
                     runtime = _drop_runtime(runtime)
                     self._native_auth.reset()
                     self._native_preparation.reset()
-                    self._stop.wait(reconnect_seconds)
-                    reconnect_seconds = min(
-                        reconnect_seconds * 2,
-                        _BROKER_RECONNECT_MAX_SECONDS,
-                    )
+                    if _terminal_configuration_failure(error):
+                        self._stop.wait()
+                    else:
+                        self._stop.wait(reconnect_seconds)
+                        reconnect_seconds = min(
+                            reconnect_seconds * 2,
+                            _BROKER_RECONNECT_MAX_SECONDS,
+                        )
         finally:
             self._set_qualified(False)
             self._set_ready(False)
@@ -410,24 +416,44 @@ class CodexRuntimeBroker:
         with self._lock:
             current = self._qualified.is_set()
             current_failure = self._failure_code
+            current_report = self._preparation_report
             next_failure = None if qualified else current_failure
-            if current == qualified and current_failure == next_failure:
+            next_report = None if qualified else current_report
+            if (
+                current == qualified
+                and current_failure == next_failure
+                and current_report == next_report
+            ):
                 return
             if qualified:
                 self._qualified.set()
             else:
                 self._qualified.clear()
             self._failure_code = next_failure
+            self._preparation_report = next_report
         if self._status_changed is not None:
             self._status_changed()
 
-    def _record_failure(self, failure_code: str | None) -> None:
+    def _record_failure(self, error: BaseException) -> None:
+        failure_code = (
+            error.code.value
+            if isinstance(error, CodexAppServerError | CodexBrokerError)
+            else None
+        )
+        preparation_report = (
+            error.preparation_report
+            if isinstance(error, CodexBrokerError)
+            else None
+        )
         with self._lock:
             changed = (
-                self._qualified.is_set() or self._failure_code != failure_code
+                self._qualified.is_set()
+                or self._failure_code != failure_code
+                or self._preparation_report != preparation_report
             )
             self._qualified.clear()
             self._failure_code = failure_code
+            self._preparation_report = preparation_report
         if changed and self._status_changed is not None:
             self._status_changed()
 
@@ -835,3 +861,10 @@ def _drop_runtime(
 ) -> None:
     if runtime is not None:
         runtime.close()
+
+
+def _terminal_configuration_failure(error: BaseException) -> bool:
+    return (
+        isinstance(error, CodexBrokerError)
+        and error.code is CodexBrokerFailure.SESSION_CONFIGURATION_REQUIRED
+    )

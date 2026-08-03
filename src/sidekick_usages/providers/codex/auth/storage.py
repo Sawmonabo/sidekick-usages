@@ -46,6 +46,11 @@ _NATIVE_AUTH_FAILURE_STATES = {
 }
 
 
+def codex_auth_basename() -> str:
+    """Return the canonical Codex auth basename for composition."""
+    return CODEX_AUTH_FILE
+
+
 def _codex_auth_path(credential_home: Path | None = None) -> Path:
     """Return the auth.json path for a Codex home or auth file path."""
     home = default_codex_home() if credential_home is None else credential_home

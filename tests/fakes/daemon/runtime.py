@@ -16,6 +16,7 @@ from sidekick_usages.daemon.models.control import VerifiedControlRequest
 from sidekick_usages.daemon.models.protocol import (
     ControlEvent,
 )
+from sidekick_usages.daemon.models.service import ServicePreparationReport
 from sidekick_usages.daemon.models.worker import (
     ProviderLaunchers,
     WorkerLaunchSpec,
@@ -288,6 +289,7 @@ class ResidentState:
 
     available: bool = True
     failure_code: str | None = None
+    preparation_report: ServicePreparationReport | None = None
 
     def start(self) -> None:
         pass
