@@ -75,6 +75,7 @@ class FakeCodexDaemon:
         self._connections: set[ServerConnection] = set()
         self._initialized: set[ServerConnection] = set()
         self._client_names: dict[ServerConnection, str] = {}
+        self._relay_start_request_ids: list[int] = []
         self._installed_account_ids: list[str] = []
         self._external_logins: list[tuple[str, str]] = []
         self._active_account_id: str | None = None
@@ -134,6 +135,12 @@ class FakeCodexDaemon:
         """Return deliberate native-login observations."""
         with self._lock:
             return tuple(self._external_logins)
+
+    @property
+    def relay_start_request_ids(self) -> tuple[int, ...]:
+        """Return provider starts in their exact received order."""
+        with self._lock:
+            return tuple(self._relay_start_request_ids)
 
     def pause_next_install(self) -> None:
         """Pause once after official mutation and before account read."""
@@ -212,9 +219,14 @@ class FakeCodexDaemon:
             raise AssertionError("Fake Codex daemon has no current auth.")
         return ProviderIdentity(active)
 
-    def connect_tui(self) -> FakeCodexTuiObserver:
+    def connect_tui(
+        self,
+        socket_path: Path | None = None,
+    ) -> FakeCodexTuiObserver:
         """Connect one initialized official-shaped TUI observer."""
-        observer = FakeCodexTuiObserver(self.socket_path)
+        observer = FakeCodexTuiObserver(
+            self.socket_path if socket_path is None else socket_path
+        )
         observer.open()
         return observer
 
@@ -369,18 +381,112 @@ class FakeCodexDaemon:
         elif method == "initialized":
             with self._lock:
                 self._initialized.add(connection)
-        elif method == "account/login/start":
-            self._install(connection, request)
-        elif method == "account/read":
-            self._read_account(connection, request)
-        elif method == "getAuthStatus":
-            self._get_auth_status(connection, request)
+        elif self._dispatch_account(
+            connection, request, method
+        ) or self._dispatch_relay(connection, request, method):
+            return
         elif not self._dispatch_session_qualification(
             connection,
             request,
             method,
         ):
             raise AssertionError("Codex fake received an unsupported method.")
+
+    def _dispatch_account(
+        self,
+        connection: ServerConnection,
+        request: JsonObject,
+        method: object,
+    ) -> bool:
+        if method == "account/login/start":
+            self._install(connection, request)
+        elif method == "account/read":
+            self._read_account(connection, request)
+        elif method == "getAuthStatus":
+            self._get_auth_status(connection, request)
+        else:
+            return False
+        return True
+
+    def _dispatch_relay(
+        self,
+        connection: ServerConnection,
+        request: JsonObject,
+        method: object,
+    ) -> bool:
+        if method == "turn/start":
+            self._complete_relay_start(connection, request, realtime=False)
+            return True
+        if method == "thread/realtime/start":
+            self._complete_relay_start(connection, request, realtime=True)
+            return True
+        if method == "thread/resume":
+            self._resume_relay_thread(connection, request)
+            return True
+        return False
+
+    def _complete_relay_start(
+        self,
+        connection: ServerConnection,
+        request: JsonObject,
+        *,
+        realtime: bool,
+    ) -> None:
+        request_id = _request_id(request)
+        params = request.get("params")
+        thread_id = (
+            None if not isinstance(params, dict) else params.get("threadId")
+        )
+        if not isinstance(thread_id, str) or not thread_id:
+            raise AssertionError("Codex fake relay thread is invalid.")
+        with self._lock:
+            self._relay_start_request_ids.append(request_id)
+        if realtime:
+            _send(connection, {"id": request_id, "result": {}})
+            methods = ("thread/realtime/started", "thread/realtime/closed")
+            turn = None
+        else:
+            turn: JsonObject = {"id": f"turn-{request_id}"}
+            response: JsonObject = {
+                "id": request_id,
+                "result": {"turn": turn},
+            }
+            _send(connection, response)
+            methods = ("turn/started", "turn/completed")
+        for method in methods:
+            if turn is None:
+                notification: JsonObject = {
+                    "emittedAtMs": _EMITTED_AT_MILLISECONDS,
+                    "method": method,
+                    "params": {"threadId": thread_id},
+                }
+                _send(connection, notification)
+            else:
+                turn_notification: JsonObject = {
+                    "emittedAtMs": _EMITTED_AT_MILLISECONDS,
+                    "method": method,
+                    "params": {"threadId": thread_id, "turn": turn},
+                }
+                _send(connection, turn_notification)
+
+    def _resume_relay_thread(
+        self,
+        connection: ServerConnection,
+        request: JsonObject,
+    ) -> None:
+        params = request.get("params")
+        thread_id = (
+            None if not isinstance(params, dict) else params.get("threadId")
+        )
+        if not isinstance(thread_id, str) or not thread_id:
+            raise AssertionError("Codex fake resumed thread is invalid.")
+        _send(
+            connection,
+            {
+                "id": _request_id(request),
+                "result": {"thread": {"id": thread_id}},
+            },
+        )
 
     def _dispatch_session_qualification(
         self,
@@ -744,6 +850,49 @@ class FakeCodexTuiObserver:
                 return
         raise AssertionError("Fake Codex observer saw no account update.")
 
+    def send_request(
+        self,
+        request_id: int,
+        method: str,
+        params: JsonObject,
+    ) -> None:
+        """Send one official-shaped request through the active connection."""
+        connection = self._connection
+        if connection is None:
+            raise AssertionError("Fake Codex observer is not open.")
+        _send(
+            connection,
+            {"id": request_id, "method": method, "params": params},
+        )
+
+    def receive(self) -> JsonObject:
+        """Receive one complete fake TUI frame."""
+        connection = self._connection
+        if connection is None:
+            raise AssertionError("Fake Codex observer is not open.")
+        return _receive(connection)
+
+    def receive_optional(self, timeout_seconds: float) -> JsonObject | None:
+        """Return a frame when available within one bounded wait."""
+        connection = self._connection
+        if connection is None:
+            raise AssertionError("Fake Codex observer is not open.")
+        try:
+            return _receive(connection, timeout_seconds=timeout_seconds)
+        except TimeoutError:
+            return None
+
+    def wait_closed(self) -> None:
+        """Require the relay to close this observer connection."""
+        connection = self._connection
+        if connection is None:
+            raise AssertionError("Fake Codex observer is not open.")
+        try:
+            connection.recv(timeout=_CLIENT_TIMEOUT_SECONDS)
+        except ConnectionClosed:
+            return
+        raise AssertionError("Fake Codex observer remained open.")
+
     def close(self) -> None:
         """Close this observer."""
         connection = self._connection
@@ -759,8 +908,12 @@ def _send(
     connection.send(json.dumps(message))
 
 
-def _receive(connection: ClientConnection) -> JsonObject:
-    message = connection.recv(timeout=_CLIENT_TIMEOUT_SECONDS)
+def _receive(
+    connection: ClientConnection,
+    *,
+    timeout_seconds: float = _CLIENT_TIMEOUT_SECONDS,
+) -> JsonObject:
+    message = connection.recv(timeout=timeout_seconds)
     if not isinstance(message, str):
         raise AssertionError("Fake Codex observer received binary data.")
     try:

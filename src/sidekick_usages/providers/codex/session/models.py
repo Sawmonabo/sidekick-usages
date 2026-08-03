@@ -3,7 +3,13 @@
 from dataclasses import dataclass
 from enum import StrEnum
 
+from sidekick_usages.core.accounts.types import (
+    AuthorityGeneration,
+    SidekickAccountId,
+)
 from sidekick_usages.core.recovery import PreparationReport
+from sidekick_usages.core.selection.models import SelectionEpoch
+from sidekick_usages.core.selection.types import TurnId
 from sidekick_usages.providers.codex.app_server.models import CodexVersion
 from sidekick_usages.providers.codex.app_server.release import (
     CODEX_SESSION_VERSION,
@@ -27,6 +33,73 @@ class CodexSessionConfigurationReason(StrEnum):
     PRIVATE_AUTHORITY_COLLISION = "private_authority_collision"
     PROTECTED_OVERRIDE = "protected_override"
     RESIDENT_CONFIG_STALE = "resident_config_stale"
+
+
+class CodexRelayAdmissionState(StrEnum):
+    """Closed admission outcomes returned to one provider relay."""
+
+    ADMITTED = "admitted"
+    QUEUED = "queued"
+
+
+class CodexRelayLeaseKind(StrEnum):
+    """Closed account-bearing lease kinds observed by the relay."""
+
+    TURN = "turn"
+    REALTIME = "realtime"
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class CodexRelayAuthority:
+    """Exact selected authority bound to one admitted relay turn."""
+
+    account_id: SidekickAccountId
+    generation: AuthorityGeneration
+    epoch: SelectionEpoch
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class CodexLoadedThreadSnapshot:
+    """Versioned deterministic loaded-thread readiness input."""
+
+    revision: int
+    thread_ids: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        """Require one monotonic revision for sorted unique IDs."""
+        if (
+            isinstance(self.revision, bool)
+            or self.revision < 0
+            or self.revision != len(self.thread_ids)
+            or self.thread_ids != tuple(sorted(set(self.thread_ids)))
+        ):
+            raise ValueError("Codex loaded-thread snapshot is invalid.")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class CodexRelayAdmission:
+    """One stable relay turn admitted now or retained for later."""
+
+    turn_id: TurnId
+    state: CodexRelayAdmissionState
+    authority: CodexRelayAuthority | None
+
+    def __post_init__(self) -> None:
+        """Require exact authority only for an admitted relay turn."""
+        if (self.state is CodexRelayAdmissionState.ADMITTED) != (
+            self.authority is not None
+        ):
+            raise ValueError("Codex relay admission is inconsistent.")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class CodexRelayLease:
+    """Safe routing correlation for one admitted provider operation."""
+
+    turn_id: TurnId
+    kind: CodexRelayLeaseKind
+    request_id: int | str
+    thread_id: str
 
 
 class CodexSessionPreparationReport(

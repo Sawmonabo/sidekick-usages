@@ -1,7 +1,9 @@
 """Canonical Codex app-server method names."""
 
 ACCOUNT_LOGIN_COMPLETED_METHOD = "account/login/completed"
+ACCOUNT_LOGIN_CANCEL_METHOD = "account/login/cancel"
 ACCOUNT_LOGIN_START_METHOD = "account/login/start"
+ACCOUNT_LOGOUT_METHOD = "account/logout"
 ACCOUNT_READ_METHOD = "account/read"
 ACCOUNT_CHATGPT_AUTH_REFRESH_METHOD = "account/chatgptAuthTokens/refresh"
 ACCOUNT_UPDATED_METHOD = "account/updated"

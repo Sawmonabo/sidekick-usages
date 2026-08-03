@@ -231,7 +231,9 @@ def write_codex_schema(root: Path, *, external_auth: bool) -> None:
         ),
         "ClientRequest.json": _method_schema(
             "initialize",
+            "account/login/cancel",
             "account/login/start",
+            "account/logout",
             "account/read",
             "config/read",
             "modelProvider/capabilities/read",
