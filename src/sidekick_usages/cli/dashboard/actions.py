@@ -31,6 +31,7 @@ from sidekick_usages.core.accounts.types import (
     OperationId,
     SidekickAccountId,
 )
+from sidekick_usages.core.selection.models import SelectionResult
 from sidekick_usages.core.selection.types import SelectionPhase
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.daemon.control.client import (
@@ -241,7 +242,7 @@ class DashboardActionExecutor:
     ) -> ControlActionTerminalPayload:
         intent = request.intent
         if isinstance(intent, SelectAccountIntent):
-            return consume_selection_action(
+            terminal = consume_selection_action(
                 client.select_account(
                     intent.provider_id,
                     intent.account_id,
@@ -254,6 +255,14 @@ class DashboardActionExecutor:
                     intent.account_id,
                 ),
             )
+            if isinstance(terminal, SelectionResult):
+                self._observe_selection(
+                    terminal.operation_id,
+                    intent.provider_id,
+                    intent.account_id,
+                    terminal=terminal,
+                )
+            return terminal
         if isinstance(intent, RefreshAccountIntent):
             events = client.refresh_account(
                 intent.provider_id,
@@ -276,6 +285,8 @@ class DashboardActionExecutor:
         operation_id: OperationId,
         provider_id: ProviderId,
         account_id: SidekickAccountId,
+        *,
+        terminal: SelectionResult | None = None,
     ) -> None:
         """Publish one truthful phase snapshot after durable acceptance."""
         client: DashboardControlClient | None = None
@@ -296,19 +307,34 @@ class DashboardActionExecutor:
             if (
                 event.kind is not EventKind.SELECTION_STATUS
                 or not isinstance(status, SelectionStatus)
-                or status.operation_id != operation_id
-                or status.provider_id is not provider_id
-                or status.target_account_id != account_id
             ):
                 raise UnexpectedServiceEventError(
                     "The service returned unrelated selection status."
                 )
+            related_active = (
+                status.operation_id == operation_id
+                and status.provider_id is provider_id
+                and status.target_account_id == account_id
+            )
+            related_final = (
+                terminal is not None
+                and status.operation_id is None
+                and status.provider_id is provider_id
+                and status.finalized_account_id == account_id
+                and status.finalized_epoch == terminal.epoch
+            )
+            if not related_active and not related_final:
+                raise UnexpectedServiceEventError(
+                    "The service returned unrelated selection status."
+                )
+            self._sink.publish_selection_status(provider_id, status)
             self._sink.publish_progress(_selection_progress(status))
         except (
             UnexpectedServiceEventError,
             OSError,
             ProtocolFailureError,
         ):
+            self._sink.publish_selection_status(provider_id, None)
             self._sink.publish_progress(
                 "Account change accepted; current phase is unavailable."
             )

@@ -21,6 +21,7 @@ from sidekick_usages.daemon.models.protocol import (
     ControlActionTerminalPayload,
     ControlEvent,
 )
+from sidekick_usages.daemon.selection.models import SelectionStatus
 from sidekick_usages.usage.dashboard.models import (
     DashboardService,
     DashboardSnapshot,
@@ -134,6 +135,14 @@ class DashboardActionSink(Protocol):
 
     def publish_progress(self, message: str) -> None:
         """Publish one sanitized action phase."""
+        ...
+
+    def publish_selection_status(
+        self,
+        provider_id: ProviderId,
+        status: SelectionStatus | None,
+    ) -> None:
+        """Publish or clear one canonical provider selection snapshot."""
         ...
 
     def request_confirmation(

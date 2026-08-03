@@ -221,6 +221,7 @@ class DashboardController:
         restore_provider: ProviderId | None = None,
     ) -> DashboardController:
         """Adopt fresh cached truth while preserving one valid preview."""
+        snapshot = _retain_selection_status(self.snapshot, snapshot)
         verified = DashboardController.start(snapshot)
         anchors = verified.state.anchors
         if restore_provider is not None:
@@ -314,6 +315,33 @@ class DashboardController:
         state: DashboardControllerState,
     ) -> DashboardController:
         return replace(self, state=state)
+
+
+def _retain_selection_status(
+    current: DashboardSnapshot,
+    replacement: DashboardSnapshot,
+) -> DashboardSnapshot:
+    """Carry canonical live selection across a passive cache refresh."""
+    selections = {
+        provider.provider_id: provider
+        for provider in current.providers
+        if provider.selection is not None
+    }
+    if not selections:
+        return replacement
+    return replace(
+        replacement,
+        providers=tuple(
+            replace(
+                provider,
+                finalized_epoch=selected.finalized_epoch,
+                selection=selected.selection,
+            )
+            if (selected := selections.get(provider.provider_id)) is not None
+            else provider
+            for provider in replacement.providers
+        ),
+    )
 
 
 def _provider_anchor(

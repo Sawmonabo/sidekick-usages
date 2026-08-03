@@ -268,6 +268,9 @@ class CachedDashboardService:
             ),
             actions_enabled=service_ready and provider_available,
             rows=tuple(rows),
+            finalized_epoch=(
+                None if selected is None else selected.epoch
+            ),
             activity=(
                 None
                 if provider_activity is None

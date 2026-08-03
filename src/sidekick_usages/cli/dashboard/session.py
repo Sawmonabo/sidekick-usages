@@ -46,9 +46,8 @@ from sidekick_usages.daemon.models.protocol import (
     ControlActionTerminalPayload,
     FailedPayload,
 )
-from sidekick_usages.daemon.types.protocol import (
-    CompletionOutcome,
-)
+from sidekick_usages.daemon.selection.models import SelectionStatus
+from sidekick_usages.daemon.types.protocol import CompletionOutcome
 from sidekick_usages.persistence.errors import PersistenceError
 from sidekick_usages.usage.dashboard.models import (
     DashboardCursor,
@@ -697,6 +696,41 @@ class InteractiveDashboardSession:
                     DashboardStatusKind.PROGRESS,
                     message,
                 ),
+            )
+            invalidate = self._invalidate
+        invalidate()
+
+    def publish_selection_status(
+        self,
+        provider_id: ProviderId,
+        status: SelectionStatus | None,
+    ) -> None:
+        """Publish one canonical provider status without persisting it."""
+        if status is not None and status.provider_id is not provider_id:
+            raise ValueError("Dashboard selection provider does not match.")
+        with self._view_lock:
+            if self._closed:
+                return
+            snapshot = replace(
+                self._view.snapshot,
+                providers=tuple(
+                    replace(
+                        provider,
+                        finalized_epoch=(
+                            provider.finalized_epoch
+                            if status is None
+                            else status.finalized_epoch
+                        ),
+                        selection=status,
+                    )
+                    if provider.provider_id is provider_id
+                    else provider
+                    for provider in self._view.snapshot.providers
+                ),
+            )
+            self._view = replace(
+                self._view,
+                snapshot=snapshot,
             )
             invalidate = self._invalidate
         invalidate()

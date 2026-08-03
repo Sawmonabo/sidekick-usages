@@ -194,6 +194,28 @@ class SessionControlClient:
         if target is None or target[0] is not provider_id:
             raise AssertionError("Synthetic selection was not accepted.")
         baseline = self._owner.selection_baseline
+        provider = next(
+            candidate
+            for candidate in self._owner.snapshots.snapshot.providers
+            if candidate.provider_id is provider_id
+        )
+        if provider.active_account_id == target[1]:
+            yield _event(
+                EventKind.SELECTION_STATUS,
+                SelectionStatus(
+                    provider_id=provider_id,
+                    operation_id=None,
+                    finalized_account_id=target[1],
+                    finalized_epoch=_required_selection_epoch(self._owner),
+                    target_account_id=None,
+                    pending_epoch=None,
+                    phase=None,
+                    code=None,
+                    registered_count=3,
+                    reachable_count=3,
+                ),
+            )
+            return
         yield _event(
             EventKind.SELECTION_STATUS,
             SelectionStatus(

@@ -12,6 +12,7 @@ from sidekick_usages.core.accounts.types import (
     RequestId,
     SidekickAccountId,
 )
+from sidekick_usages.core.selection.models import SelectionEpoch
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.usage.dashboard.models import (
     DashboardFooter,
@@ -79,6 +80,7 @@ class DashboardSessionProof:
     setup_refusal_restored: bool
     setup_refusal_message: str | None
     verified_account_id: SidekickAccountId | None
+    finalized_epoch: SelectionEpoch | None
     success_footer: DashboardFooter
     already_selected_footer: DashboardFooter
     setup_not_repeated: bool

@@ -43,6 +43,9 @@ FAILURE_STATE_DETAILS = {
 
 def provider_detail(provider: DashboardProvider) -> str | None:
     """Return one provider-scoped runtime advisory."""
+    selection_detail = _selection_detail(provider)
+    if selection_detail is not None:
+        return selection_detail
     runtime_state = provider.status.runtime_state
     if runtime_state is None:
         return None
@@ -56,6 +59,37 @@ def provider_detail(provider: DashboardProvider) -> str | None:
             )
         return None
     return f"{PROVIDER_NAMES[provider.provider_id]} {detail}"
+
+
+def _selection_detail(provider: DashboardProvider) -> str | None:
+    """Render active or degraded canonical participant state."""
+    status = provider.status.selection
+    if status is None or status.operation_id is None:
+        return None
+    target = next(
+        (
+            row.label
+            for row in provider.rows
+            if row.account_id == status.target_account_id
+        ),
+        status.target_account_id,
+    )
+    finalized_epoch = (
+        "none"
+        if status.finalized_epoch is None
+        else str(status.finalized_epoch.value)
+    )
+    if status.pending_epoch is None or status.phase is None:
+        raise AssertionError("Active dashboard selection is incomplete.")
+    return (
+        f"Selecting {target} for epoch {status.pending_epoch.value} · "
+        f"{status.phase.value} · finalized epoch {finalized_epoch} · "
+        f"sessions {status.required_count} required, "
+        f"{status.ready_count} ready, {status.adopted_count} adopted, "
+        f"{status.confirmed_dead_count} lost, "
+        f"{status.unreachable_count} unreachable, "
+        f"{provider.status.unmanaged_sessions} unmanaged."
+    )
 
 
 def row_is_selected(

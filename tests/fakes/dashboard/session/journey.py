@@ -516,6 +516,7 @@ def exercise_dashboard_session(
             invalidation,
             daemon,
         )
+        finalized_epoch = session.view.snapshot.providers[0].finalized_epoch
         session.select_account()
         invalidation.wait_for(lambda: not session.view.action_in_flight)
         already_selected_footer = session.view.footer
@@ -559,6 +560,7 @@ def exercise_dashboard_session(
         setup_refusal_restored=setup_refusal_restored,
         setup_refusal_message=setup_refusal_message,
         verified_account_id=verified_account_id,
+        finalized_epoch=finalized_epoch,
         success_footer=success_footer,
         already_selected_footer=already_selected_footer,
         setup_not_repeated=setup_not_repeated,

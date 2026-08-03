@@ -26,6 +26,7 @@ from sidekick_usages.core.accounts.types import (
     CredentialHealth,
     MetricsFreshness,
 )
+from sidekick_usages.core.selection.models import SelectionEpoch
 from sidekick_usages.core.selection.types import (
     AuthorityGenerationRelation,
     ProviderAuthState,
@@ -748,6 +749,7 @@ def test_dashboard_controller_journey_preserves_verified_truth(
             "Run sidekick-usages in a terminal and approve service setup."
         ),
         verified_account_id=CLAUDE_PREVIEW_ACCOUNT_ID,
+        finalized_epoch=SelectionEpoch(2),
         success_footer=DashboardFooter(
             navigation=DashboardNavigationKind.KEYS,
             status=DashboardStatus(
@@ -851,6 +853,6 @@ def test_dashboard_controller_journey_preserves_verified_truth(
         lookup_cancelled=True,
         daemon_cancelled=True,
         stream_released=True,
-        closed_clients=8,
+        closed_clients=10,
         post_close_invalidations=0,
     )

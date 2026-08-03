@@ -10,6 +10,7 @@ from sidekick_usages.core.accounts.types import (
     SidekickAccountId,
 )
 from sidekick_usages.core.models import TokenActivitySummary, UsageReport
+from sidekick_usages.core.selection.models import SelectionEpoch
 from sidekick_usages.core.selection.types import ProviderRuntimeState
 from sidekick_usages.core.time import as_utc
 from sidekick_usages.core.types import (
@@ -17,6 +18,7 @@ from sidekick_usages.core.types import (
     ProviderId,
     TokenActivityScope,
 )
+from sidekick_usages.daemon.selection.models import SelectionStatus
 from sidekick_usages.daemon.types.service import ServicePhase
 from sidekick_usages.persistence.types.error import (
     ActivitySnapshotFailureKind,
@@ -178,6 +180,8 @@ class DashboardProviderStatus:
 
     runtime_state: ProviderRuntimeState | None
     observed_at: datetime | None
+    finalized_epoch: SelectionEpoch | None = None
+    selection: SelectionStatus | None = field(default=None, repr=False)
     unmanaged_sessions: int = 0
 
     def __post_init__(self) -> None:
@@ -200,6 +204,8 @@ class DashboardProvider:
     verified_at: datetime | None
     actions_enabled: bool
     rows: tuple[DashboardRow, ...]
+    finalized_epoch: SelectionEpoch | None = None
+    selection: SelectionStatus | None = field(default=None, repr=False)
     activity: DashboardActivity | None = None
     status: DashboardProviderStatus = field(init=False)
 
@@ -216,12 +222,19 @@ class DashboardProvider:
         account_ids = tuple(row.account_id for row in self.rows)
         if len(account_ids) != len(set(account_ids)):
             raise ValueError("Dashboard provider has duplicate accounts.")
+        if (
+            self.selection is not None
+            and self.selection.provider_id is not self.provider_id
+        ):
+            raise ValueError("Dashboard selection provider does not match.")
         object.__setattr__(
             self,
             "status",
             DashboardProviderStatus(
                 runtime_state=self.runtime_state,
                 observed_at=self.verified_at,
+                finalized_epoch=self.finalized_epoch,
+                selection=self.selection,
                 unmanaged_sessions=int(
                     self.runtime_state is ProviderRuntimeState.EXTERNAL_ACTIVE
                 ),

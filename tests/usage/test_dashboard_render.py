@@ -8,8 +8,14 @@ from prompt_toolkit.formatted_text import (
     to_formatted_text,
 )
 
-from sidekick_usages.core.selection.types import ProviderRuntimeState
+from sidekick_usages.core.accounts.types import OperationId
+from sidekick_usages.core.selection.models import SelectionEpoch
+from sidekick_usages.core.selection.types import (
+    ProviderRuntimeState,
+    SelectionPhase,
+)
 from sidekick_usages.core.types import AccountLabel
+from sidekick_usages.daemon.selection.models import SelectionStatus
 from sidekick_usages.usage.dashboard.models import (
     DashboardAccount,
     DashboardActionState,
@@ -93,6 +99,25 @@ def _render_interactive(
         providers=(
             replace(
                 provider,
+                finalized_epoch=SelectionEpoch(1),
+                selection=SelectionStatus(
+                    provider_id=provider.provider_id,
+                    operation_id=OperationId(
+                        "77777777-7777-4777-8777-777777777777"
+                    ),
+                    finalized_account_id=provider.active_account_id,
+                    finalized_epoch=SelectionEpoch(1),
+                    target_account_id=warning_account.account_id,
+                    pending_epoch=SelectionEpoch(2),
+                    phase=SelectionPhase.WAITING_OLD_TURNS,
+                    code=None,
+                    registered_count=3,
+                    reachable_count=2,
+                    required_count=2,
+                    adopted_count=1,
+                    unreachable_count=1,
+                    active_turn_count=1,
+                ),
                 rows=(
                     provider.rows[0],
                     replace(
@@ -345,6 +370,7 @@ def test_interactive_narrow_render_preserves_dashboard_contract() -> None:
     semantic_degraded = " ".join(
         line.strip() for line in degraded.splitlines()
     )
+    semantic_setup = " ".join(line.strip() for line in setup.splitlines())
 
     assert "╭─ CLAUDE" not in out
     assert ".--┴-┴--.  sidekick usages" in out
@@ -376,6 +402,12 @@ def test_interactive_narrow_render_preserves_dashboard_contract() -> None:
     assert "since Dec 28, 2025" in out
     assert "since Apr 7, 2026" in out
     assert "(in 3h 50m)" in out
+    assert "Selecting" not in out
+    assert (
+        "Selecting personal@example.test for epoch 2 · "
+        "waiting_old_turns · finalized epoch 1 · sessions 2 required, "
+        "0 ready, 1 adopted, 0 lost, 1 unreachable, 0 unmanaged."
+    ) in semantic_setup
     assert not any(label in out for label in FORBIDDEN_SELECTION_LABELS)
     assert (
         semantic_degraded.count(_CLAUDE_UNSUPPORTED_DETAIL),
