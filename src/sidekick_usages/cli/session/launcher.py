@@ -1,5 +1,6 @@
 """Exact provider executable launch planning."""
 
+import errno
 import os
 import signal
 import stat
@@ -36,6 +37,7 @@ from sidekick_usages.providers.codex.auth.home import (
 
 type ProviderLauncherResolver = Callable[[Mapping[str, str]], Path]
 type SignalHandler = Callable[[int, FrameType | None], object] | int | None
+type SignalHandlers = tuple[tuple[signal.Signals, SignalHandler], ...]
 
 _CLAUDE_UNSAFE_OPTIONS = frozenset(
     {
@@ -88,6 +90,15 @@ _DIRECTORY_OPEN_FLAGS = (
 )
 _EXECUTABLE_OPEN_FLAGS = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
 _CHILD_EXECUTION_FAILURE = 125
+_CHILD_FAILURE_LIMIT = 32
+_TTY_HANDOFF_FAILURE = "The terminal could not be transferred to the provider."
+_TTY_RESTORE_FAILURE = "The original terminal could not be restored."
+_CHILD_FAILURE_DETAILS = {
+    "executable_changed": "The provider executable changed after "
+    "qualification.",
+    "execution_failed": "The qualified provider process could not start.",
+    "unsupported": "This platform refused descriptor execution.",
+}
 _FORWARDED_SIGNALS = tuple(
     member
     for member in (
@@ -266,18 +277,29 @@ class ProviderSessionLauncher:
                 "The qualified provider child could not be prepared.",
             ) from error
         try:
+            failure_read, failure_write = os.pipe()
+        except OSError as error:
+            _close_descriptors(release_read, release_write)
+            raise SessionLaunchError(
+                SessionLaunchFailure.EXECUTION_FAILED,
+                "The qualified provider child could not be prepared.",
+            ) from error
+        try:
             process_id = os.fork()
         except OSError as error:
-            with suppress(OSError):
-                os.close(release_read)
-            with suppress(OSError):
-                os.close(release_write)
+            _close_descriptors(
+                release_read,
+                release_write,
+                failure_read,
+                failure_write,
+            )
             raise SessionLaunchError(
                 SessionLaunchFailure.EXECUTION_FAILED,
                 "The qualified provider child could not be prepared.",
             ) from error
         if process_id == 0:
             os.close(release_write)
+            os.close(failure_read)
             try:
                 os.setpgid(0, 0)
                 released = os.read(release_read, 1)
@@ -285,11 +307,19 @@ class ProviderSessionLauncher:
                 if released != b"1":
                     os._exit(_CHILD_EXECUTION_FAILURE)
                 result = self.run(spec)
+            except SessionLaunchError as error:
+                _write_child_failure(failure_write, error.code)
+                os._exit(_CHILD_EXECUTION_FAILURE)
             except BaseException:
+                _write_child_failure(
+                    failure_write,
+                    SessionLaunchFailure.EXECUTION_FAILED,
+                )
                 os._exit(_CHILD_EXECUTION_FAILURE)
             os._exit(result)
         os.close(release_read)
-        return ProviderSessionChild(process_id, release_write)
+        os.close(failure_write)
+        return ProviderSessionChild(process_id, release_write, failure_read)
 
     @staticmethod
     def _open_executable(provenance: ExecutableProvenance) -> int:
@@ -382,34 +412,65 @@ class ProviderSessionLauncher:
 class ProviderSessionChild:
     """Own one blocked child until relay readiness permits provider exec."""
 
-    def __init__(self, process_id: int, release_descriptor: int) -> None:
+    def __init__(
+        self,
+        process_id: int,
+        release_descriptor: int,
+        failure_descriptor: int,
+    ) -> None:
         self._process_id = process_id
         self._release_descriptor = release_descriptor
+        self._failure_descriptor = failure_descriptor
         self._completed = False
 
     def run(self) -> int:
         """Release one provider child and return its natural exit status."""
         if self._completed or self._release_descriptor < 0:
             raise RuntimeError("The provider child is already complete.")
-        original_group = _foreground_process_group()
-        previous_handlers = _install_signal_forwarding(self._process_id)
+        original_group: int | None = None
+        previous_handlers: SignalHandlers | None = None
         released = False
+        handed_off = False
+        result = 0
+        failure: BaseException | None = None
         try:
+            original_group = _foreground_process_group()
+            previous_handlers = _install_signal_forwarding(self._process_id)
             with suppress(PermissionError, ProcessLookupError):
                 os.setpgid(self._process_id, self._process_id)
-            _set_foreground_process_group(self._process_id, original_group)
+            _set_foreground_process_group(
+                self._process_id,
+                original_group,
+                detail=_TTY_HANDOFF_FAILURE,
+            )
+            handed_off = original_group is not None
             os.write(self._release_descriptor, b"1")
-            os.close(self._release_descriptor)
-            self._release_descriptor = -1
             released = True
+            try:
+                os.close(self._release_descriptor)
+            finally:
+                self._release_descriptor = -1
+            failure = self._read_child_failure()
             result = _wait_for_child(self._process_id, original_group)
             self._completed = True
-            return result
+        except OSError:
+            failure = SessionLaunchError(
+                SessionLaunchFailure.EXECUTION_FAILED,
+                "The qualified provider child could not be released.",
+            )
+        except BaseException as error:
+            failure = error
         finally:
-            if not released:
-                self._cancel_and_wait()
-            _set_foreground_process_group(original_group, original_group)
-            _restore_signal_handlers(previous_handlers)
+            failure = self._finish_run(
+                released=released,
+                handed_off=handed_off,
+                original_group=original_group,
+                previous_handlers=previous_handlers,
+                failure=failure,
+            )
+        if failure is not None:
+            raise failure
+        return result
 
     def cancel(self) -> None:
         """Reap one child without ever releasing provider execution."""
@@ -425,6 +486,80 @@ class ProviderSessionChild:
         if not self._completed:
             _wait_for_child(self._process_id, None)
             self._completed = True
+        self._close_failure_descriptor()
+
+    def _finish_run(
+        self,
+        *,
+        released: bool,
+        handed_off: bool,
+        original_group: int | None,
+        previous_handlers: SignalHandlers | None,
+        failure: BaseException | None,
+    ) -> BaseException | None:
+        try:
+            if not released:
+                self._cancel_and_wait()
+            elif not self._completed:
+                _wait_for_child(self._process_id, original_group)
+                self._completed = True
+                self._close_failure_descriptor()
+        except BaseException as cleanup_error:
+            failure = _preserve_session_failure(failure, cleanup_error)
+        if handed_off:
+            try:
+                _set_foreground_process_group(
+                    original_group,
+                    original_group,
+                    detail=_TTY_RESTORE_FAILURE,
+                )
+            except SessionLaunchError as cleanup_error:
+                failure = _preserve_session_failure(
+                    failure,
+                    cleanup_error,
+                )
+        if previous_handlers is not None:
+            _restore_signal_handlers(previous_handlers)
+        return failure
+
+    def _read_child_failure(self) -> SessionLaunchError | None:
+        descriptor = self._failure_descriptor
+        if descriptor < 0:
+            raise RuntimeError("The provider child result is unavailable.")
+        try:
+            while True:
+                try:
+                    payload = os.read(descriptor, _CHILD_FAILURE_LIMIT + 1)
+                    break
+                except OSError as error:
+                    if error.errno != errno.EINTR:
+                        raise SessionLaunchError(
+                            SessionLaunchFailure.EXECUTION_FAILED,
+                            "The qualified provider child result could not "
+                            "be read.",
+                        ) from error
+        finally:
+            self._close_failure_descriptor()
+        if not payload:
+            return None
+        try:
+            value = payload.decode("ascii")
+            code = SessionLaunchFailure(value)
+            detail = _CHILD_FAILURE_DETAILS[value]
+        except (KeyError, UnicodeError, ValueError) as error:
+            raise SessionLaunchError(
+                SessionLaunchFailure.EXECUTION_FAILED,
+                "The qualified provider child returned an invalid launch "
+                "result.",
+            ) from error
+        return SessionLaunchError(code, detail)
+
+    def _close_failure_descriptor(self) -> None:
+        if self._failure_descriptor < 0:
+            return
+        with suppress(OSError):
+            os.close(self._failure_descriptor)
+        self._failure_descriptor = -1
 
 
 def _preserve_cleanup_failure(
@@ -438,6 +573,48 @@ def _preserve_cleanup_failure(
         SessionLaunchFailure.EXECUTION_FAILED,
         detail,
     )
+
+
+def _preserve_session_failure(
+    failure: BaseException | None,
+    cleanup_failure: BaseException,
+) -> BaseException:
+    if failure is None:
+        return cleanup_failure
+    if isinstance(cleanup_failure, SessionLaunchError):
+        if isinstance(failure, SessionLaunchError):
+            return SessionLaunchError(
+                failure.code,
+                f"{failure} {cleanup_failure}",
+            )
+        cleanup_failure.add_note("The provider session also failed.")
+        return cleanup_failure
+    failure.add_note("Provider session cleanup also failed.")
+    return failure
+
+
+def _write_child_failure(
+    descriptor: int,
+    code: SessionLaunchFailure,
+) -> None:
+    payload = code.value.encode("ascii")
+    written = 0
+    try:
+        while written < len(payload):
+            try:
+                written += os.write(descriptor, payload[written:])
+            except OSError as error:
+                if error.errno != errno.EINTR:
+                    return
+    finally:
+        with suppress(OSError):
+            os.close(descriptor)
+
+
+def _close_descriptors(*descriptors: int) -> None:
+    for descriptor in descriptors:
+        with suppress(OSError):
+            os.close(descriptor)
 
 
 def _finish_launch(
@@ -528,31 +705,47 @@ def _contains_codex_auth_command(arguments: tuple[str, ...]) -> bool:
 def _foreground_process_group() -> int | None:
     if not os.isatty(0):
         return None
-    try:
-        return os.tcgetpgrp(0)
-    except OSError:
-        return None
+    while True:
+        try:
+            return os.tcgetpgrp(0)
+        except OSError as error:
+            if error.errno == errno.EINTR:
+                continue
+            raise SessionLaunchError(
+                SessionLaunchFailure.EXECUTION_FAILED,
+                "The provider controlling terminal could not be qualified.",
+            ) from error
 
 
 def _set_foreground_process_group(
     process_group: int | None,
     original_group: int | None,
+    *,
+    detail: str,
 ) -> None:
     if process_group is None or original_group is None:
         return
     previous = signal.getsignal(signal.SIGTTOU)
     try:
         signal.signal(signal.SIGTTOU, signal.SIG_IGN)
-        os.tcsetpgrp(0, process_group)
-    except OSError:
-        pass
+        while True:
+            try:
+                os.tcsetpgrp(0, process_group)
+                break
+            except OSError as error:
+                if error.errno == errno.EINTR:
+                    continue
+                raise SessionLaunchError(
+                    SessionLaunchFailure.EXECUTION_FAILED,
+                    detail,
+                ) from error
     finally:
         signal.signal(signal.SIGTTOU, previous)
 
 
 def _install_signal_forwarding(
     process_id: int,
-) -> tuple[tuple[signal.Signals, SignalHandler], ...]:
+) -> SignalHandlers:
     previous: list[tuple[signal.Signals, SignalHandler]] = []
     for member in _FORWARDED_SIGNALS:
         previous.append((member, signal.getsignal(member)))
@@ -571,7 +764,7 @@ def _install_signal_forwarding(
 
 
 def _restore_signal_handlers(
-    previous: tuple[tuple[signal.Signals, SignalHandler], ...],
+    previous: SignalHandlers,
 ) -> None:
     for member, handler in previous:
         signal.signal(member, handler)
@@ -587,9 +780,17 @@ def _wait_for_child(
         except InterruptedError:
             continue
         if os.WIFSTOPPED(status):
-            _set_foreground_process_group(original_group, original_group)
+            _set_foreground_process_group(
+                original_group,
+                original_group,
+                detail=_TTY_RESTORE_FAILURE,
+            )
             os.kill(os.getpid(), os.WSTOPSIG(status))
-            _set_foreground_process_group(process_id, original_group)
+            _set_foreground_process_group(
+                process_id,
+                original_group,
+                detail=_TTY_HANDOFF_FAILURE,
+            )
             os.killpg(process_id, signal.SIGCONT)
             continue
         if os.WIFEXITED(status):

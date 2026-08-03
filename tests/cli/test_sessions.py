@@ -1,12 +1,17 @@
 """Public session enrollment and capability-refusal behavior."""
 
 import errno
+import fcntl
 import os
+import pty
+import select
 import signal
+import struct
+import sys
+import termios
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from threading import Thread
 from typing import Never
 
 import click
@@ -611,46 +616,104 @@ class _FakeCodexRuntime:
     socket_path: Path
     ready_marker: Path
     child_observation: Path
-    signal_fifo: Path
-    events: list[str]
-    downstream_connections: int = 0
-    upstream_connections: int = 0
-    resize: Thread | None = None
+    event_log: Path
+    executable_replacement: tuple[Path, Path] | None = None
 
     def open(self) -> None:
         """Open one relay before registration and account-bearing traffic."""
-        if self.downstream_connections or self.upstream_connections:
-            raise AssertionError("Synthetic Codex runtime reopened.")
-        self.socket_path.parent.mkdir(parents=True, mode=0o700)
-        self.events.extend(
-            ("relay_open", "participant_registered", "notice_subscribed")
-        )
-        self.downstream_connections = 1
-        self.upstream_connections = 1
+        self.socket_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        with self.event_log.open("a") as stream:
+            stream.write(
+                "relay_open\nparticipant_registered\n"
+                "notice_subscribed\ndownstream=1\nupstream=1\n"
+            )
         self.ready_marker.write_text("ready\n")
-
-        def send_resize_to_relay_owner() -> None:
-            with self.signal_fifo.open() as stream:
-                if not stream.readline().strip():
-                    raise AssertionError(
-                        "Codex child identity was unavailable."
-                    )
-            os.kill(os.getpid(), signal.SIGWINCH)
-
-        self.resize = Thread(target=send_resize_to_relay_owner)
-        self.resize.start()
+        if self.executable_replacement is not None:
+            replacement, target = self.executable_replacement
+            replacement.replace(target)
+            self.executable_replacement = None
 
     def close(self) -> None:
         """Close only after the one child has exited naturally."""
         if not self.child_observation.exists():
             raise AssertionError("Codex runtime closed before its child.")
-        if self.resize is None:
-            raise AssertionError("Codex resize observer was not started.")
-        self.resize.join(timeout=2)
-        if self.resize.is_alive():
-            raise AssertionError("Codex resize observer did not finish.")
-        self.events.append("session_closed")
+        with self.event_log.open("a") as stream:
+            stream.write("session_closed\n")
         self.ready_marker.unlink()
+
+
+def _invoke_codex_in_pty(
+    context: InvocationContext,
+    command_result: Path,
+    ready_read: int,
+    ready_write: int,
+    setup_read: int,
+    setup_write: int,
+) -> int:
+    outer_process, terminal = pty.fork()
+    if outer_process == 0:
+        os.close(ready_read)
+        os.close(setup_write)
+        os.read(setup_read, 1)
+        os.close(setup_read)
+        result = CliRunner().invoke(
+            create_app(),
+            ["session", "codex", "--", "prompt with spaces"],
+            obj=context,
+            terminal_width=160,
+        )
+        restored = os.tcgetpgrp(0) == os.getpgrp()
+        command_result.write_text(
+            f"exit={result.exit_code}\nrestored={restored}\n"
+            f"output={click.unstyle(result.output)}"
+        )
+        os.close(ready_write)
+        os._exit(0)
+    os.close(ready_write)
+    os.close(setup_read)
+    fcntl.ioctl(
+        terminal,
+        termios.TIOCSWINSZ,
+        struct.pack("HHHH", 24, 80, 0, 0),
+    )
+    os.write(setup_write, b"1")
+    os.close(setup_write)
+    readable, _writable, _exceptional = select.select(
+        [ready_read],
+        [],
+        [],
+        5,
+    )
+    if not readable:
+        os.kill(outer_process, signal.SIGTERM)
+        os.waitpid(outer_process, 0)
+        os.close(ready_read)
+        os.close(terminal)
+        pytest.fail("The stock Codex TUI did not reach terminal readiness.")
+    assert os.read(ready_read, 1) == b"1"
+    os.kill(outer_process, signal.SIGWINCH)
+    forwarded, _writable, _exceptional = select.select(
+        [ready_read],
+        [],
+        [],
+        5,
+    )
+    if not forwarded:
+        os.kill(outer_process, signal.SIGTERM)
+        os.waitpid(outer_process, 0)
+        os.close(ready_read)
+        os.close(terminal)
+        pytest.fail("The stock Codex TUI did not receive forwarded resize.")
+    assert os.read(ready_read, 1) == b"2"
+    os.close(ready_read)
+    fcntl.ioctl(
+        terminal,
+        termios.TIOCSWINSZ,
+        struct.pack("HHHH", 40, 120, 0, 0),
+    )
+    _waited, status = os.waitpid(outer_process, 0)
+    os.close(terminal)
+    return os.waitstatus_to_exitcode(status)
 
 
 @pytest.mark.skipif(
@@ -662,51 +725,74 @@ class _FakeCodexRuntime:
 def test_codex_session_runs_one_coordinated_stock_tui(
     tmp_path: Path,
 ) -> None:
-    """A reconnect, unsafe override, or exit rewrite breaks enrollment."""
+    """One retained TUI must preserve its terminal and launch contract."""
     binaries = tmp_path / "bin"
     working_directory = tmp_path / "working"
     neutral_home = tmp_path / "neutral-codex-home"
     participant_socket = tmp_path / "runtime" / "participants" / "cli.sock"
     child_observation = tmp_path / "child-observation.txt"
+    command_result = tmp_path / "command-result.txt"
+    event_log = tmp_path / "runtime-events.txt"
     ready_marker = tmp_path / "relay-ready.txt"
-    signal_fifo = tmp_path / "child-signal.fifo"
     binaries.mkdir()
     working_directory.mkdir()
     neutral_home.mkdir(mode=0o700)
-    os.mkfifo(signal_fifo, mode=0o600)
     codex = binaries / "codex"
     sidekick = binaries / "sidekick-real"
     codex.write_text(
-        "#!/bin/sh\n"
-        'test -f "$SESSION_READY" || exit 91\n'
-        "{\n"
-        "    printf 'arg=%s\\n' \"$@\"\n"
-        "    printf 'home=%s\\n' \"$CODEX_HOME\"\n"
-        "    printf 'cwd=%s\\n' \"$PWD\"\n"
-        '} > "$SESSION_OBSERVATION"\n'
-        f"trap \"printf 'signal=WINCH\\\\n' >> "
-        '"$SESSION_OBSERVATION"; '
-        f'exit {_PROVIDER_EXIT_CODE}" WINCH\n'
-        'printf \'%s\\n\' "$$" > "$SESSION_SIGNAL_FIFO"\n'
-        "/bin/sleep 5\n"
-        "exit 92\n"
+        f"#!{sys.executable}\n"
+        "import os\n"
+        "import signal\n"
+        "import sys\n"
+        "from pathlib import Path\n"
+        "observation = Path(os.environ['SESSION_OBSERVATION'])\n"
+        "ready = int(os.environ['SESSION_READY_FD'])\n"
+        "signal_count = 0\n"
+        "def resized(_number, _frame):\n"
+        "    global signal_count\n"
+        "    signal_count += 1\n"
+        "    size = os.get_terminal_size(0)\n"
+        "    with observation.open('a') as stream:\n"
+        "        label = 'signal' if signal_count == 1 else 'resize'\n"
+        "        stream.write(f'{label}={size.columns}x{size.lines}\\n')\n"
+        "    if signal_count == 1:\n"
+        "        os.write(ready, b'2')\n"
+        "        return\n"
+        "    raise SystemExit(125)\n"
+        "signal.signal(signal.SIGWINCH, resized)\n"
+        "size = os.get_terminal_size(0)\n"
+        "lines = [f'arg={item}' for item in sys.argv[1:]]\n"
+        "lines.extend([\n"
+        "    f\"home={os.environ['CODEX_HOME']}\",\n"
+        '    f"cwd={os.getcwd()}",\n'
+        "    f'tty={os.isatty(0)}',\n"
+        "    f'foreground={os.tcgetpgrp(0) == os.getpgrp()}',\n"
+        "    f'size={size.columns}x{size.lines}',\n"
+        "])\n"
+        "observation.write_text('\\n'.join(lines) + '\\n')\n"
+        "if not Path(os.environ['SESSION_READY']).is_file():\n"
+        "    raise SystemExit(91)\n"
+        "os.write(ready, b'1')\n"
+        "while True:\n"
+        "    signal.pause()\n"
     )
     codex.chmod(0o700)
     _executable(sidekick)
-    events: list[str] = []
+    ready_read, ready_write = os.pipe()
+    setup_read, setup_write = os.pipe()
+    os.set_inheritable(ready_write, True)
     runtime = _FakeCodexRuntime(
         participant_socket,
         ready_marker,
         child_observation,
-        signal_fifo,
-        events,
+        event_log,
     )
     launcher = ProviderSessionLauncher(
         {
             "PATH": str(binaries),
             "SESSION_OBSERVATION": str(child_observation),
             "SESSION_READY": str(ready_marker),
-            "SESSION_SIGNAL_FIFO": str(signal_fifo),
+            "SESSION_READY_FD": str(ready_write),
             "TERM": "xterm-256color",
         },
         working_directory=working_directory,
@@ -730,30 +816,40 @@ def test_codex_session_runs_one_coordinated_stock_tui(
             codex=codex_session,
         )
     )
-
-    result = CliRunner().invoke(
-        create_app(),
-        ["session", "codex", "--", "prompt with spaces"],
-        obj=context,
-        terminal_width=160,
+    status = _invoke_codex_in_pty(
+        context,
+        command_result,
+        ready_read,
+        ready_write,
+        setup_read,
+        setup_write,
     )
 
-    assert result.exit_code == _PROVIDER_EXIT_CODE
-    assert events == [
+    assert status == 0
+    assert command_result.read_text().splitlines() == [
+        "exit=125",
+        "restored=True",
+        "output=",
+    ]
+    assert event_log.read_text().splitlines() == [
         "relay_open",
         "participant_registered",
         "notice_subscribed",
+        "downstream=1",
+        "upstream=1",
         "session_closed",
     ]
-    assert runtime.downstream_connections == 1
-    assert runtime.upstream_connections == 1
     assert child_observation.read_text().splitlines() == [
         "arg=--remote",
         f"arg=unix://{participant_socket}",
         "arg=prompt with spaces",
         f"home={neutral_home}",
         f"cwd={working_directory}",
-        "signal=WINCH",
+        "tty=True",
+        "foreground=True",
+        "size=80x24",
+        "signal=80x24",
+        "resize=120x40",
     ]
 
     unsafe = CliRunner().invoke(
@@ -771,4 +867,32 @@ def test_codex_session_runs_one_coordinated_stock_tui(
 
     assert unsafe.exit_code == ExitCode.MANUAL_ACTION
     assert "Codex arguments override protected" in click.unstyle(unsafe.output)
-    assert events.count("relay_open") == 1
+    assert event_log.read_text().count("relay_open\n") == 1
+
+    replacement = binaries / "replacement-codex"
+    _executable(replacement)
+    runtime.executable_replacement = replacement, codex
+    changed = CliRunner().invoke(
+        create_app(),
+        ["session", "codex", "--", "another prompt"],
+        obj=context,
+        terminal_width=160,
+    )
+
+    assert changed.exit_code == ExitCode.MANUAL_ACTION
+    assert "changed after qualification" in click.unstyle(changed.output)
+    assert child_observation.read_text().count("foreground=True") == 1
+    assert event_log.read_text().splitlines() == [
+        "relay_open",
+        "participant_registered",
+        "notice_subscribed",
+        "downstream=1",
+        "upstream=1",
+        "session_closed",
+        "relay_open",
+        "participant_registered",
+        "notice_subscribed",
+        "downstream=1",
+        "upstream=1",
+        "session_closed",
+    ]
