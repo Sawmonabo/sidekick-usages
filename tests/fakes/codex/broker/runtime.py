@@ -61,6 +61,7 @@ from sidekick_usages.providers.codex.app_server.executable import (
 from sidekick_usages.providers.codex.broker.models import (
     CodexProjectionExpectation,
 )
+from sidekick_usages.providers.codex.session.config import CodexSessionConfig
 from tests.fakes.codex.app_server.daemon import FakeCodexDaemon
 from tests.fakes.codex.app_server.executable import write_fake_managed_codex
 from tests.fakes.codex.app_server.schema import write_codex_schema
@@ -190,6 +191,9 @@ def _broker_fixture(
     )
     session_home = paths.codex_session_home
     session_home.mkdir(parents=True, mode=0o700)
+    (session_home / "config.toml").write_bytes(
+        CodexSessionConfig(session_home).prepare(None)
+    )
     write_codex_schema(schema_root, external_auth=True)
     write_fake_managed_codex(
         provider_root,

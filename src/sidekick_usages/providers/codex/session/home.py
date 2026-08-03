@@ -10,6 +10,10 @@ from sidekick_usages.core.accounts.models import SavedAccount
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.errors import UsageError
 from sidekick_usages.paths import ApplicationPaths, managed_codex_home
+from sidekick_usages.providers.codex.session.config import (
+    CODEX_SESSION_CONFIG_BASENAME,
+    CodexSessionConfig,
+)
 from sidekick_usages.providers.codex.session.errors import (
     CodexSessionConfigurationError,
 )
@@ -20,6 +24,7 @@ from sidekick_usages.providers.codex.session.models import (
 )
 
 _PRIVATE_DIRECTORY_MODE = 0o700
+_PACKAGES_BASENAME = "packages"
 _HOME_RECOVERY = (
     CODEX_SESSION_OPERATOR_PRECONDITION,
     "Restore the Sidekick Codex session path as an owner-owned 0700 real "
@@ -34,6 +39,11 @@ _COLLISION_RECOVERY = (
     CODEX_SESSION_OPERATOR_PRECONDITION,
     "Restore the canonical session path outside native and saved Codex "
     "private homes, then restart Sidekick.",
+)
+_INSTALL_RECOVERY = (
+    CODEX_SESSION_OPERATOR_PRECONDITION,
+    "Install the official standalone Codex build in the native Codex home, "
+    "then restart Sidekick.",
 )
 
 type CodexSessionStorageFactory = Callable[[Path], CodexSessionHomeStorage]
@@ -52,6 +62,14 @@ class CodexSessionHomeStorage(Protocol):
         basename: str,
     ) -> bool:
         """Return whether one qualified direct child contains an entry."""
+
+    def update_owned_file(
+        self,
+        directory: Path,
+        basename: str,
+        update: Callable[[bytes | None], bytes],
+    ) -> object:
+        """Transform and atomically commit one exact owned file."""
 
 
 def _current_user_id() -> int:
@@ -137,6 +155,12 @@ class _CodexSessionHome:
                         credential_state,
                         _STATE_RECOVERY,
                     )
+            tree.update_owned_file(
+                self._home,
+                CODEX_SESSION_CONFIG_BASENAME,
+                CodexSessionConfig(self._home).prepare,
+            )
+            self._ensure_package_projection()
         except CodexSessionConfigurationError:
             raise
         except UsageError, OSError, RuntimeError:
@@ -145,6 +169,53 @@ class _CodexSessionHome:
                 _HOME_RECOVERY,
             )
         return self._home
+
+    def _ensure_package_projection(self) -> None:
+        source = self._native_home / _PACKAGES_BASENAME
+        projected = self._home / _PACKAGES_BASENAME
+        try:
+            source_status = source.lstat()
+            source_resolved = source.resolve(strict=True)
+            if (
+                stat.S_ISLNK(source_status.st_mode)
+                or not stat.S_ISDIR(source_status.st_mode)
+                or source_status.st_uid != _current_user_id()
+                or stat.S_IMODE(source_status.st_mode) & 0o022
+                or not source_resolved.is_dir()
+            ):
+                self._refuse(
+                    CodexSessionConfigurationReason.MANAGED_INSTALL_UNAVAILABLE,
+                    _INSTALL_RECOVERY,
+                )
+            if not os.path.lexists(projected):
+                projected.symlink_to(source, target_is_directory=True)
+                self._sync_directory(self._home)
+            projected_status = projected.lstat()
+            if (
+                not stat.S_ISLNK(projected_status.st_mode)
+                or projected_status.st_uid != _current_user_id()
+                or os.readlink(projected) != str(source)
+                or projected.resolve(strict=True) != source_resolved
+            ):
+                self._refuse(
+                    CodexSessionConfigurationReason.HOME_UNSAFE,
+                    _HOME_RECOVERY,
+                )
+        except CodexSessionConfigurationError:
+            raise
+        except OSError, RuntimeError:
+            self._refuse(
+                CodexSessionConfigurationReason.MANAGED_INSTALL_UNAVAILABLE,
+                _INSTALL_RECOVERY,
+            )
+
+    @staticmethod
+    def _sync_directory(path: Path) -> None:
+        descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
 
     def _require_canonical_separation(self) -> None:
         collision = (

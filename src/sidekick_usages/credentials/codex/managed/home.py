@@ -14,6 +14,7 @@ from sidekick_usages.persistence.errors import PersistenceFilesystemError
 from sidekick_usages.persistence.private.credentials import (
     PrivateCredentialTree,
 )
+from sidekick_usages.persistence.types.artifact import AuthorityExpectation
 from sidekick_usages.persistence.types.error import PersistenceCode
 from sidekick_usages.providers.base import (
     ProviderFailure,
@@ -225,7 +226,6 @@ class CodexPrivateHomeAuthority:
         relative = str(account_id)
         home = managed_codex_home(self._paths, account_id)
         try:
-            present = self._private.relative_bundle_present(relative)
             current = self._private.read_relative_bundle_file(
                 relative,
                 CODEX_CONFIG_FILE,
@@ -237,15 +237,15 @@ class CodexPrivateHomeAuthority:
                 return prepared
             if current is not None and current.data == prepared:
                 return None
-            self._private.write_bundle(
+            self._private.write_owned_file(
                 home,
-                {CODEX_CONFIG_FILE: prepared},
-                expected_bundle_present=present,
-                expected_files={
-                    CODEX_CONFIG_FILE: (
-                        None if current is None else current.data
-                    )
-                },
+                CODEX_CONFIG_FILE,
+                prepared,
+                expected_source=(
+                    AuthorityExpectation.ABSENT
+                    if current is None
+                    else current.fingerprint
+                ),
             )
         except PersistenceFilesystemError as error:
             return _private_failure(

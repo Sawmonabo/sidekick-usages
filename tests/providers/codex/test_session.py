@@ -2,6 +2,7 @@
 
 import os
 import stat
+import tomllib
 from dataclasses import replace
 from pathlib import Path
 
@@ -30,7 +31,12 @@ from sidekick_usages.providers.codex.broker.service import (
     prepare_codex_session_home,
 )
 from sidekick_usages.providers.codex.broker.types import CodexBrokerFailure
+from sidekick_usages.providers.codex.session.home import (
+    CodexSessionAccountReader,
+)
 from sidekick_usages.providers.codex.session.models import (
+    CODEX_SESSION_BASE_URL,
+    CODEX_SESSION_MODEL_PROVIDER,
     CODEX_SESSION_OPERATOR_PRECONDITION,
     CodexSessionConfigurationReason,
 )
@@ -51,7 +57,12 @@ _GENERATION = "2026-07-24T10:00:00.000000000Z"
 _PRIVATE_DIRECTORY_MODE = 0o700
 
 
-def _prepare(paths: ApplicationPaths) -> Path:
+def _prepare(
+    paths: ApplicationPaths,
+    *,
+    account_reader: CodexSessionAccountReader | None = None,
+    native_home: Path | None = None,
+) -> Path:
     """Compose the production session owner with qualified persistence."""
     return prepare_codex_session_home(
         paths,
@@ -59,8 +70,14 @@ def _prepare(paths: ApplicationPaths) -> Path:
             root,
             account_path=paths.accounts,
         ),
-        AccountIndexReader(paths.accounts).load,
-        native_home=default_codex_home(),
+        (
+            AccountIndexReader(paths.accounts).load
+            if account_reader is None
+            else account_reader
+        ),
+        native_home=(
+            default_codex_home() if native_home is None else native_home
+        ),
         forbidden_entries=(
             codex_auth_basename(),
             claude_credential_basename(),
@@ -82,18 +99,56 @@ def test_session_home_is_created_only_by_its_qualified_owner(
     assert metadata.st_uid == os.geteuid()
     assert stat.S_IMODE(metadata.st_mode) == _PRIVATE_DIRECTORY_MODE
     assert prepared.resolve(strict=True) == prepared
-    assert tuple(prepared.iterdir()) == ()
+    assert {entry.name for entry in prepared.iterdir()} == {
+        "config.toml",
+        "packages",
+    }
 
 
-def test_session_home_preserves_unrelated_settings(tmp_path: Path) -> None:
+def test_session_home_prepares_official_daemon_without_credentials(
+    tmp_path: Path,
+) -> None:
     paths = make_application_paths(tmp_path / "state")
-    paths.codex_session_home.mkdir(parents=True, mode=0o700)
+    paths.codex_session_home.parent.mkdir(parents=True, mode=0o700)
+    paths.codex_session_home.parent.chmod(0o700)
+    paths.codex_session_home.mkdir(mode=0o700)
     settings = paths.codex_session_home / "config.toml"
-    expected = b'analytics = false\nmodel = "synthetic"\n'
+    expected = (
+        b'analytics = false\nmodel = "synthetic"\n'
+        b'[model_providers.synthetic]\nname = "Synthetic"\n'
+        b"[features]\nresponses_websockets = true\n"
+    )
     settings.write_bytes(expected)
+    settings.chmod(0o600)
+    native_home = tmp_path / "native-codex"
+    managed = native_home.joinpath(
+        "packages",
+        "standalone",
+        "current",
+        "codex",
+    )
+    managed.parent.mkdir(parents=True)
+    managed.write_bytes(b"synthetic executable")
 
-    assert _prepare(paths) == paths.codex_session_home
-    assert settings.read_bytes() == expected
+    assert _prepare(
+        paths,
+        account_reader=lambda: (),
+        native_home=native_home,
+    ) == (paths.codex_session_home)
+    projected = paths.codex_session_home / "packages"
+    assert projected.is_symlink()
+    assert projected.resolve(strict=True) == native_home / "packages"
+    payload = settings.read_bytes()
+    assert expected in payload
+    document = tomllib.loads(payload.decode())
+    assert document["features"]["responses_websockets"] is True
+    assert document["model_providers"]["synthetic"]["name"] == "Synthetic"
+    assert document["model_provider"] == CODEX_SESSION_MODEL_PROVIDER
+    provider = document["model_providers"][CODEX_SESSION_MODEL_PROVIDER]
+    assert provider["base_url"] == CODEX_SESSION_BASE_URL
+    assert provider["requires_openai_auth"] is True
+    assert provider["supports_websockets"] is False
+    assert not (paths.codex_session_home / "auth.json").exists()
 
 
 @pytest.mark.parametrize(
@@ -140,7 +195,9 @@ def test_session_home_rejects_unsafe_or_credential_bearing_state(
         home.parent.parent.mkdir(parents=True, mode=0o700)
         home.parent.symlink_to(redirected, target_is_directory=True)
     else:
-        home.mkdir(parents=True, mode=0o700)
+        home.parent.mkdir(parents=True, mode=0o700)
+        home.parent.chmod(0o700)
+        home.mkdir(mode=0o700)
         if hazard == "mode":
             home.chmod(0o750)
         elif hazard == "owner":
@@ -151,10 +208,12 @@ def test_session_home_rejects_unsafe_or_credential_bearing_state(
                 lambda: actual_user_id + 1,
             )
         else:
-            (home / hazard).write_bytes(b"synthetic-credential-state")
+            credential = home / hazard
+            credential.write_bytes(b"synthetic-credential-state")
+            credential.chmod(0o600)
 
     with pytest.raises(CodexBrokerError) as refused:
-        _prepare(paths)
+        _prepare(paths, account_reader=lambda: ())
 
     assert refused.value.code is (
         CodexBrokerFailure.SESSION_CONFIGURATION_REQUIRED

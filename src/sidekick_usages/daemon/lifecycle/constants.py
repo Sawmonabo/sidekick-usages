@@ -1,6 +1,6 @@
 """Canonical names shared by resident-service integrations."""
 
-SERVICE_ARTIFACT_VERSION = 4
+SERVICE_ARTIFACT_VERSION = 5
 SUPERVISOR_ENTRY_POINT = "sidekick-usages-supervisor"
 CLAUDE_LAUNCHER_OPTION = "--claude-launcher"
 CODEX_LAUNCHER_OPTION = "--codex-launcher"

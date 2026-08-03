@@ -66,12 +66,17 @@ class FakeCodexSession:
         with self._lock:
             self._config_read_count += 1
         layers: list[JsonValue] = []
+        session_source: JsonObject = {
+            "type": "user",
+            "file": str(self._codex_home / "config.toml"),
+        }
+        layers.append(self._layer(session_source, session_config))
         if self._user_config is not None:
             layers.append(
                 self._layer(
                     {
                         "type": "user",
-                        "file": str(self._codex_home / "config.toml"),
+                        "file": str(self._codex_home / "external-config.toml"),
                     },
                     self._user_config,
                 )
@@ -88,8 +93,6 @@ class FakeCodexSession:
                     self._project_config,
                 )
             )
-        session_source: JsonObject = {"type": "sessionFlags"}
-        layers.append(self._layer(session_source, session_config))
         origin: JsonObject = {
             "name": session_source,
             "version": "0.146.0",

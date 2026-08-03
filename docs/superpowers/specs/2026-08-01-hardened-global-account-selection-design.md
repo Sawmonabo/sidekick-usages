@@ -665,16 +665,25 @@ mutation. If a qualified future Codex release provides a native global
 admission/revision gate, Sidekick adopts that maintained surface and removes
 the relay rather than preserving duplicate machinery.
 
-The Codex session server receives Sidekick-owned CLI overrides at its initial
-launch. Official precedence puts CLI overrides above user/profile/project
-layers, and current official scope rules prevent project-local config from
-overriding `model_provider` or `model_providers`
-([configuration precedence][codex-config-precedence],
-[config scope][codex-config-scope]). Sidekick rejects user-supplied CLI
-overrides of the neutral home, provider, auth, base URL, wire API, or WebSocket
-keys and then supplies the complete protected provider definition. Exact
-0.146.0 tests must still prove the effective result; current documentation is
-not substituted for exact-release behavior.
+The detached Codex daemon does not inherit lifecycle-client `-c` overrides.
+Exact 0.146.0 source shows that its lifecycle backend launches only
+`app-server --listen unix://`, and resolves the executable beneath the daemon
+home at `packages/standalone/current/codex`
+([daemon launch][codex-daemon-launch],
+[managed install][codex-daemon-install]). Sidekick therefore owns two
+credential-free resources in the neutral home before daemon startup:
+
+- an owner-only `config.toml` containing the protected direct-HTTP provider;
+  and
+- a validated symlink to the provider-owned native `packages` tree.
+
+The config transaction preserves valid unrelated settings, refuses malformed
+TOML and protected-key collisions, and never projects `auth.json`. Effective
+`config/read` must attribute every protected key to the exact neutral-home
+user file. A project, alternate user file, CLI flag, or other origin that
+defines a protected key fails closed. Exact 0.146.0 tests prove the effective
+result; documentation or planned arguments are not substituted for resident
+readback.
 
 The neutral session home is the canonical interactive state/config home for
 integrated Codex sessions and contains no provider refresh token. Existing
@@ -1879,6 +1888,30 @@ flag, changes external auth, or changes account-update invalidation, seamless
 selection is disabled until requalified. Existing sessions stay alive on the
 last proven authority.
 
+### 10.10 Daemon launch and process ownership
+
+Codex 0.146.0's official PID backend starts a detached app server but service
+managers still retain descendants in the caller's cgroup. Live cutover proved
+that systemd `KillMode=mixed` kills that detached app server when the Sidekick
+supervisor restarts. It also killed the connected Codex conversation, while
+the unrelated Claude process and native Claude credentials remained intact.
+
+The Linux/WSL Sidekick unit therefore uses `KillMode=process`. The supervisor
+is the unit's main process; the official Codex daemon is deliberately not a
+supervisor-owned child for service-stop purposes. Sidekick's scheduler already
+owns and reaps its bounded workers during graceful shutdown. The official
+daemon remains alive and retains its socket, threads, terminals, and external
+auth across a supervisor replacement. Account selection never invokes service
+lifecycle commands.
+
+A disposable systemd user-service proof on the target systemd 249 host showed
+that `KillMode=process` replaced the main process while retaining the exact
+synthetic child PID in the service cgroup. The fixture processes were then
+validated by command identity and removed. The shipped service artifact pins
+this property and excludes `KillMode=mixed`. This is an explicit ownership
+contract, not reliance on daemonization escaping a cgroup
+([systemd kill semantics][systemd-kill-mode]).
+
 ## 11. Freshness, Usage, and Reconciliation
 
 ### 11.1 Selection never controls maintenance
@@ -1929,6 +1962,16 @@ Each Codex saved account retains one canonical private home. Provider account
 reads, rate limits, usage, token activity, and official refresh run against
 that exact authority. No refresh worker adopts or overwrites the user's active
 shared runtime as a side effect of maintaining an unselected account.
+
+Those homes also contain ordinary provider-owned runtime state such as SQLite
+databases, logs, caches, and subdirectories. Credential migration validates
+and updates only the exact owned `config.toml` or `auth.json` transaction. It
+preserves unrelated provider runtime entries and their modes. Whole-home
+credential-bundle validation is invalid for a provider-owned `CODEX_HOME`.
+
+A healthy, unexpired managed authority whose provider identity already matches
+the saved account refreshes and verifies in place. It does not force a browser
+login merely because the saved authority is already managed.
 
 The resident session receives only a bounded access lease after target
 validation. Durable refresh state remains in the private provider-owned home.
@@ -3422,6 +3465,9 @@ the table above and in the reference definitions at the end of this document.
 54. [In-process terminal store](https://github.com/openai/codex/blob/rust-v0.146.0/codex-rs/core/src/unified_exec/mod.rs#L133-L159)
 55. [Realtime app-server contract](https://github.com/openai/codex/blob/rust-v0.146.0/codex-rs/app-server/README.md#L178-L182)
 56. [In-process realtime conversation state](https://github.com/openai/codex/blob/rust-v0.146.0/codex-rs/core/src/realtime_conversation.rs#L448-L518)
+57. [Detached daemon app-server launch](https://github.com/openai/codex/blob/rust-v0.146.0/codex-rs/app-server-daemon/src/backend/pid.rs#L459-L480)
+58. [Daemon managed-install resolution](https://github.com/openai/codex/blob/rust-v0.146.0/codex-rs/app-server-daemon/src/managed_install.rs)
+59. [systemd process-kill ownership](https://www.freedesktop.org/software/systemd/man/latest/systemd.kill.html#KillMode=)
 
 ## 22. Design Review Checklist
 
@@ -3478,6 +3524,10 @@ The design is internally consistent only when all of these remain true:
 - Codex direct HTTP uses the current shared auth for every attempt;
 - Codex model Responses WebSockets are disabled while the TUI control
   connection stays open;
+- systemd supervisor replacement never kills the official Codex daemon;
+- neutral Codex config comes from the exact owned user file, not lifecycle
+  CLI flags;
+- provider-owned Codex runtime files never become credential-bundle members;
 - active Codex realtime remains on its admitted epoch and is never stopped by
   selection;
 - active work drains without being cancelled;
@@ -3529,6 +3579,9 @@ authority gates.
 [codex-account-processor]: https://github.com/openai/codex/blob/rust-v0.146.0/codex-rs/app-server/src/request_processors/account_processor.rs#L691-L839
 [codex-account-invalidation]: https://github.com/openai/codex/blob/rust-v0.146.0/codex-rs/app-server/src/request_processors/account_processor.rs#L211-L265
 [codex-realtime]: https://github.com/openai/codex/blob/rust-v0.146.0/codex-rs/core/src/realtime_conversation.rs#L448-L518
+[codex-daemon-launch]: https://github.com/openai/codex/blob/rust-v0.146.0/codex-rs/app-server-daemon/src/backend/pid.rs#L459-L480
+[codex-daemon-install]: https://github.com/openai/codex/blob/rust-v0.146.0/codex-rs/app-server-daemon/src/managed_install.rs
+[systemd-kill-mode]: https://www.freedesktop.org/software/systemd/man/latest/systemd.kill.html#KillMode=
 [wsl-systemd]: https://learn.microsoft.com/windows/wsl/systemd
 [wsl-about]: https://learn.microsoft.com/windows/wsl/about
 [wsl-basic]: https://learn.microsoft.com/windows/wsl/basic-commands

@@ -1,6 +1,7 @@
 """Managed Codex authority refresh and all-account maintenance tests."""
 
 import json
+import os
 from collections.abc import Mapping
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -32,7 +33,11 @@ from sidekick_usages.core.types import (
     ProviderId,
     RefreshStatus,
 )
+from sidekick_usages.credentials.codex.migration import (
+    CodexAuthMigrationCoordinator,
+)
 from sidekick_usages.credentials.codex.types import CodexManagedOutcome
+from sidekick_usages.credentials.models import CredentialLoginSuccess
 from sidekick_usages.daemon.lifecycle.readiness import SupervisorReadiness
 from sidekick_usages.daemon.types.worker import WorkerOutcome
 from sidekick_usages.daemon.worker.account import (
@@ -57,6 +62,8 @@ from sidekick_usages.persistence.supervisor.selection import SelectedStateStore
 from sidekick_usages.providers.codex.activity import ACTIVITY_URL
 from sidekick_usages.providers.codex.usage import USAGE_URL
 from sidekick_usages.serialization.json import JsonObject
+from tests.fakes.codex.app_server.executable import write_fake_codex
+from tests.fakes.codex.app_server.schema import write_codex_schema
 from tests.fakes.codex.auth import managed_auth
 from tests.fakes.codex.managed import (
     managed_coordinator,
@@ -258,7 +265,6 @@ def test_managed_codex_maintenance_continues_across_account_failure(
     assert current is not None
     assert current.fetched_at == REFERENCE_TIME
     assert current.report.windows[0].utilization == _CURRENT_USAGE
-
     requests = [
         event
         for event in (
@@ -276,6 +282,56 @@ def test_managed_codex_maintenance_continues_across_account_failure(
     assert b'"tokens"' not in persisted
     assert b"managed-refresh-" not in persisted
     assert b"managed-id-" not in persisted
+
+
+def test_managed_home_preserves_provider_runtime_state(tmp_path: Path) -> None:
+    account = managed_saved_account(
+        _MANAGED_ACCOUNT_A,
+        _MANAGED_AUTHORITY_A,
+        "codex-a",
+        "acct-managed-a",
+        _OLD_GENERATION,
+    )
+    paths, store, private = seed_managed_accounts(
+        tmp_path / "state",
+        (account,),
+        {
+            _MANAGED_ACCOUNT_A: managed_auth(
+                "acct-managed-a",
+                _NEW_GENERATION,
+            )
+        },
+    )
+    provider_state = (
+        managed_codex_home(paths, _MANAGED_ACCOUNT_A) / "state_5.sqlite"
+    )
+    expected = b"provider-owned runtime state"
+    provider_state.write_bytes(expected)
+    schema_root = tmp_path / "schema"
+    write_codex_schema(schema_root, external_auth=True)
+    write_fake_codex(tmp_path, schema_root)
+    environment = {
+        "HOME": str(tmp_path),
+        "PATH": os.pathsep.join((str(tmp_path), os.environ["PATH"])),
+    }
+    migration = CodexAuthMigrationCoordinator(
+        paths,
+        store,
+        private,
+        FixedClock(),
+        environment=environment,
+    )
+    events: list[object] = []
+
+    result = migration.migrate(
+        account.label,
+        device_auth=False,
+        events=events.append,
+    )
+
+    assert isinstance(result, CredentialLoginSuccess)
+    assert events == []
+    assert provider_state.read_bytes() == expected
 
 
 @pytest.mark.parametrize(

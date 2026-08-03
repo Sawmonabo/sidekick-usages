@@ -66,6 +66,7 @@ from sidekick_usages.providers.codex.broker.external_auth.refresh import (
 )
 from sidekick_usages.providers.codex.broker.service import CodexSharedRuntime
 from sidekick_usages.providers.codex.broker.types import CodexBrokerFailure
+from sidekick_usages.providers.codex.session.config import CodexSessionConfig
 from sidekick_usages.providers.codex.session.models import (
     CODEX_SESSION_OPERATOR_PRECONDITION,
     CodexSessionConfigurationReason,
@@ -493,6 +494,9 @@ def test_shared_codex_runtime_is_idempotent_and_rehydrates(
     os.chmod(native_auth, 0o600)
     session_home = short_socket_root / "session"
     session_home.mkdir()
+    (session_home / "config.toml").write_bytes(
+        CodexSessionConfig(session_home).prepare(None)
+    )
     write_codex_schema(schema_root, external_auth=True)
     write_fake_managed_codex(
         tmp_path,

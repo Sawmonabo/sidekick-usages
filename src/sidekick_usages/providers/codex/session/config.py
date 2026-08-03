@@ -1,5 +1,7 @@
 """Protected direct-HTTP configuration for neutral Codex sessions."""
 
+import tomllib
+from pathlib import Path
 from typing import NoReturn, Protocol
 
 from sidekick_usages.providers.codex.app_server.errors import (
@@ -32,29 +34,20 @@ from sidekick_usages.providers.codex.session.models import (
 )
 from sidekick_usages.serialization.json import JsonObject, JsonValue
 
-_PROTECTED_ARGUMENTS = (
-    "-c",
-    f'model_provider="{CODEX_SESSION_MODEL_PROVIDER}"',
-    "-c",
-    (
-        "model_providers.sidekick-chatgpt-http.name="
-        f'"{CODEX_SESSION_PROVIDER_NAME}"'
-    ),
-    "-c",
-    (
-        "model_providers.sidekick-chatgpt-http.base_url="
-        f'"{CODEX_SESSION_BASE_URL}"'
-    ),
-    "-c",
-    (
-        "model_providers.sidekick-chatgpt-http.wire_api="
-        f'"{CODEX_SESSION_WIRE_API}"'
-    ),
-    "-c",
-    ("model_providers.sidekick-chatgpt-http.requires_openai_auth=true"),
-    "-c",
-    ("model_providers.sidekick-chatgpt-http.supports_websockets=false"),
-)
+CODEX_SESSION_CONFIG_BASENAME = "config.toml"
+_PROTECTED_ROOT_CONFIG = (
+    "# Sidekick-owned account-selection transport.\n"
+    f'model_provider = "{CODEX_SESSION_MODEL_PROVIDER}"\n'
+    "\n"
+).encode()
+_PROTECTED_PROVIDER_CONFIG = (
+    "\n[model_providers.sidekick-chatgpt-http]\n"
+    f'name = "{CODEX_SESSION_PROVIDER_NAME}"\n'
+    f'base_url = "{CODEX_SESSION_BASE_URL}"\n'
+    f'wire_api = "{CODEX_SESSION_WIRE_API}"\n'
+    "requires_openai_auth = true\n"
+    "supports_websockets = false\n"
+).encode()
 _PROTECTED_RECOVERY = (
     CODEX_SESSION_OPERATOR_PRECONDITION,
     "Remove protected model-provider keys from user or project Codex "
@@ -64,6 +57,11 @@ _STALE_RECOVERY = (
     CODEX_SESSION_OPERATOR_PRECONDITION,
     "Stop the Sidekick supervisor and neutral Codex daemon, then restart "
     "Sidekick so the protected launch configuration takes effect.",
+)
+_UNSAFE_CONFIG_RECOVERY = (
+    CODEX_SESSION_OPERATOR_PRECONDITION,
+    "Restore the neutral Codex config.toml as valid owner-only TOML, then "
+    "restart Sidekick.",
 )
 
 
@@ -77,16 +75,39 @@ class CodexSessionReader(Protocol):
 class CodexSessionConfig:
     """Own the immutable provider overlay and effective readback."""
 
-    @property
-    def arguments(self) -> tuple[str, ...]:
-        """Return the exact global CLI override tuple."""
-        return _PROTECTED_ARGUMENTS
+    def __init__(self, session_home: Path) -> None:
+        if not session_home.is_absolute():
+            raise ValueError("Codex session home must be absolute.")
+        self._path = session_home / CODEX_SESSION_CONFIG_BASENAME
+
+    def prepare(self, existing: bytes | None) -> bytes:
+        """Return one canonical protected config preserving safe settings."""
+        if existing is None:
+            return _PROTECTED_ROOT_CONFIG + _PROTECTED_PROVIDER_CONFIG
+        document = _decode_config(existing)
+        if _protected_document(document):
+            _require_protected_document(document)
+            return existing
+        if _document_protected_attempt(document):
+            _configuration_required(
+                CodexSessionConfigurationReason.PROTECTED_OVERRIDE,
+                _PROTECTED_RECOVERY,
+            )
+        separator = b"" if existing.endswith(b"\n") else b"\n"
+        prepared = (
+            _PROTECTED_ROOT_CONFIG
+            + existing
+            + separator
+            + _PROTECTED_PROVIDER_CONFIG
+        )
+        _require_protected_document(_decode_config(prepared))
+        return prepared
 
     def command(self, subcommand: tuple[str, ...]) -> tuple[str, ...]:
-        """Prefix one nonempty Codex subcommand with protected overrides."""
+        """Return one nonempty daemon lifecycle subcommand unchanged."""
         if not subcommand or any(not argument for argument in subcommand):
             raise ValueError("Codex session subcommand is invalid.")
-        return (*self.arguments, *subcommand)
+        return subcommand
 
     def qualify(
         self,
@@ -104,7 +125,7 @@ class CodexSessionConfig:
             CONFIG_READ_METHOD,
             {"includeLayers": True},
         )
-        provider, definition = _effective_provider(result)
+        provider, definition = _effective_provider(result, self._path)
         name = definition.get("name")
         base_url = definition.get("base_url")
         wire_api = definition.get("wire_api")
@@ -136,7 +157,69 @@ class CodexSessionConfig:
         return capability
 
 
-def _effective_provider(result: JsonObject) -> tuple[str, JsonObject]:
+def _decode_config(payload: bytes) -> dict[str, object]:
+    try:
+        return tomllib.loads(payload.decode("utf-8"))
+    except UnicodeDecodeError, tomllib.TOMLDecodeError:
+        _configuration_required(
+            CodexSessionConfigurationReason.SESSION_CONFIG_UNSAFE,
+            _UNSAFE_CONFIG_RECOVERY,
+        )
+
+
+def _require_protected_document(document: dict[str, object]) -> None:
+    providers = _object_map(document.get("model_providers"))
+    definition = (
+        _object_map(providers.get(CODEX_SESSION_MODEL_PROVIDER))
+        if providers is not None
+        else None
+    )
+    if (
+        document.get("model_provider") != CODEX_SESSION_MODEL_PROVIDER
+        or not isinstance(definition, dict)
+        or definition.get("name") != CODEX_SESSION_PROVIDER_NAME
+        or definition.get("base_url") != CODEX_SESSION_BASE_URL
+        or definition.get("wire_api") != CODEX_SESSION_WIRE_API
+        or definition.get("requires_openai_auth") is not True
+        or definition.get("supports_websockets") is not False
+    ):
+        _configuration_required(
+            CodexSessionConfigurationReason.PROTECTED_OVERRIDE,
+            _PROTECTED_RECOVERY,
+        )
+
+
+def _protected_document(document: dict[str, object]) -> bool:
+    providers = _object_map(document.get("model_providers"))
+    return document.get("model_provider") == CODEX_SESSION_MODEL_PROVIDER and (
+        providers is not None and CODEX_SESSION_MODEL_PROVIDER in providers
+    )
+
+
+def _document_protected_attempt(document: dict[str, object]) -> bool:
+    if "model_provider" in document:
+        return True
+    providers = _object_map(document.get("model_providers"))
+    return providers is not None and (
+        CODEX_SESSION_MODEL_PROVIDER in providers
+    )
+
+
+def _object_map(value: object) -> dict[str, object] | None:
+    if not isinstance(value, dict):
+        return None
+    normalized: dict[str, object] = {}
+    for name, item in value.items():
+        if not isinstance(name, str):
+            return None
+        normalized[name] = item
+    return normalized
+
+
+def _effective_provider(
+    result: JsonObject,
+    config_path: Path,
+) -> tuple[str, JsonObject]:
     if set(result) != {"config", "layers", "origins"}:
         _malformed()
     config = result.get("config")
@@ -151,10 +234,10 @@ def _effective_provider(result: JsonObject) -> tuple[str, JsonObject]:
     provider = config.get("model_provider")
     if not isinstance(provider, str):
         _malformed()
-    session_flags = _session_flag_config(layers)
-    _validate_origins(origins)
-    providers = session_flags.get("model_providers")
-    if session_flags.get("model_provider") != provider or not isinstance(
+    protected = _protected_layer_config(layers, config_path)
+    _validate_origins(origins, config_path)
+    providers = protected.get("model_providers")
+    if protected.get("model_provider") != provider or not isinstance(
         providers,
         dict,
     ):
@@ -165,38 +248,44 @@ def _effective_provider(result: JsonObject) -> tuple[str, JsonObject]:
     return provider, definition
 
 
-def _session_flag_config(layers: list[JsonValue]) -> JsonObject:
-    """Return the single typed session-flags layer."""
-    session_flags: JsonObject | None = None
+def _protected_layer_config(
+    layers: list[JsonValue],
+    config_path: Path,
+) -> JsonObject:
+    """Return the exact neutral-home user layer."""
+    protected: JsonObject | None = None
     for layer in layers:
         source, layer_config = _config_layer(layer)
-        source_type = source.get("type")
-        if source_type in {"user", "project"} and _protected_attempt(
-            layer_config
-        ):
+        if _canonical_user_source(source, config_path):
+            if protected is not None:
+                _malformed()
+            protected = layer_config
+        elif _protected_attempt(layer_config):
             _configuration_required(
                 CodexSessionConfigurationReason.PROTECTED_OVERRIDE,
                 _PROTECTED_RECOVERY,
             )
-        if source_type == "sessionFlags":
-            if session_flags is not None:
-                _malformed()
-            session_flags = layer_config
-    if session_flags is None:
+    if protected is None:
         _malformed()
-    return session_flags
+    return protected
 
 
-def _validate_origins(origins: JsonObject) -> None:
-    """Require the effective provider to originate in session flags."""
+def _validate_origins(origins: JsonObject, config_path: Path) -> None:
+    """Require the effective provider to originate in the neutral home."""
     for metadata in origins.values():
         _config_metadata(metadata)
     origin = origins.get("model_provider")
-    if (
-        not isinstance(origin, dict)
-        or _config_metadata(origin).get("type") != "sessionFlags"
+    if not isinstance(origin, dict) or not _canonical_user_source(
+        _config_metadata(origin),
+        config_path,
     ):
         _malformed()
+
+
+def _canonical_user_source(source: JsonObject, config_path: Path) -> bool:
+    return source.get("type") == "user" and source.get("file") == str(
+        config_path
+    )
 
 
 def _config_layer(value: JsonValue) -> tuple[JsonObject, JsonObject]:

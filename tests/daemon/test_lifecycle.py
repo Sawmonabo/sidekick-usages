@@ -596,6 +596,8 @@ def test_service_artifacts_are_user_scoped_resident_and_secret_free(
 
     if backend_id is ServiceBackendId.SYSTEMD:
         assert "Restart=on-failure" in artifact_text
+        assert "KillMode=process" in artifact_text
+        assert "KillMode=mixed" not in artifact_text
         assert "WantedBy=default.target" in artifact_text
         assert (
             not _service_artifact(

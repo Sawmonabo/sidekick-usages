@@ -223,6 +223,7 @@ def write_fake_codex(
             import signal
             import sys
             import time
+            import tomllib
             from pathlib import Path
 
             SCHEMA_ROOT = Path({json.dumps(str(schema_root))})
@@ -257,7 +258,7 @@ def write_fake_codex(
                 auth_path.write_text(payload, encoding="utf-8")
                 os.chmod(auth_path, 0o600)
 
-            def daemon_lifecycle(operation, session_config):
+            def daemon_lifecycle(operation):
                 configured = json.loads(
                     DAEMON_CONFIG_FILE.read_text(encoding="utf-8")
                 )
@@ -289,6 +290,8 @@ def write_fake_codex(
                     status = "running"
                 if status == "started" or operation == "restart":
                     home = Path(os.environ["CODEX_HOME"])
+                    with (home / "config.toml").open("rb") as stream:
+                        session_config = tomllib.load(stream)
                     (home / SESSION_CONFIG_FILE).write_text(
                         json.dumps(session_config),
                         encoding="utf-8",
@@ -312,21 +315,6 @@ def write_fake_codex(
                     response["pid"] = configured["pid"]
                 print(json.dumps(response))
 
-            def command_and_config(arguments):
-                config = {{}}
-                index = 0
-                while index < len(arguments) and arguments[index] == "-c":
-                    assignment = arguments[index + 1]
-                    key, value = assignment.split("=", 1)
-                    parsed = json.loads(value)
-                    target = config
-                    components = key.split(".")
-                    for component in components[:-1]:
-                        target = target.setdefault(component, {{}})
-                    target[components[-1]] = parsed
-                    index += 2
-                return arguments[index:], config
-
             event = {{
                 "argv": sys.argv[1:],
                 "codex_home": os.environ.get("CODEX_HOME"),
@@ -347,15 +335,15 @@ def write_fake_codex(
                 output = Path(sys.argv[5])
                 shutil.copytree(SCHEMA_ROOT, output, dirs_exist_ok=True)
                 raise SystemExit
-            command, session_config = command_and_config(sys.argv[1:])
+            command = sys.argv[1:]
             if command == ["app-server", "daemon", "start"]:
-                daemon_lifecycle("start", session_config)
+                daemon_lifecycle("start")
                 raise SystemExit
             if command == ["app-server", "daemon", "restart"]:
-                daemon_lifecycle("restart", session_config)
+                daemon_lifecycle("restart")
                 raise SystemExit
             if command == ["app-server", "daemon", "version"]:
-                daemon_lifecycle("version", session_config)
+                daemon_lifecycle("version")
                 raise SystemExit
             if sys.argv[1:] != ["app-server"]:
                 raise SystemExit(2)

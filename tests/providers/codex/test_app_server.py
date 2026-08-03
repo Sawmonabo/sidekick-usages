@@ -49,6 +49,7 @@ from sidekick_usages.providers.codex.broker.daemon import CodexDaemonManager
 from sidekick_usages.providers.codex.broker.errors import CodexBrokerError
 from sidekick_usages.providers.codex.broker.service import CodexSharedRuntime
 from sidekick_usages.providers.codex.broker.types import CodexBrokerFailure
+from sidekick_usages.providers.codex.session.config import CodexSessionConfig
 from sidekick_usages.providers.codex.session.models import (
     CODEX_SESSION_OPERATOR_PRECONDITION,
     CodexRelayAdmission,
@@ -562,6 +563,9 @@ def _prepare_shared_runtime(
     environment: dict[str, str],
     expected_user_id: int | None,
 ) -> CodexSharedRuntime:
+    (native_home / "config.toml").write_bytes(
+        CodexSessionConfig(native_home).prepare(None)
+    )
     runtime = CodexSharedRuntime.create(
         executable,
         native_home,
@@ -777,7 +781,10 @@ def test_neutral_runtime_requires_current_auth_without_model_websockets(
     session_home.mkdir()
     session_settings = session_home / "config.toml"
     unrelated_settings = b'model = "gpt-test"\n'
-    session_settings.write_bytes(unrelated_settings)
+    expected_settings = CodexSessionConfig(session_home).prepare(
+        unrelated_settings
+    )
+    session_settings.write_bytes(expected_settings)
     write_codex_schema(schema_root, external_auth=True)
     write_fake_managed_codex(
         tmp_path,
@@ -839,7 +846,7 @@ def test_neutral_runtime_requires_current_auth_without_model_websockets(
             assert (
                 report.operator_steps[0] == CODEX_SESSION_OPERATOR_PRECONDITION
             )
-            assert session_settings.read_bytes() == unrelated_settings
+            assert session_settings.read_bytes() == expected_settings
             assert not (runtime.codex_home / "auth.json").exists()
             runtime.close()
             return
@@ -867,7 +874,7 @@ def test_neutral_runtime_requires_current_auth_without_model_websockets(
         assert capability.supported is case.supported
         if case.supported:
             _prove_synthetic_current_auth_http(capability, daemon)
-        assert session_settings.read_bytes() == unrelated_settings
+        assert session_settings.read_bytes() == expected_settings
         assert not (runtime.codex_home / "auth.json").exists()
         runtime.close()
 

@@ -30,9 +30,11 @@ class CodexSessionConfigurationReason(StrEnum):
 
     HOME_UNSAFE = "home_unsafe"
     CREDENTIAL_STATE_PRESENT = "credential_state_present"
+    MANAGED_INSTALL_UNAVAILABLE = "managed_install_unavailable"
     PRIVATE_AUTHORITY_COLLISION = "private_authority_collision"
     PROTECTED_OVERRIDE = "protected_override"
     RESIDENT_CONFIG_STALE = "resident_config_stale"
+    SESSION_CONFIG_UNSAFE = "session_config_unsafe"
 
 
 class CodexRelayAdmissionState(StrEnum):

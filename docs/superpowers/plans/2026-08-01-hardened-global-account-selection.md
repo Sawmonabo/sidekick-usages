@@ -92,6 +92,10 @@ systemd user services, LaunchAgents, Bash, Zsh, and Fish.
   app server, current external auth, and the direct ChatGPT Codex Responses
   provider with model WebSockets disabled. The TUI control connection stays
   open.
+- The Linux/WSL supervisor unit uses `KillMode=process`. Sidekick reaps its
+  bounded workers, while the official detached Codex daemon survives a
+  supervisor replacement. `KillMode=mixed` is prohibited because live cutover
+  proved that it kills the daemon and connected conversation.
 - Preserve all-account maintenance independently of selection. Selected and
   unselected refreshable accounts remain fresh and reportable; setup tokens
   remain usage-capable but are never called refreshable.
@@ -1790,6 +1794,7 @@ git commit -m "feat(claude): add disabled protected selection plane"
 - Create: `src/sidekick_usages/providers/codex/session/__init__.py`
 - Create: `src/sidekick_usages/providers/codex/session/models.py`
 - Create: `src/sidekick_usages/providers/codex/session/config.py`
+- Create: `src/sidekick_usages/providers/codex/session/home.py`
 - Modify: `src/sidekick_usages/providers/codex/app_server/models.py`
 - Modify: `src/sidekick_usages/providers/codex/app_server/capabilities.py`
 - Modify: `src/sidekick_usages/providers/codex/app_server/methods.py`
@@ -1797,6 +1802,7 @@ git commit -m "feat(claude): add disabled protected selection plane"
 - Modify: `src/sidekick_usages/providers/codex/broker/service.py`
 - Modify: `src/sidekick_usages/entrypoints/supervisor.py`
 - Modify: `src/sidekick_usages/paths.py`
+- Modify: `src/sidekick_usages/persistence/private/credentials.py`
 - Modify: `tests/fakes/codex/app_server/daemon.py`
 - Modify: `tests/fakes/codex/app_server/schema.py`
 - Modify: `tests/fakes/codex/broker/runtime.py`
@@ -1837,24 +1843,30 @@ uv run pytest tests/providers/codex/test_app_server.py \
   tests/credentials/codex/test_broker.py -q
 ```
 
-- [ ] **Step 3: Build one protected provider overlay.**
+- [ ] **Step 3: Build one protected neutral-home configuration.**
 
-The app-server process receives these global CLI overrides before its
-subcommand, with exact TOML values:
+Exact Codex 0.146.0 source proves that the daemon lifecycle client does not
+forward `-c` overrides to the detached app server. Before daemon startup,
+atomically prepare owner-only neutral-home `config.toml` with these exact TOML
+values:
 
 ```text
--c model_provider="sidekick-chatgpt-http"
--c model_providers.sidekick-chatgpt-http.name="OpenAI"
--c model_providers.sidekick-chatgpt-http.base_url=
-   "https://chatgpt.com/backend-api/codex"
--c model_providers.sidekick-chatgpt-http.wire_api="responses"
--c model_providers.sidekick-chatgpt-http.requires_openai_auth=true
--c model_providers.sidekick-chatgpt-http.supports_websockets=false
+model_provider = "sidekick-chatgpt-http"
+
+[model_providers.sidekick-chatgpt-http]
+name = "OpenAI"
+base_url = "https://chatgpt.com/backend-api/codex"
+wire_api = "responses"
+requires_openai_auth = true
+supports_websockets = false
 ```
 
-`CodexSessionConfig` returns the exact argument tuple and rejects user/project
-attempts to override these keys. Preserve unrelated user settings. The neutral
-home contains no refresh token and is not any account's private authority home.
+`CodexSessionConfig` preserves valid unrelated settings and rejects malformed
+TOML or protected-key collisions. Project or alternate-user origins cannot
+override these keys. Project the validated provider-owned native `packages`
+tree into the neutral home because the official daemon resolves only
+`packages/standalone/current/codex`; never project `auth.json`. The neutral
+home is not any account's private authority home.
 
 - [ ] **Step 4: Extend the exact 0.146.0 schema probe.**
 
@@ -2331,9 +2343,11 @@ metadata only; any credential match blocks cutover.
 On copied synthetic fixtures shaped like the current machine, prove four
 Claude IDs and two Codex IDs/private-home relations survive, order remains,
 selected state points only to a saved ID, panel counts remain four and two,
-and no authority file content or mode changes. Rehearse Sidekick schema
-rollback
-before provider-live work; never roll provider credentials backward.
+and no unrelated authority file content or mode changes. Seed ordinary Codex
+provider runtime files in each private home and prove exact config/auth
+transactions preserve them. An identity-matching healthy managed authority
+must verify without browser login. Rehearse Sidekick schema rollback before
+provider-live work; never roll provider credentials backward.
 
 - [ ] **Step 7: Commit the release gate before live qualification.**
 
@@ -2366,11 +2380,13 @@ restart, reconnect, proxy, timer, or credential-copy fallback.
 
 First export a wheel/install manifest and Sidekick-only schema backup with
 owner-only permissions. Install the exact qualified wheel, run the CLI
-migration, verify four Claude and two Codex saved accounts plus usage
-reporting,
-restart only the Sidekick supervisor for the release deployment, and leave all
-provider sessions running. Shell enrollment remains a separate explicit
-`session shell install`; it is not silently applied by package migration.
+migration, and verify four Claude and two Codex saved accounts plus usage
+reporting. Before replacing the supervisor, prove every provider client and
+the official Codex daemon are outside its service cgroup. Publish the
+`KillMode=process` unit, replace only the supervisor, then prove the same
+provider PIDs, sockets, and native Claude metadata survived. Never perform the
+replacement with an unresolved ownership topology. Shell enrollment remains a
+separate explicit `session shell install`; package migration does not apply it.
 
 Do not assume the old binary can read the new schema after migration. Before
 migration, executable rollback keeps the old installation. After migration,

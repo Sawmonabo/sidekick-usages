@@ -108,7 +108,7 @@ class CodexDaemonManager:
             raise CodexBrokerError(CodexBrokerFailure.INSTALLATION_UNSUPPORTED)
         self._capabilities = capabilities
         self._codex_home = resolved_home
-        self._session_config = CodexSessionConfig()
+        self._session_config = CodexSessionConfig(self._codex_home)
         self._environment = None if environment is None else dict(environment)
         self._expected_user_id = (
             os.geteuid() if expected_user_id is None else expected_user_id

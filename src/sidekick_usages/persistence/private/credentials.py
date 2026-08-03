@@ -525,6 +525,31 @@ class PrivateCredentialTree:
             expected_source=expected_source,
         )
 
+    def update_owned_file(
+        self,
+        directory: Path,
+        basename: str,
+        update: Callable[[bytes | None], bytes],
+    ) -> FileSnapshot:
+        """Transform and atomically commit one exact owned file."""
+        self._require_owned_directory(directory)
+        require_safe_basename(basename)
+        self._ensure_owned_directory(directory)
+        filesystem = self._filesystem_factory(directory / basename)
+        current = filesystem.read_opaque_private()
+        expected = (
+            AuthorityExpectation.ABSENT
+            if current is None
+            else current.fingerprint
+        )
+        payload = update(None if current is None else current.data)
+        if current is not None and payload == current.data:
+            return current
+        return filesystem.commit_opaque_private(
+            payload,
+            expected_source=expected,
+        )
+
     def ensure_owned_directory(self, directory: Path) -> None:
         """Create or validate one qualified directory below the root."""
         self._require_owned_directory(directory)

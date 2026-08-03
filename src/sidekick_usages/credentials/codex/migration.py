@@ -222,7 +222,6 @@ class CodexAuthMigrationCoordinator:
     ) -> CodexAuthSnapshot | ProviderFailure:
         existing = home.snapshot(account.account_id)
         login_required = _login_required(
-            account,
             existing,
             expected.provider_identity,
         )
@@ -370,7 +369,6 @@ class CodexAuthMigrationCoordinator:
 
 
 def _login_required(
-    account: SavedAccount,
     existing: CodexAuthSnapshot | ProviderFailure,
     expected_identity: ProviderIdentity,
 ) -> bool | ProviderFailure:
@@ -380,10 +378,7 @@ def _login_required(
         return existing
     if existing.provider_identity != expected_identity:
         return _identity_failure()
-    return isinstance(
-        account.authority.subscription,
-        CodexManagedAuthority,
-    )
+    return False
 
 
 def _verified_snapshot(
