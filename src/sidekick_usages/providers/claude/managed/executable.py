@@ -1,5 +1,6 @@
 """Exact managed Claude executable discovery."""
 
+import hashlib
 import os
 import re
 from collections.abc import Callable, Mapping
@@ -11,6 +12,7 @@ from sidekick_usages.platform.executable import (
     resolve_executable_launcher,
     verify_executable_launcher,
 )
+from sidekick_usages.platform.models import ExecutableProvenance
 from sidekick_usages.platform.types import ExecutableFailure
 from sidekick_usages.providers.claude.errors import ClaudeProcessError
 from sidekick_usages.providers.claude.managed.errors import (
@@ -37,6 +39,8 @@ _VERSION_PATTERN = re.compile(
     r"(?P<major>\d+)\.(?P<minor>\d+)\.(?P<patch>\d+) "
     r"\(Claude Code\)"
 )
+_ARTIFACT_READ_BYTES = 1024 * 1024
+_MAXIMUM_ARTIFACT_MARKER_BYTES = 256
 
 
 def discover_claude_executable(
@@ -124,6 +128,52 @@ def verify_claude_executable(executable: ClaudeExecutable) -> None:
         raise ClaudeManagedError(
             ClaudeManagedFailure.EXECUTABLE_UNSAFE
         ) from None
+
+
+def inspect_claude_executable_artifact(
+    executable: ClaudeExecutable,
+    markers: tuple[bytes, ...],
+) -> tuple[str, frozenset[bytes]]:
+    """Hash one frozen executable and locate bounded build markers."""
+    if (
+        not markers
+        or len(markers) != len(set(markers))
+        or any(
+            not marker or len(marker) > _MAXIMUM_ARTIFACT_MARKER_BYTES
+            for marker in markers
+        )
+    ):
+        raise ValueError("Claude executable markers are invalid.")
+    verify_claude_executable(executable)
+    digest = hashlib.sha256()
+    found: set[bytes] = set()
+    overlap = max(len(marker) for marker in markers) - 1
+    tail = b""
+    try:
+        with executable.provenance.path.open("rb") as stream:
+            initial = ExecutableProvenance.from_stat(
+                executable.provenance.path,
+                os.fstat(stream.fileno()),
+            )
+            if initial != executable.provenance:
+                raise OSError
+            while chunk := stream.read(_ARTIFACT_READ_BYTES):
+                digest.update(chunk)
+                window = tail + chunk
+                found.update(marker for marker in markers if marker in window)
+                tail = window[-overlap:] if overlap else b""
+            final = ExecutableProvenance.from_stat(
+                executable.provenance.path,
+                os.fstat(stream.fileno()),
+            )
+            if final != initial:
+                raise OSError
+    except OSError:
+        raise ClaudeManagedError(
+            ClaudeManagedFailure.EXECUTABLE_UNSAFE
+        ) from None
+    verify_claude_executable(executable)
+    return digest.hexdigest(), frozenset(found)
 
 
 def _parse_version(payload: bytes) -> ClaudeVersion:

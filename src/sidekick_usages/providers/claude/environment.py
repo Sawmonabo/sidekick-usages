@@ -21,10 +21,13 @@ from sidekick_usages.providers.claude.types import (
 CLAUDE_CONFIG_DIR_ENVIRONMENT_KEY = "CLAUDE_CONFIG_DIR"
 CLAUDE_OAUTH_PROVISIONING_ENVIRONMENT_KEY = "CLAUDE_CODE_OAUTH_REFRESH_TOKEN"
 CLAUDE_REFRESH_SCOPES_ENVIRONMENT_KEY = "CLAUDE_CODE_OAUTH_SCOPES"
+CLAUDE_SUBPROCESS_ENV_SCRUB_ENVIRONMENT_KEY = (
+    "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB"
+)
 CLAUDE_SECURE_STORAGE_CONFIG_DIR_ENVIRONMENT_KEY = (
     "CLAUDE_SECURESTORAGE_CONFIG_DIR"
 )
-_MAXIMUM_ENVIRONMENT_VALUE_BYTES = 16 * 1024
+MAXIMUM_CLAUDE_ENVIRONMENT_VALUE_BYTES = 16 * 1024
 _WINDOWS_PROCESS_ENVIRONMENT_KEYS = frozenset(
     {
         "APPDATA",
@@ -40,6 +43,16 @@ _WINDOWS_PROCESS_ENVIRONMENT_KEYS = frozenset(
 )
 _CLAUDE_SAFE_ENVIRONMENT_KEYS = (
     SAFE_PROVIDER_ENVIRONMENT_KEYS | _WINDOWS_PROCESS_ENVIRONMENT_KEYS
+)
+_CLAUDE_STRUCTURED_AUTHORITY_CONFLICT_KEYS = frozenset(
+    {
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "CLAUDE_CODE_SESSION_ACCESS_TOKEN",
+        CLAUDE_OAUTH_PROVISIONING_ENVIRONMENT_KEY,
+        CLAUDE_REFRESH_SCOPES_ENVIRONMENT_KEY,
+    }
 )
 
 
@@ -95,6 +108,22 @@ def claude_profile_environment(
             config_directory=profile.config_directory,
         )
     raise ClaudeProcessError(ClaudeProcessFailure.PROCESS_UNSAFE)
+
+
+def claude_structured_environment(
+    source_environment: Mapping[str, str] | None,
+    profile: ClaudeProfile,
+) -> dict[str, str]:
+    """Build one scrubbed structured host environment without authority."""
+    source = os.environ if source_environment is None else source_environment
+    if any(
+        source.get(key) for key in _CLAUDE_STRUCTURED_AUTHORITY_CONFLICT_KEYS
+    ):
+        raise ClaudeProcessError(ClaudeProcessFailure.PROCESS_UNSAFE)
+    environment = claude_profile_environment(source, profile)
+    environment[CLAUDE_SUBPROCESS_ENV_SCRUB_ENVIRONMENT_KEY] = "1"
+    _validate_environment(environment)
+    return environment
 
 
 def claude_private_refresh_environment(
@@ -243,5 +272,8 @@ def _validate_environment(environment: Mapping[str, str]) -> None:
             raise ClaudeProcessError(
                 ClaudeProcessFailure.PROCESS_UNSAFE
             ) from None
-        if "\0" in value or len(encoded) > _MAXIMUM_ENVIRONMENT_VALUE_BYTES:
+        if (
+            "\0" in value
+            or len(encoded) > MAXIMUM_CLAUDE_ENVIRONMENT_VALUE_BYTES
+        ):
             raise ClaudeProcessError(ClaudeProcessFailure.PROCESS_UNSAFE)

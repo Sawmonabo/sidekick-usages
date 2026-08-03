@@ -71,11 +71,25 @@ from sidekick_usages.providers.claude.managed.types import (
 from sidekick_usages.providers.claude.models import (
     ClaudeCommandResult,
 )
+from sidekick_usages.providers.claude.structured.models import (
+    ClaudeStructuredActivityKind,
+    ClaudeStructuredAdoptionReceipt,
+    ClaudeStructuredCapability,
+    ClaudeStructuredError,
+)
+from sidekick_usages.providers.claude.structured.process import (
+    CLAUDE_STRUCTURED_EMBEDDED_BUILD_TIME,
+    CLAUDE_STRUCTURED_EMBEDDED_GIT_SHA,
+    qualify_claude_structured_capability,
+)
 from tests.fakes.claude.managed import (
     CLAUDE_LOGGED_OUT_STATUS,
     CLAUDE_LOGIN_HELP_OUTPUT,
     CLAUDE_VERSION_OUTPUT,
     ClaudeRunner,
+    ClaudeStructuredEngineFake,
+    StructuredCapabilityMutation,
+    StructuredResponseCase,
     claude_auth_status_payload,
     claude_auth_status_result,
     claude_capabilities,
@@ -84,6 +98,8 @@ from tests.fakes.claude.managed import (
     managed_profile,
     native_profile,
     profile_tree,
+    structured_capability_fixture,
+    structured_session_fixture,
 )
 from tests.support.persistence import make_application_paths
 from tests.support.time import REFERENCE_TIME
@@ -741,3 +757,124 @@ def test_file_profile_readback_is_exact_identity_bound_and_fail_closed(
         runner,
         monkeypatch,
     )
+
+
+@pytest.mark.parametrize(
+    "response_case",
+    tuple(StructuredResponseCase),
+)
+def test_structured_session_updates_oauth_only_at_an_idle_turn_boundary(
+    response_case: StructuredResponseCase,
+) -> None:
+    fixture = structured_session_fixture(response_case)
+    session = fixture.session
+    engine = fixture.engine
+    process_id = session.process_id
+    binding_b = fixture.binding_b
+    binding_c = fixture.binding_c
+
+    session.prepare_target(binding_b)
+    ready_b = session.update_oauth(fixture.oauth_b)
+    assert ready_b.binding == binding_b
+    assert session.process_id == process_id
+
+    session.begin_turn(fixture.turn_id, binding_b)
+    session.prepare_target(binding_c)
+    with pytest.raises(ClaudeStructuredError):
+        session.update_oauth(fixture.oauth_c)
+    session.end_turn(fixture.turn_id)
+    for kind in ClaudeStructuredActivityKind:
+        activity_id = f"synthetic-{kind.value}"
+        session.begin_activity(kind, activity_id)
+        with pytest.raises(ClaudeStructuredError):
+            session.update_oauth(fixture.oauth_c)
+        session.end_activity(kind, activity_id)
+
+    if response_case is StructuredResponseCase.SUCCESS:
+        ready_c = session.update_oauth(fixture.oauth_c)
+        observed_receipts: list[ClaudeStructuredAdoptionReceipt] = []
+
+        def transmit(receipt: ClaudeStructuredAdoptionReceipt) -> None:
+            observed_receipts.append(receipt)
+            engine.transmit_turn(ready_c.binding.epoch.value)
+
+        adoption = session.route_turn(fixture.turn_id, binding_c, transmit)
+        session.end_turn(fixture.turn_id)
+        assert ready_c.binding == binding_c
+        assert observed_receipts == [adoption]
+        assert engine.events == [("adoption", "9"), ("prompt", "9")]
+    else:
+        with pytest.raises(ClaudeStructuredError) as failure:
+            session.update_oauth(fixture.oauth_c)
+        assert session.binding == binding_b
+        assert fixture.oauth_c not in repr(failure.value)
+
+    assert all(request.exact_envelope for request in engine.requests)
+    assert all(request.expected_oauth for request in engine.requests)
+    assert all(
+        request.variable_names == ("CLAUDE_CODE_OAUTH_TOKEN",)
+        for request in engine.requests
+    )
+    assert all(not any(buffer) for buffer in engine.cleared_request_buffers)
+    for candidate in (session, ready_b, engine):
+        representation = repr(candidate)
+        assert fixture.oauth_b not in representation
+        assert fixture.oauth_c not in representation
+    assert session.process_id == process_id
+
+
+@pytest.mark.parametrize("mutation", [None, *StructuredCapabilityMutation])
+def test_structured_capability_requires_the_exact_no_network_probe(
+    mutation: StructuredCapabilityMutation | None,
+    tmp_path: Path,
+) -> None:
+    fixture = structured_capability_fixture(tmp_path, mutation)
+    executable = fixture.executable
+    running_engine = ClaudeStructuredEngineFake((), (), process_id=6262)
+    running_process_id = running_engine.process_id
+
+    def qualify() -> ClaudeStructuredCapability:
+        return qualify_claude_structured_capability(
+            executable,
+            fixture.host,
+            fixture.environment,
+            working_directory=fixture.working_directory,
+            engine_factory=fixture.factory,
+            artifact_reader=fixture.inspect_artifact,
+        )
+
+    if mutation is None:
+        capability = qualify()
+        assert (
+            capability.executable,
+            capability.variable_allowlist,
+            capability.embedded_build_time,
+            capability.embedded_git_sha,
+        ) == (
+            executable,
+            (
+                "CLAUDE_CODE_SESSION_ACCESS_TOKEN",
+                "CLAUDE_CODE_OAUTH_TOKEN",
+            ),
+            CLAUDE_STRUCTURED_EMBEDDED_BUILD_TIME,
+            CLAUDE_STRUCTURED_EMBEDDED_GIT_SHA,
+        )
+        assert len(fixture.factory.engines) == 1
+        probe = fixture.factory.engines[0]
+        assert [request.variable_names for request in probe.requests] == [
+            ("CLAUDE_CODE_OAUTH_TOKEN",),
+            ("CLAUDE_CODE_OAUTH_TOKEN",),
+        ]
+        assert all(request.exact_envelope for request in probe.requests)
+        assert all(request.expected_oauth for request in probe.requests)
+        assert probe.user_turn_count == 0
+        assert probe.input_closed
+        assert fixture.factory.environments == [fixture.environment]
+    else:
+        with pytest.raises(ClaudeStructuredError):
+            qualify()
+
+    assert running_engine.process_id == running_process_id
+    assert running_engine.requests == []
+    assert running_engine.user_turn_count == 0
+    assert not running_engine.input_closed

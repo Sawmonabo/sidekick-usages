@@ -4,16 +4,22 @@ import json
 import os
 import sys
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from datetime import datetime
+from enum import StrEnum
 from pathlib import Path
 
 import pytest
 
 import sidekick_usages.platform.executable
 from sidekick_usages.core.accounts.types import (
+    OperationId,
     ProviderIdentity,
+    RequestId,
     SidekickAccountId,
 )
+from sidekick_usages.core.selection.models import SelectionEpoch
+from sidekick_usages.core.selection.types import TurnId
 from sidekick_usages.paths import (
     ApplicationPaths,
     managed_claude_config_dir,
@@ -22,12 +28,19 @@ from sidekick_usages.persistence.private.credentials import (
     PrivateCredentialTree,
 )
 from sidekick_usages.platform.models import ExecutableProvenance
+from sidekick_usages.platform.types import HostPlatform
+from sidekick_usages.providers.claude.auth.generation import (
+    claude_access_token_generation,
+)
 from sidekick_usages.providers.claude.auth.login.models import ClaudeAuthStatus
 from sidekick_usages.providers.claude.auth.login.service import (
     claude_status_association_key,
 )
 from sidekick_usages.providers.claude.auth.storage.service import (
     CLAUDE_CREDENTIAL_FILE,
+)
+from sidekick_usages.providers.claude.environment import (
+    claude_structured_environment,
 )
 from sidekick_usages.providers.claude.errors import ClaudeProcessError
 from sidekick_usages.providers.claude.managed.executable import (
@@ -42,10 +55,29 @@ from sidekick_usages.providers.claude.models import (
     ClaudeExecutable,
     ClaudeManagedProfile,
     ClaudeNativeProfile,
+    ClaudeVersion,
+)
+from sidekick_usages.providers.claude.structured.models import (
+    ClaudeStructuredBinding,
+    ClaudeStructuredError,
+    ClaudeStructuredFailure,
+)
+from sidekick_usages.providers.claude.structured.process import (
+    CLAUDE_STRUCTURED_ARTIFACT_SHA256,
+    CLAUDE_STRUCTURED_ARTIFACT_SIZE,
+    CLAUDE_STRUCTURED_PROBE_CANARY,
+)
+from sidekick_usages.providers.claude.structured.session import (
+    ClaudeStructuredSession,
 )
 from sidekick_usages.providers.claude.types import (
     ClaudeProcessFailure,
     ClaudeProfile,
+)
+from sidekick_usages.serialization.json import (
+    JsonObject,
+    decode_json_object,
+    encode_compact_json,
 )
 
 type ClaudeCommandScript = Callable[
@@ -74,6 +106,391 @@ CLAUDE_VERSION_OUTPUT = b"2.1.220 (Claude Code)\n"
 _PRIVATE_DIRECTORY_MODE = 0o700
 _PRIVATE_FILE_MODE = 0o600
 _NANOSECONDS_PER_MILLISECOND = 1_000_000
+
+
+class StructuredResponseCase(StrEnum):
+    """Synthetic structured-engine response behaviors."""
+
+    SUCCESS = "success"
+    WRONG_REQUEST = "wrong_request"
+    REPLAY = "replay"
+    OVERSIZE = "oversize"
+    MALFORMED_UTF8 = "malformed_utf8"
+    MULTIPLE_JSON = "multiple_json"
+    TIMEOUT = "timeout"
+    EOF = "eof"
+    PROCESS_ERROR = "process_error"
+    ERROR_RESPONSE = "error_response"
+    EXTRA_FIELDS = "extra_fields"
+
+
+@dataclass(frozen=True, slots=True)
+class StructuredRequestObservation:
+    """Secret-free observation of one synthetic control request."""
+
+    request_id: str
+    variable_names: tuple[str, ...]
+    exact_envelope: bool
+    expected_oauth: bool
+
+
+class ClaudeStructuredEngineFake:
+    """Record secret-free structured behavior for one stable fake PID."""
+
+    def __init__(
+        self,
+        responses: tuple[StructuredResponseCase, ...],
+        expected_oauth_values: tuple[str | int, ...],
+        *,
+        process_id: int = 4242,
+    ) -> None:
+        self._responses = list(responses)
+        self._expected_oauth_values = list(expected_oauth_values)
+        self._first_request_id: str | None = None
+        self.process_id = process_id
+        self.requests: list[StructuredRequestObservation] = []
+        self.cleared_request_buffers: list[bytearray] = []
+        self.events: list[tuple[str, str]] = []
+        self.user_turn_count = 0
+        self.input_closed = False
+
+    def exchange(
+        self,
+        request: bytearray,
+        timeout_seconds: float,
+    ) -> bytes:
+        """Return one scripted response without retaining OAuth bytes."""
+        del timeout_seconds
+        root = decode_json_object(request[:-1])
+        request_id = self._request_id(root)
+        variables = self._variables(root)
+        oauth = variables.get("CLAUDE_CODE_OAUTH_TOKEN")
+        expected_oauth = self._expected_oauth_values.pop(0)
+        self.requests.append(
+            StructuredRequestObservation(
+                request_id=request_id,
+                variable_names=tuple(sorted(variables)),
+                exact_envelope=(
+                    set(root) == {"request_id", "type", "variables"}
+                    and root.get("type") == "update_environment_variables"
+                    and request[-1:] == b"\n"
+                    and request[:-1] == encode_compact_json(root)
+                ),
+                expected_oauth=oauth == expected_oauth,
+            )
+        )
+        self.cleared_request_buffers.append(request)
+        if self._first_request_id is None:
+            self._first_request_id = request_id
+        response_case = self._responses.pop(0)
+        return self._response(response_case, request_id)
+
+    def transmit_turn(self, receipt_epoch: int) -> None:
+        """Record that adoption existed before one real prompt."""
+        self.events.append(("adoption", str(receipt_epoch)))
+        self.user_turn_count += 1
+        self.events.append(("prompt", str(receipt_epoch)))
+
+    def close_input(self) -> None:
+        """Close the synthetic probe input without a signal."""
+        self.input_closed = True
+
+    def wait(self, timeout_seconds: float) -> int:
+        """Return one ordinary synthetic child exit status."""
+        del timeout_seconds
+        return 0
+
+    def __repr__(self) -> str:
+        """Hide every scripted request detail."""
+        return "<ClaudeStructuredEngineFake redacted>"
+
+    @staticmethod
+    def _request_id(root: JsonObject) -> str:
+        request_id = root.get("request_id")
+        if not isinstance(request_id, str):
+            raise AssertionError("Structured request ID is invalid.")
+        return request_id
+
+    @staticmethod
+    def _variables(root: JsonObject) -> JsonObject:
+        variables = root.get("variables")
+        if not isinstance(variables, dict):
+            raise AssertionError("Structured variables are invalid.")
+        return variables
+
+    def _response(
+        self,
+        response_case: StructuredResponseCase,
+        request_id: str,
+    ) -> bytes:
+        failure = _structured_transport_failure(response_case)
+        if failure is not None:
+            raise ClaudeStructuredError(failure)
+        if response_case is StructuredResponseCase.OVERSIZE:
+            return b"x" * 65_537
+        if response_case is StructuredResponseCase.MALFORMED_UTF8:
+            return b"\xff"
+        if response_case is StructuredResponseCase.MULTIPLE_JSON:
+            return b"{}{}"
+        response_id = request_id
+        if response_case is StructuredResponseCase.WRONG_REQUEST:
+            response_id = "99999999-9999-4999-8999-999999999999"
+        if response_case is StructuredResponseCase.REPLAY:
+            if self._first_request_id is None:
+                raise AssertionError("Replay requires one prior request.")
+            response_id = self._first_request_id
+        subtype = (
+            "error"
+            if response_case is StructuredResponseCase.ERROR_RESPONSE
+            else "success"
+        )
+        response: JsonObject = {
+            "request_id": response_id,
+            "subtype": subtype,
+        }
+        if response_case is StructuredResponseCase.EXTRA_FIELDS:
+            response["unexpected"] = True
+        return encode_compact_json(
+            {
+                "response": response,
+                "type": "control_response",
+            }
+        )
+
+
+def _structured_transport_failure(
+    response: StructuredResponseCase,
+) -> ClaudeStructuredFailure | None:
+    if response is StructuredResponseCase.TIMEOUT:
+        return ClaudeStructuredFailure.PROTOCOL_TIMEOUT
+    if response is StructuredResponseCase.EOF:
+        return ClaudeStructuredFailure.PROTOCOL_EOF
+    if response is StructuredResponseCase.PROCESS_ERROR:
+        return ClaudeStructuredFailure.PROCESS_EXITED
+    return None
+
+
+class ClaudeStructuredEngineFactoryFake:
+    """Open isolated structured probe children without provider access."""
+
+    def __init__(
+        self,
+        positive_canary: str,
+        positive_response: StructuredResponseCase = (
+            StructuredResponseCase.SUCCESS
+        ),
+    ) -> None:
+        self._positive_canary = positive_canary
+        self._positive_response = positive_response
+        self.engines: list[ClaudeStructuredEngineFake] = []
+        self.environments: list[dict[str, str]] = []
+
+    def __call__(
+        self,
+        executable: ClaudeExecutable,
+        environment: Mapping[str, str],
+        *,
+        working_directory: Path,
+        user_arguments: tuple[str, ...] = (),
+    ) -> ClaudeStructuredEngineFake:
+        """Return one two-exchange no-network probe engine."""
+        del executable
+        if user_arguments:
+            raise AssertionError("Capability probe received user arguments.")
+        engine = ClaudeStructuredEngineFake(
+            (
+                self._positive_response,
+                StructuredResponseCase.ERROR_RESPONSE,
+            ),
+            (self._positive_canary, 7),
+            process_id=5252,
+        )
+        self.engines.append(engine)
+        self.environments.append(dict(environment))
+        del working_directory
+        return engine
+
+
+class StructuredCapabilityMutation(StrEnum):
+    """Independent exact-capability mismatches for one journey table."""
+
+    VERSION = "version"
+    HASH = "hash"
+    IDENTITY = "identity"
+    SIZE = "size"
+    MANIFEST = "manifest"
+    SCHEMA = "schema"
+    MACOS = "macos"
+
+
+@dataclass(frozen=True, slots=True)
+class StructuredCapabilityFixture:
+    """Controlled artifact, process, and environment qualification inputs."""
+
+    executable: ClaudeExecutable
+    host: HostPlatform
+    environment: dict[str, str]
+    working_directory: Path
+    factory: ClaudeStructuredEngineFactoryFake
+    mutation: StructuredCapabilityMutation | None
+
+    def inspect_artifact(
+        self,
+        candidate: ClaudeExecutable,
+        markers: tuple[bytes, ...],
+    ) -> tuple[str, frozenset[bytes]]:
+        """Return exact or independently mutated artifact evidence."""
+        if candidate is not self.executable:
+            raise AssertionError("Capability inspected another executable.")
+        digest = (
+            "0" * 64
+            if self.mutation is StructuredCapabilityMutation.HASH
+            else CLAUDE_STRUCTURED_ARTIFACT_SHA256
+        )
+        observed = (
+            frozenset()
+            if self.mutation is StructuredCapabilityMutation.MANIFEST
+            else frozenset(markers)
+        )
+        return digest, observed
+
+
+def structured_capability_fixture(
+    root: Path,
+    mutation: StructuredCapabilityMutation | None,
+) -> StructuredCapabilityFixture:
+    """Create one exact or independently mismatched capability boundary."""
+    version = (
+        ClaudeVersion(2, 1, 221)
+        if mutation is StructuredCapabilityMutation.VERSION
+        else MINIMUM_CLAUDE_VERSION
+    )
+    size = (
+        1
+        if mutation is StructuredCapabilityMutation.SIZE
+        else CLAUDE_STRUCTURED_ARTIFACT_SIZE
+    )
+    artifact = root / "versions" / str(version) / "claude"
+    artifact.parent.mkdir(parents=True)
+    with artifact.open("wb") as stream:
+        stream.truncate(size)
+    artifact.chmod(0o755)
+    launcher = root / "bin" / "claude"
+    launcher.parent.mkdir()
+    launcher.symlink_to(artifact)
+    executable = ClaudeExecutable(
+        launcher,
+        ExecutableProvenance.from_stat(artifact, artifact.stat()),
+        version,
+    )
+    if mutation is StructuredCapabilityMutation.IDENTITY:
+        replacement = artifact.with_name("claude-replacement")
+        with replacement.open("wb") as stream:
+            stream.truncate(CLAUDE_STRUCTURED_ARTIFACT_SIZE)
+        replacement.chmod(0o755)
+        launcher.unlink()
+        launcher.symlink_to(replacement)
+    profile = native_profile(root / "home")
+    factory = ClaudeStructuredEngineFactoryFake(
+        CLAUDE_STRUCTURED_PROBE_CANARY,
+        (
+            StructuredResponseCase.EXTRA_FIELDS
+            if mutation is StructuredCapabilityMutation.SCHEMA
+            else StructuredResponseCase.SUCCESS
+        ),
+    )
+    return StructuredCapabilityFixture(
+        executable=executable,
+        host=(
+            HostPlatform.MACOS_ARM64
+            if mutation is StructuredCapabilityMutation.MACOS
+            else HostPlatform.LINUX
+        ),
+        environment=claude_structured_environment(
+            {"PATH": "/synthetic/bin"},
+            profile,
+        ),
+        working_directory=profile.config_directory,
+        factory=factory,
+        mutation=mutation,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class StructuredSessionFixture:
+    """One session with two exact synthetic authority transitions."""
+
+    session: ClaudeStructuredSession
+    engine: ClaudeStructuredEngineFake
+    binding_b: ClaudeStructuredBinding
+    binding_c: ClaudeStructuredBinding
+    oauth_b: str
+    oauth_c: str
+    turn_id: TurnId
+
+
+def structured_session_fixture(
+    response: StructuredResponseCase,
+) -> StructuredSessionFixture:
+    """Create one stable-PID session for the full protocol journey."""
+
+    def binding(
+        operation: str,
+        account: str,
+        oauth: str,
+        epoch: int,
+    ) -> ClaudeStructuredBinding:
+        return ClaudeStructuredBinding(
+            operation_id=OperationId(operation),
+            account_id=SidekickAccountId(account),
+            generation=claude_access_token_generation(oauth),
+            epoch=SelectionEpoch(epoch),
+        )
+
+    oauth_a = "synthetic-structured-oauth-a"
+    oauth_b = "synthetic-structured-oauth-b"
+    oauth_c = "synthetic-structured-oauth-c"
+    binding_a = binding(
+        "00000000-0000-4000-8000-000000000000",
+        "11111111-1111-4111-8111-111111111111",
+        oauth_a,
+        7,
+    )
+    binding_b = binding(
+        "55555555-5555-4555-8555-555555555555",
+        "22222222-2222-4222-8222-222222222222",
+        oauth_b,
+        8,
+    )
+    binding_c = binding(
+        "66666666-6666-4666-8666-666666666666",
+        "44444444-4444-4444-8444-444444444444",
+        oauth_c,
+        9,
+    )
+    request_ids = iter(
+        (
+            RequestId("77777777-7777-4777-8777-777777777777"),
+            RequestId("88888888-8888-4888-8888-888888888888"),
+        )
+    )
+    engine = ClaudeStructuredEngineFake(
+        (StructuredResponseCase.SUCCESS, response),
+        (oauth_b, oauth_c),
+    )
+    return StructuredSessionFixture(
+        session=ClaudeStructuredSession(
+            engine,
+            binding_a,
+            request_id_factory=lambda: next(request_ids),
+        ),
+        engine=engine,
+        binding_b=binding_b,
+        binding_c=binding_c,
+        oauth_b=oauth_b,
+        oauth_c=oauth_c,
+        turn_id=TurnId("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+    )
 
 
 def use_synthetic_claude(monkeypatch: pytest.MonkeyPatch) -> None:
