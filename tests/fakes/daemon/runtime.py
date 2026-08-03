@@ -90,6 +90,9 @@ class GlobalSelectionRecovery:
         self.enqueue_calls += 1
         return ()
 
+    def resume(self, provider_id: ProviderId) -> None:
+        del provider_id
+
     def reconciled(self) -> bool:
         return True
 

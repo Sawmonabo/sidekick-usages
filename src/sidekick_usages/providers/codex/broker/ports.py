@@ -78,6 +78,13 @@ class CodexSavedAuthorityRelation(Protocol):
     ) -> bool:
         """Return whether an observation proves one saved Codex account."""
 
+    def matches_expectation(
+        self,
+        expectation: CodexProjectionExpectation,
+        observation: ProviderAuthObservation,
+    ) -> bool:
+        """Relate an exact logical authority to effective runtime auth."""
+
 
 class CodexWorkerExchange(Protocol):
     """One live isolated-worker response and acknowledgement channel."""
@@ -131,6 +138,7 @@ class CodexOperationDispatcher(Protocol):
         self,
         operation_id: OperationId,
         account_id: SidekickAccountId,
+        callback_request_id: int | None,
         instruction: bytes,
         response_deadline: float,
         completion_deadline: float,

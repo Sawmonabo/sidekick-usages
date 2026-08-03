@@ -29,6 +29,9 @@ class GlobalSelectionRecovery(Protocol):
     def enqueue_restored_readbacks(self) -> tuple[DueOperation, ...]:
         """Enqueue restored provider readbacks without provider I/O."""
 
+    def resume(self, provider_id: ProviderId) -> None:
+        """Resume one restored provider after runtime requalification."""
+
     def reconciled(self) -> bool:
         """Return whether no selection journal remains active."""
 
@@ -68,6 +71,11 @@ class ActivationRecoveryScheduler:
         """Release selection waiters during supervisor shutdown."""
         if self._selection_recovery is not None:
             self._selection_recovery.close()
+
+    def resume_selection(self, provider_id: ProviderId) -> None:
+        """Resume recovery after one resident provider becomes available."""
+        if self._selection_recovery is not None:
+            self._selection_recovery.resume(provider_id)
 
     def enroll(self, now: datetime) -> tuple[DueOperation, ...]:
         """Match durable recovery slots exactly to unfinished journals."""

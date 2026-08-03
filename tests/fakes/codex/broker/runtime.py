@@ -115,6 +115,8 @@ def activation_source_fixture(
     tmp_path: Path,
     short_socket_root: Path,
     monkeypatch: pytest.MonkeyPatch,
+    *,
+    account_a_private_generation: str = UNSELECTED_NEXT_GENERATION,
 ) -> FakeCodexBrokerFixture:
     """Build a runtime finalized at the matching native account A."""
     return _broker_fixture(
@@ -126,6 +128,7 @@ def activation_source_fixture(
             ACCOUNT_A_PROVIDER_IDENTITY,
             GENERATION,
         ),
+        account_a_private_generation=account_a_private_generation,
     )
 
 
@@ -152,6 +155,8 @@ def _broker_fixture(
     short_socket_root: Path,
     monkeypatch: pytest.MonkeyPatch,
     finalized: FinalizedSelection,
+    *,
+    account_a_private_generation: str = UNSELECTED_NEXT_GENERATION,
 ) -> FakeCodexBrokerFixture:
     """Build two managed accounts and an isolated resident-broker runtime."""
     provider_root = tmp_path / "provider"
@@ -212,7 +217,7 @@ def _broker_fixture(
         {
             ACCOUNT_A_ID: managed_auth(
                 ACCOUNT_A_PROVIDER_IDENTITY,
-                UNSELECTED_NEXT_GENERATION,
+                account_a_private_generation,
             ),
             MANAGED_ACCOUNT_ID: managed_auth(
                 PROVIDER_IDENTITY,

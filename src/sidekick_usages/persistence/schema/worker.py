@@ -45,7 +45,8 @@ from sidekick_usages.persistence.time_codec import (
 )
 from sidekick_usages.serialization.json import JsonObject, JsonValue
 
-OPERATION_QUEUE_SCHEMA_VERSION = 6
+OPERATION_QUEUE_SCHEMA_VERSION = 7
+_CALLBACK_OPERATION_QUEUE_SCHEMA_VERSION = 6
 _PARENT_OPERATION_QUEUE_SCHEMA_VERSION = 5
 _PREVIOUS_OPERATION_QUEUE_SCHEMA_VERSION = 4
 _LEGACY_OPERATION_QUEUE_SCHEMA_VERSION = 3
@@ -58,6 +59,7 @@ _OPERATION_KEYS = frozenset(
     {
         "account_id",
         "attempts",
+        "callback_request_id",
         "due_at",
         "failure_code",
         "kind",
@@ -69,8 +71,11 @@ _OPERATION_KEYS = frozenset(
         "updated_at",
     }
 )
-_PARENT_OPERATION_KEYS = _OPERATION_KEYS
-_PREVIOUS_OPERATION_KEYS = _OPERATION_KEYS - {"selection_operation_id"}
+_CALLBACK_OPERATION_KEYS = _OPERATION_KEYS - {"callback_request_id"}
+_PARENT_OPERATION_KEYS = _CALLBACK_OPERATION_KEYS
+_PREVIOUS_OPERATION_KEYS = _CALLBACK_OPERATION_KEYS - {
+    "selection_operation_id"
+}
 _LEGACY_OPERATION_KEYS = _PREVIOUS_OPERATION_KEYS | {
     "allow_remote_control_disconnect"
 }
@@ -94,6 +99,7 @@ def decode_operation_queue(payload: bytes) -> OperationQueueDocument:
     root = decode_state_object(payload, MAX_OPERATION_QUEUE_BYTES)
     require_exact_keys(root, {"operations", "schema_version"})
     version = require_integer(root["schema_version"])
+    callback_previous = version == _CALLBACK_OPERATION_QUEUE_SCHEMA_VERSION
     legacy = version == _LEGACY_OPERATION_QUEUE_SCHEMA_VERSION
     previous = version == _PREVIOUS_OPERATION_QUEUE_SCHEMA_VERSION
     parent = version == _PARENT_OPERATION_QUEUE_SCHEMA_VERSION
@@ -108,7 +114,11 @@ def decode_operation_queue(payload: bytes) -> OperationQueueDocument:
                 else (
                     _PARENT_OPERATION_QUEUE_SCHEMA_VERSION
                     if parent
-                    else OPERATION_QUEUE_SCHEMA_VERSION
+                    else (
+                        _CALLBACK_OPERATION_QUEUE_SCHEMA_VERSION
+                        if callback_previous
+                        else OPERATION_QUEUE_SCHEMA_VERSION
+                    )
                 )
             )
         ),
@@ -124,10 +134,17 @@ def decode_operation_queue(payload: bytes) -> OperationQueueDocument:
                 legacy=legacy,
                 previous=previous,
                 parent=parent,
+                callback_previous=callback_previous,
             )
             if slot != _operation_slot(
                 operation,
-                child_qualified=(version == OPERATION_QUEUE_SCHEMA_VERSION),
+                child_qualified=(
+                    version
+                    in {
+                        _CALLBACK_OPERATION_QUEUE_SCHEMA_VERSION,
+                        OPERATION_QUEUE_SCHEMA_VERSION,
+                    }
+                ),
             ):
                 raise InvalidSchemaError
             operations.append(operation)
@@ -158,6 +175,7 @@ def _due_operation(
     legacy: bool,
     previous: bool,
     parent: bool,
+    callback_previous: bool,
 ) -> DueOperation:
     require_exact_keys(
         record,
@@ -168,6 +186,8 @@ def _due_operation(
             if previous
             else _PARENT_OPERATION_KEYS
             if parent
+            else _CALLBACK_OPERATION_KEYS
+            if callback_previous
             else _OPERATION_KEYS
         ),
     )
@@ -183,6 +203,11 @@ def _due_operation(
     return DueOperation(
         operation_id=operation_id,
         selection_operation_id=parent_id,
+        callback_request_id=(
+            None
+            if callback_previous or parent or previous or legacy
+            else _optional_integer(record["callback_request_id"])
+        ),
         provider_id=ProviderId(require_string(record["provider_id"])),
         account_id=_optional_account_id(record["account_id"]),
         kind=kind,
@@ -200,6 +225,12 @@ def _due_operation(
 def _optional_account_id(value: JsonValue) -> SidekickAccountId | None:
     account_id = require_optional_string(value)
     return None if account_id is None else SidekickAccountId(account_id)
+
+
+def _optional_integer(value: JsonValue) -> int | None:
+    if value is None:
+        return None
+    return require_integer(value)
 
 
 def _optional_operation_id(value: JsonValue) -> OperationId | None:
@@ -231,6 +262,7 @@ def _operation_object(operation: DueOperation) -> JsonObject:
             None if operation.account_id is None else str(operation.account_id)
         ),
         "attempts": operation.attempts,
+        "callback_request_id": operation.callback_request_id,
         "due_at": canonical_timestamp(operation.due_at),
         "failure_code": operation.failure_code,
         "kind": operation.kind.value,

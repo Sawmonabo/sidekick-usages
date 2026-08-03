@@ -1,6 +1,7 @@
 """Strict external-auth installation in the shared Codex daemon."""
 
 import time
+from collections.abc import Callable
 
 from sidekick_usages.providers.codex.account.service import read_codex_account
 from sidekick_usages.providers.codex.account.types import (
@@ -19,6 +20,7 @@ from sidekick_usages.providers.codex.app_server.methods import (
     ACCOUNT_LOGIN_COMPLETED_METHOD,
     ACCOUNT_LOGIN_START_METHOD,
     ACCOUNT_UPDATED_METHOD,
+    MCP_SERVER_STATUS_LIST_METHOD,
 )
 from sidekick_usages.providers.codex.app_server.types import (
     CodexAppServerFailure,
@@ -37,6 +39,9 @@ from sidekick_usages.providers.codex.broker.models import (
 from sidekick_usages.providers.codex.broker.ports import CodexProjection
 from sidekick_usages.providers.codex.broker.types import CodexBrokerFailure
 from sidekick_usages.providers.codex.broker.wire import CodexDaemonSession
+from sidekick_usages.providers.codex.session.models import (
+    CodexLoadedThreadSnapshot,
+)
 from sidekick_usages.serialization.json import JsonObject
 
 _INSTALL_TIMEOUT_SECONDS = 8.0
@@ -46,6 +51,7 @@ _MAX_INSTALL_MESSAGES = 16
 def install_codex_projection(
     session: CodexDaemonSession,
     projection: CodexProjection,
+    loaded_threads: Callable[[], CodexLoadedThreadSnapshot],
     *,
     deadline: float | None = None,
 ) -> CodexProjectionReceipt:
@@ -64,6 +70,7 @@ def install_codex_projection(
         raise CodexBrokerError(CodexBrokerFailure.IDENTITY_MISMATCH) from None
     if claimed_identity != projection.provider_identity:
         raise CodexBrokerError(CodexBrokerFailure.IDENTITY_MISMATCH)
+    _require_no_mcp_servers(session, loaded_threads(), effective_deadline)
     params: JsonObject = {
         "accessToken": projection.access_token,
         "chatgptAccountId": expected_identity,
@@ -85,6 +92,7 @@ def install_codex_projection(
         projection.plan,
         effective_deadline,
     )
+    _require_no_mcp_servers(session, loaded_threads(), effective_deadline)
     observed = read_codex_account(
         session,
         refresh_token=False,
@@ -161,6 +169,22 @@ def _require_external_update(
         or plan != expected_plan
     ):
         raise CodexAppServerError(CodexAppServerFailure.PROTOCOL_MALFORMED)
+
+
+def _require_no_mcp_servers(
+    session: CodexDaemonSession,
+    loaded_threads: CodexLoadedThreadSnapshot,
+    deadline: float,
+) -> None:
+    """Prove the qualified zero-server subset for every loaded thread."""
+    for thread_id in loaded_threads.thread_ids:
+        result = session.request(
+            MCP_SERVER_STATUS_LIST_METHOD,
+            {"threadId": thread_id},
+            timeout_seconds=_remaining(deadline),
+        )
+        if set(result) != {"data"} or result.get("data") != []:
+            raise CodexBrokerError(CodexBrokerFailure.PROTOCOL_UNSUPPORTED)
 
 
 def _remaining(deadline: float) -> float:

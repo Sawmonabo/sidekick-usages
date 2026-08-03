@@ -117,6 +117,7 @@ class CodexCallbackWorkerExecutor:
         if (
             instruction.operation_id != operation.operation_id
             or instruction.account_id != operation.required_account_id
+            or instruction.request_id != operation.callback_request_id
             or not codex_exchange_deadlines_current(
                 instruction.deadlines,
                 self._monotonic,

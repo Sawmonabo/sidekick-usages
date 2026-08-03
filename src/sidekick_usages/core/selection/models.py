@@ -422,6 +422,7 @@ class DueOperation:
     due_at: datetime
     updated_at: datetime
     selection_operation_id: OperationId | None = None
+    callback_request_id: int | None = None
     attempts: int = 0
     failure_code: str | None = None
 
@@ -467,6 +468,12 @@ class DueOperation:
             raise ValueError(
                 "Codex callback kind and priority must be used together."
             )
+        if self.callback_request_id is not None and (
+            not callback_kind
+            or isinstance(self.callback_request_id, bool)
+            or self.callback_request_id < 0
+        ):
+            raise ValueError("Callback request identity is invalid.")
         object.__setattr__(self, "due_at", due_at)
         object.__setattr__(self, "updated_at", updated_at)
         object.__setattr__(self, "failure_code", failure_code)

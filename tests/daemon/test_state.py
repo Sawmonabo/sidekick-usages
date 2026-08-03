@@ -242,15 +242,31 @@ def test_selection_and_queue_preserve_stable_independent_state(
         f"account:{target.account_id}:selection_readback:{phase_id}"
     ).encode()
     parent_slot = (f"account:{target.account_id}:selection_readback").encode()
-    parent = current.replace(
-        b'"schema_version": 6',
-        b'"schema_version": 5',
-    ).replace(child_slot, parent_slot)
+    parent = (
+        current.replace(
+            b'"schema_version": 7',
+            b'"schema_version": 5',
+        )
+        .replace(b'      "callback_request_id": null,\n', b"")
+        .replace(
+            child_slot,
+            parent_slot,
+        )
+    )
     assert (
         parent == current,
         b'"schema_version": 5' in parent,
         child_slot in parent,
-    ) == (False, True, False)
+        len(
+            decode_operation_queue(
+                current.replace(
+                    b'"schema_version": 7',
+                    b'"schema_version": 6',
+                ).replace(b'      "callback_request_id": null,\n', b"")
+            ).operations
+        )
+        == len(decode_operation_queue(current).operations),
+    ) == (False, True, False, True)
     assert (
         next(
             operation

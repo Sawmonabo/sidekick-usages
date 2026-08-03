@@ -14,6 +14,7 @@ from threading import (
 
 from sidekick_usages import __version__
 from sidekick_usages.clock import Clock
+from sidekick_usages.core.types import ProviderId
 from sidekick_usages.daemon.control.server import (
     MAX_CONTROL_CONNECTIONS,
     LocalControlServer,
@@ -152,6 +153,7 @@ class SupervisorRuntime:
         self._resident = resident
         self._package_version = PackageVersion(package_version)
         self._queue_recovered = False
+        self._resident_available = False
 
     def run(self) -> None:
         """Run until explicit shutdown using only events and deadlines."""
@@ -206,6 +208,10 @@ class SupervisorRuntime:
     def run_cycle(self) -> None:
         """Collect, dispatch, and publish one event-driven work cycle."""
         self._scheduler.collect()
+        resident_available = self._resident.available
+        if resident_available and not self._resident_available:
+            self._recovery.resume_selection(ProviderId.CODEX)
+        self._resident_available = resident_available
         self._recovery.enroll(self._clock.now())
         self._scheduler.dispatch_due()
         self._publish()

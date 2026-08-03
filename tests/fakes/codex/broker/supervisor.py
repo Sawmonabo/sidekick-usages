@@ -5,13 +5,17 @@ import time
 from collections.abc import Callable, Mapping
 from contextlib import suppress
 from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 from threading import Event, Thread
 from types import TracebackType
 from typing import Self
 
 from sidekick_usages.clock import SystemClock
-from sidekick_usages.core.accounts.types import OperationId, SidekickAccountId
+from sidekick_usages.core.accounts.types import (
+    OperationId,
+    SidekickAccountId,
+)
 from sidekick_usages.core.selection.models import SelectionEpoch
 from sidekick_usages.core.selection.types import OperationKind
 from sidekick_usages.core.types import ProviderId
@@ -77,16 +81,53 @@ from sidekick_usages.providers.codex.broker.external_auth.refresh import (
 )
 from sidekick_usages.providers.codex.broker.external_auth.selection import (
     decode_codex_selection_instruction,
+    decode_codex_selection_reply,
+    encode_codex_selection_reply,
 )
 from sidekick_usages.providers.codex.broker.responder import CodexRuntimeBroker
 from sidekick_usages.providers.codex.broker.service import CodexSharedRuntime
 from sidekick_usages.providers.codex.session.models import (
     CodexLoadedThreadSnapshot,
 )
+from sidekick_usages.serialization.framing import clear_mutable_buffer
 
 _READINESS_TIMEOUT_SECONDS = 10.0
 _SUPERVISOR_JOIN_SECONDS = 10.0
 _WAIT_INTERVAL_SECONDS = 0.01
+
+
+class _JourneySupervisorWorkerExchange(SupervisorWorkerExchange):
+    """Run one deterministic fault after a worker submits its response."""
+
+    def __init__(
+        self,
+        exchange: SupervisorWorkerExchange,
+        after_response: Callable[[bytearray], bytearray],
+    ) -> None:
+        self._exchange = exchange
+        self._after_response = after_response
+
+    @property
+    def launched(self) -> bool:
+        """Return the underlying worker launch state."""
+        return self._exchange.launched
+
+    def response_available(self) -> bool:
+        """Return whether the underlying worker submitted a response."""
+        return self._exchange.response_available()
+
+    def receive_response(self) -> bytearray:
+        """Read the response before applying the scheduled boundary fault."""
+        response = self._exchange.receive_response()
+        return self._after_response(response)
+
+    def acknowledge(self, payload: bytes | bytearray) -> None:
+        """Forward one broker acknowledgement to the worker."""
+        self._exchange.acknowledge(payload)
+
+    def wait_for_completion(self) -> bool:
+        """Wait for the underlying scheduler-confirmed completion."""
+        return self._exchange.wait_for_completion()
 
 
 class _JourneyWorkerExchangeRegistry(WorkerExchangeRegistry):
@@ -95,9 +136,9 @@ class _JourneyWorkerExchangeRegistry(WorkerExchangeRegistry):
     def __init__(self) -> None:
         super().__init__(time.monotonic)
         self._selection_hooks: dict[OperationKind, Callable[[], None]] = {}
-        self._callback_fault: tuple[str, SidekickAccountId | None] | None = (
-            None
-        )
+        self._callback_fault: str | None = None
+        self._unavailable_readback = False
+        self._operations: _JourneyCodexOperationDispatcher | None = None
 
     def schedule_selection_hook(
         self,
@@ -110,10 +151,26 @@ class _JourneyWorkerExchangeRegistry(WorkerExchangeRegistry):
     def schedule_callback_fault(
         self,
         fault: str,
-        account_id: SidekickAccountId | None = None,
     ) -> None:
         """Corrupt one callback only after durable broker dispatch."""
-        self._callback_fault = fault, account_id
+        self._callback_fault = fault
+
+    def schedule_unavailable_readback(self) -> None:
+        """Remove only target authority from the next READBACK reply."""
+        self._unavailable_readback = True
+
+    def bind_operations(
+        self,
+        operations: _JourneyCodexOperationDispatcher,
+    ) -> None:
+        """Bind the journey's real durable callback dispatcher."""
+        self._operations = operations
+
+    def schedule_wrong_home(self, account_id: SidekickAccountId) -> None:
+        """Route the next durable callback through another account."""
+        if self._operations is None:
+            raise AssertionError("Journey dispatcher is unavailable.")
+        self._operations.schedule_wrong_home(account_id)
 
     def create(
         self,
@@ -132,41 +189,108 @@ class _JourneyWorkerExchangeRegistry(WorkerExchangeRegistry):
         with suppress(CodexBrokerError):
             callback = decode_codex_callback_instruction(instruction)
             fault = self._callback_fault
+            if fault == "request" and callback.request_id is None:
+                fault = None
             if fault is not None:
                 self._callback_fault = None
-                name, account_id = fault
-                if name == "epoch":
+                if fault == "epoch":
                     callback = replace(
                         callback,
-                        operation_id=OperationId(
-                            "66666666-6666-4666-8666-666666666666"
-                        ),
                         selection_epoch=SelectionEpoch(
                             callback.selection_epoch.value - 1
                         ),
                     )
-                elif name == "request":
+                elif fault == "request":
+                    assert callback.request_id is not None
                     callback = replace(
                         callback,
-                        operation_id=OperationId(
-                            "88888888-8888-4888-8888-888888888888"
-                        ),
-                    )
-                elif name == "home":
-                    assert account_id is not None
-                    callback = replace(
-                        callback,
-                        operation_id=OperationId(
-                            "77777777-7777-4777-8777-777777777777"
-                        ),
-                        account_id=account_id,
+                        request_id=callback.request_id + 1,
                     )
                 else:
                     raise AssertionError("Unknown callback journey fault.")
                 adjusted = encode_codex_callback_instruction(callback)
-        return super().create(
+        exchange = super().create(
             operation_id,
             adjusted,
+            response_deadline,
+            completion_deadline,
+        )
+        with suppress(CodexBrokerError):
+            selection = decode_codex_selection_instruction(adjusted)
+            if (
+                selection.kind is OperationKind.SELECTION_READBACK
+                and self._unavailable_readback
+            ):
+
+                def remove_target(response: bytearray) -> bytearray:
+                    self._unavailable_readback = False
+                    try:
+                        reply = decode_codex_selection_reply(
+                            response,
+                            selection,
+                        )
+                    finally:
+                        clear_mutable_buffer(response)
+                    return encode_codex_selection_reply(
+                        selection,
+                        replace(
+                            reply.binding,
+                            provider_identity=None,
+                            generation=None,
+                        ),
+                        baseline=reply.baseline,
+                    )
+
+                return _JourneySupervisorWorkerExchange(
+                    exchange,
+                    remove_target,
+                )
+        return exchange
+
+
+class _JourneyCodexOperationDispatcher(DurableCodexOperationDispatcher):
+    """Route one callback operation through a scheduled wrong home."""
+
+    def __init__(
+        self,
+        queue: OperationQueueStore,
+        observations: RuntimeAuthObservationStore,
+        exchanges: WorkerExchangeRegistry,
+        wall_time: Callable[[], datetime],
+        monotonic: Callable[[], float],
+        wakeup: Callable[[], None],
+    ) -> None:
+        super().__init__(
+            queue,
+            observations,
+            exchanges,
+            wall_time,
+            monotonic,
+            wakeup,
+        )
+        self._wrong_home: SidekickAccountId | None = None
+
+    def schedule_wrong_home(self, account_id: SidekickAccountId) -> None:
+        """Route the next operation to one non-authoritative private home."""
+        self._wrong_home = account_id
+
+    def dispatch(
+        self,
+        operation_id: OperationId,
+        account_id: SidekickAccountId,
+        callback_request_id: int | None,
+        instruction: bytes,
+        response_deadline: float,
+        completion_deadline: float,
+    ) -> SupervisorWorkerExchange:
+        """Keep response correlation while changing operation authority."""
+        routed_account = self._wrong_home
+        self._wrong_home = None
+        return super().dispatch(
+            operation_id,
+            account_id if routed_account is None else routed_account,
+            callback_request_id,
+            instruction,
             response_deadline,
             completion_deadline,
         )
@@ -176,6 +300,7 @@ def _runtime_factory(
     executable: CodexExecutable,
     session_home: Path,
     environment: Mapping[str, str],
+    loaded_threads: Callable[[], CodexLoadedThreadSnapshot],
 ) -> Callable[[Callable[[], bool]], CodexSharedRuntime]:
     """Build the shared-runtime factory used by resident test harnesses."""
     runtime_environment = dict(environment)
@@ -186,6 +311,7 @@ def _runtime_factory(
             session_home,
             environment=runtime_environment,
             cancelled=cancelled,
+            loaded_threads=loaded_threads,
         )
 
     return create
@@ -199,9 +325,6 @@ def _compose_broker(
     journals: ActivationJournalStore,
     observations: RuntimeAuthObservationStore,
     exchanges: WorkerExchangeRegistry,
-    loaded_threads: Callable[[], CodexLoadedThreadSnapshot] = lambda: (
-        CodexLoadedThreadSnapshot(revision=0, thread_ids=())
-    ),
     status_changed: Callable[[], None] | None = None,
 ) -> CodexRuntimeBroker:
     """Compose one production broker around reusable synthetic boundaries."""
@@ -213,6 +336,25 @@ def _compose_broker(
             account_path=paths.accounts,
         ),
     ).load()
+    if isinstance(exchanges, _JourneyWorkerExchangeRegistry):
+        dispatcher = _JourneyCodexOperationDispatcher(
+            queue,
+            observations,
+            exchanges,
+            clock.now,
+            time.monotonic,
+            wakeup,
+        )
+        exchanges.bind_operations(dispatcher)
+    else:
+        dispatcher = DurableCodexOperationDispatcher(
+            queue,
+            observations,
+            exchanges,
+            clock.now,
+            time.monotonic,
+            wakeup,
+        )
     return CodexRuntimeBroker(
         runtime_factory,
         RuntimeStateReader(
@@ -224,16 +366,8 @@ def _compose_broker(
             clock,
         ),
         accounts,
-        DurableCodexOperationDispatcher(
-            queue,
-            observations,
-            exchanges,
-            clock.now,
-            time.monotonic,
-            wakeup,
-        ),
+        dispatcher,
         exchanges,
-        loaded_threads,
         wall_time=clock.now,
         status_changed=status_changed,
     )
@@ -254,7 +388,15 @@ class FakeCodexBroker:
         observations = RuntimeAuthObservationStore(paths.durable_operations)
         self._broker = _compose_broker(
             paths,
-            _runtime_factory(executable, session_home, environment),
+            _runtime_factory(
+                executable,
+                session_home,
+                environment,
+                lambda: CodexLoadedThreadSnapshot(
+                    revision=0,
+                    thread_ids=(),
+                ),
+            ),
             clock,
             queue,
             ActivationJournalStore(
@@ -395,18 +537,23 @@ class FakeCodexSupervisor:
             self._wakeup.notify,
             exchanges=exchanges,
         )
+
         broker = _compose_broker(
             paths,
-            _runtime_factory(executable, session_home, environment),
+            _runtime_factory(
+                executable,
+                session_home,
+                environment,
+                lambda: CodexLoadedThreadSnapshot(
+                    revision=1,
+                    thread_ids=("thread-alpha",),
+                ),
+            ),
             clock,
             queue,
             journals,
             observations,
             exchanges,
-            lambda: CodexLoadedThreadSnapshot(
-                revision=1,
-                thread_ids=("thread-alpha",),
-            ),
             self._wakeup.notify,
         )
         scheduler = DurableScheduler(
@@ -525,6 +672,20 @@ class FakeCodexSupervisor:
                 raise AssertionError("Selection worker was not collected.")
             self._stop.wait(min(_WAIT_INTERVAL_SECONDS, remaining))
 
+    def wait_until_callback_workers_collected(self) -> None:
+        """Drive scheduler collection through the last callback child."""
+        deadline = time.monotonic() + _READINESS_TIMEOUT_SECONDS
+        while any(
+            operation.kind is OperationKind.CODEX_CALLBACK
+            for operation in self._queue.load()
+        ):
+            self._raise_failure()
+            self._wakeup.notify()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise AssertionError("Callback worker was not collected.")
+            self._stop.wait(min(_WAIT_INTERVAL_SECONDS, remaining))
+
     def wait_until_broker_failure(self, failure_code: str) -> None:
         """Wait for one exact live broker failure observation."""
         deadline = time.monotonic() + _READINESS_TIMEOUT_SECONDS
@@ -557,6 +718,10 @@ class FakeCodexSupervisor:
         """Schedule one full-journey selection boundary action."""
         self._exchanges.schedule_selection_hook(kind, hook)
 
+    def schedule_unavailable_readback(self) -> None:
+        """Remove target authority from the next READBACK response."""
+        self._exchanges.schedule_unavailable_readback()
+
     def schedule_stale_callback_epoch(self) -> None:
         """Dispatch one callback with an obsolete finalized epoch."""
         self._exchanges.schedule_callback_fault("epoch")
@@ -570,7 +735,7 @@ class FakeCodexSupervisor:
         account_id: SidekickAccountId,
     ) -> None:
         """Dispatch one callback naming a different private home."""
-        self._exchanges.schedule_callback_fault("home", account_id)
+        self._exchanges.schedule_wrong_home(account_id)
 
     def request_stop(self) -> None:
         """Request a non-blocking supervisor shutdown."""

@@ -72,6 +72,21 @@ class CodexSavedAuthorityResolver:
             expected_generation=None,
         )
 
+    def matches_expectation(
+        self,
+        expectation: CodexProjectionExpectation,
+        observation: ProviderAuthObservation,
+    ) -> bool:
+        """Relate an exact logical authority to effective runtime auth."""
+        return (
+            observation.provider_identity == expectation.provider_identity
+            and self._matches_account(
+                expectation.account_id,
+                observation,
+                expected_generation=expectation.generation,
+            )
+        )
+
     def _matches_account(
         self,
         account_id: SidekickAccountId,

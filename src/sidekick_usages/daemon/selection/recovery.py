@@ -162,9 +162,9 @@ class SelectionRecovery:
 
     def fail_readback(self, operation: DueOperation, code: str) -> None:
         """Retain one failed orphan readback as gated recovery truth."""
-        del code
         if operation.kind is not OperationKind.SELECTION_READBACK:
             return
+        del code
         with self._provider_locks[operation.provider_id]:
             active = self._journal.load(operation.provider_id).active
             if (
@@ -210,10 +210,10 @@ class SelectionRecovery:
             proof = self._target_proof(operation, observation.generation)
             return self._recover_target(operation, prepared, proof)
         baseline = self._selected.load(operation.provider_id)
-        if (
-            operation.phase is SelectionPhase.COMMITTING
-            and self._baseline_proven(operation, baseline, observation)
-        ):
+        if operation.phase in {
+            SelectionPhase.COMMITTING,
+            SelectionPhase.RECOVERING,
+        } and self._baseline_proven(operation, baseline, observation):
             return self._recover_baseline(operation)
         return self._recovery_required(operation)
 

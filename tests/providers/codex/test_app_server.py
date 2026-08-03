@@ -45,6 +45,7 @@ from sidekick_usages.providers.codex.broker.service import CodexSharedRuntime
 from sidekick_usages.providers.codex.broker.types import CodexBrokerFailure
 from sidekick_usages.providers.codex.session.models import (
     CODEX_SESSION_OPERATOR_PRECONDITION,
+    CodexLoadedThreadSnapshot,
     CodexRelayAdmission,
     CodexRelayAdmissionState,
     CodexRelayAuthority,
@@ -542,6 +543,10 @@ def _prepare_shared_runtime(
         native_home,
         environment=environment,
         expected_user_id=expected_user_id,
+        loaded_threads=lambda: CodexLoadedThreadSnapshot(
+            revision=0,
+            thread_ids=(),
+        ),
     )
     runtime.prepare(
         _ACCOUNT_ID,
@@ -784,6 +789,10 @@ def test_neutral_runtime_requires_current_auth_without_model_websockets(
             executable,
             session_home,
             environment=environment,
+            loaded_threads=lambda: CodexLoadedThreadSnapshot(
+                revision=0,
+                thread_ids=(),
+            ),
         )
 
         if case.protocol_unsupported:

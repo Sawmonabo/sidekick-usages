@@ -43,9 +43,6 @@ from sidekick_usages.providers.codex.broker.ports import (
 )
 from sidekick_usages.providers.codex.broker.service import CodexSharedRuntime
 from sidekick_usages.providers.codex.broker.types import CodexBrokerFailure
-from sidekick_usages.providers.codex.session.models import (
-    CodexLoadedThreadSnapshot,
-)
 from sidekick_usages.serialization.framing import clear_mutable_buffer
 
 CODEX_SELECTION_RESPONSE_SECONDS = 90.0
@@ -62,7 +59,6 @@ class CodexSelectionBroker:
         exchanges: CodexWorkerExchangeFactory,
         saved_authority: CodexSavedAuthorityRelation,
         runtime_state: CodexRuntimeStateReader,
-        loaded_threads: Callable[[], CodexLoadedThreadSnapshot],
         *,
         wall_time: Callable[[], datetime],
         monotonic: Callable[[], float] = time.monotonic,
@@ -70,13 +66,13 @@ class CodexSelectionBroker:
         self._exchanges = exchanges
         self._saved_authority = saved_authority
         self._runtime_state = runtime_state
-        self._loaded_threads = loaded_threads
         self._wall_time = wall_time
         self._monotonic = monotonic
         self._lock = Lock()
         self._authority: CodexDaemonAuthority | None = None
         self._instruction: CodexSelectionInstruction | None = None
         self._exchange: CodexWorkerExchange | None = None
+        self._readback_projection: ProviderAuthObservation | None = None
 
     def set_authority(self, authority: CodexDaemonAuthority | None) -> None:
         """Publish the current immutable resident socket qualification."""
@@ -98,6 +94,14 @@ class CodexSelectionBroker:
                 return current.worker_operation_id == operation.operation_id
             if authority is None:
                 return False
+            projection = None
+            if operation.kind is OperationKind.SELECTION_READBACK:
+                try:
+                    projection = self._runtime_state.current().projection_auth
+                except RuntimeError:
+                    projection = None
+                if projection is None:
+                    return False
             started_at = self._monotonic()
             response_deadline = started_at + CODEX_SELECTION_RESPONSE_SECONDS
             completion_deadline = (
@@ -127,6 +131,7 @@ class CodexSelectionBroker:
                 return False
             self._instruction = instruction
             self._exchange = exchange
+            self._readback_projection = projection
             return True
 
     def pending(
@@ -158,7 +163,7 @@ class CodexSelectionBroker:
         finally:
             clear_mutable_buffer(payload)
         if instruction.kind is OperationKind.SELECTION_PREVALIDATE:
-            runtime.require_mcp_quiescent(self._loaded_threads())
+            runtime.require_mcp_quiescent()
             observed_account_id = reply.binding.account_id
             observed_generation = reply.binding.generation
         elif instruction.kind is OperationKind.SELECTION_COMMIT:
@@ -184,7 +189,6 @@ class CodexSelectionBroker:
                     ),
                 )
             self._require_runtime(runtime, instruction)
-            runtime.require_mcp_quiescent(self._loaded_threads())
             record_projection(runtime, receipt)
             observed_account_id = receipt.account_id
             observed_generation = receipt.generation
@@ -192,6 +196,7 @@ class CodexSelectionBroker:
             observed_account_id, observed_generation = self._readback(
                 runtime,
                 reply,
+                instruction,
             )
         exchange.acknowledge(
             encode_codex_selection_acknowledgement(
@@ -245,6 +250,8 @@ class CodexSelectionBroker:
             )
             completed = True
         finally:
+            if not completed:
+                self.set_authority(None)
             self.finish(
                 instruction.worker_operation_id,
                 completed=completed,
@@ -286,6 +293,7 @@ class CodexSelectionBroker:
             ):
                 self._instruction = None
                 self._exchange = None
+                self._readback_projection = None
 
     def cancel(self) -> None:
         """Cancel the pending selection exchange during broker shutdown."""
@@ -311,6 +319,7 @@ class CodexSelectionBroker:
         self,
         runtime: CodexSharedRuntime,
         reply: CodexSelectionReply,
+        instruction: CodexSelectionInstruction,
     ) -> tuple[
         SidekickAccountId | None,
         AuthorityGeneration | None,
@@ -326,7 +335,18 @@ class CodexSelectionBroker:
                 reply.binding.provider_identity,
                 reply.binding.generation,
             )
-        matched = self._match_observation(observation, target, reply.baseline)
+        with self._lock:
+            projection = (
+                self._readback_projection
+                if self._instruction == instruction
+                else None
+            )
+        matched = self._match_observation(
+            observation,
+            projection,
+            target,
+            reply.baseline,
+        )
         if matched is None:
             return None, None
         return matched.account_id, matched.generation
@@ -334,15 +354,21 @@ class CodexSelectionBroker:
     def _match_observation(
         self,
         observation: ProviderAuthObservation,
+        projection: ProviderAuthObservation | None,
         target: CodexProjectionExpectation | None,
         baseline: CodexProjectionExpectation | None,
     ) -> CodexProjectionExpectation | None:
+        if (
+            projection is None
+            or observation.provider_identity != projection.provider_identity
+            or observation.generation != projection.generation
+        ):
+            return None
         for candidate in (target, baseline):
             if (
                 candidate is not None
-                and observation.generation == candidate.generation
-                and self._saved_authority.matches_account(
-                    candidate.account_id,
+                and self._saved_authority.matches_expectation(
+                    candidate,
                     observation,
                 )
             ):

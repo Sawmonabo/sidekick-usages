@@ -76,7 +76,6 @@ from sidekick_usages.providers.codex.broker.types import (
     CodexCallbackMode,
 )
 from sidekick_usages.providers.codex.session.models import (
-    CodexLoadedThreadSnapshot,
     CodexSessionPreparationReport,
 )
 from sidekick_usages.serialization.framing import clear_mutable_buffer
@@ -106,7 +105,6 @@ class CodexRuntimeBroker:
         saved_accounts: CodexSavedAccountReader,
         operations: CodexOperationDispatcher,
         exchanges: CodexWorkerExchangeFactory,
-        loaded_threads: Callable[[], CodexLoadedThreadSnapshot],
         *,
         wall_time: Callable[[], datetime],
         monotonic: Callable[[], float] = time.monotonic,
@@ -136,7 +134,6 @@ class CodexRuntimeBroker:
             exchanges,
             self._saved_authority,
             runtime_state,
-            loaded_threads,
             wall_time=wall_time,
             monotonic=monotonic,
         )
@@ -493,6 +490,7 @@ class CodexRuntimeBroker:
             self._qualified.clear()
             self._failure_code = failure_code
             self._preparation_report = preparation_report
+        self._selection.set_authority(None)
         if changed and self._status_changed is not None:
             self._status_changed()
 
@@ -795,6 +793,7 @@ class CodexRuntimeBroker:
                 exchange = self._operations.dispatch(
                     operation_id,
                     expectation.account_id,
+                    request_id,
                     encoded,
                     response_deadline,
                     completion_deadline,

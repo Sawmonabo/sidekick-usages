@@ -34,7 +34,6 @@ from sidekick_usages.credentials.codex.managed.service import (
 )
 from sidekick_usages.daemon.control.client import ControlClient
 from sidekick_usages.daemon.models.protocol import ControlEvent
-from sidekick_usages.daemon.types.protocol import EventKind
 from sidekick_usages.paths import ApplicationPaths
 from sidekick_usages.persistence.supervisor.activation import (
     ActivationJournalStore,
@@ -46,7 +45,10 @@ from sidekick_usages.persistence.supervisor.observation import (
     RuntimeAuthObservationStore,
 )
 from sidekick_usages.persistence.supervisor.queue import OperationQueueStore
-from sidekick_usages.persistence.supervisor.selection import SelectedStateStore
+from sidekick_usages.persistence.supervisor.selection import (
+    SelectedStateStore,
+    SelectionOperationStore,
+)
 from sidekick_usages.providers.codex.app_server.capabilities import (
     probe_codex_capabilities,
 )
@@ -61,6 +63,7 @@ from sidekick_usages.providers.codex.broker.service import CodexSharedRuntime
 from sidekick_usages.providers.codex.broker.types import CodexBrokerFailure
 from sidekick_usages.providers.codex.session.models import (
     CODEX_SESSION_OPERATOR_PRECONDITION,
+    CodexLoadedThreadSnapshot,
     CodexSessionConfigurationReason,
 )
 from tests.fakes.codex.app_server.daemon import FakeCodexDaemon
@@ -147,24 +150,29 @@ def _assert_callback_rejection(
     supervisor: FakeCodexSupervisor,
     daemon: FakeCodexDaemon,
     paths: ApplicationPaths,
+    account_id: SidekickAccountId,
+    provider_identity: str,
     schedule: Callable[[], None],
 ) -> None:
     """Require one real callback rejection before protected mutation."""
-    generation_before = saved_generation(paths, MANAGED_ACCOUNT_ID)
+    supervisor.wait_until_ready()
+    generation_before = saved_generation(paths, account_id)
+    installed_before = daemon.installed_account_ids
     schedule()
-    stale = daemon.request_refresh(PROVIDER_IDENTITY)
+    started = time.monotonic()
+    stale = daemon.request_refresh(provider_identity)
+    elapsed = time.monotonic() - started
     assert (stale.responder, stale.error_code) == (
         "sidekick_usages",
         CODEX_REFRESH_ERROR_CODE,
     )
+    assert elapsed < _CALLBACK_RESPONSE_BOUND_SECONDS
     assert daemon.read_current_external_auth() == ProviderIdentity(
-        PROVIDER_IDENTITY
+        provider_identity
     )
-    assert daemon.installed_account_ids == (
-        ACCOUNT_A_PROVIDER_IDENTITY,
-        PROVIDER_IDENTITY,
-    )
-    assert saved_generation(paths, MANAGED_ACCOUNT_ID) == generation_before
+    assert daemon.installed_account_ids == installed_before
+    assert saved_generation(paths, account_id) == generation_before
+    supervisor.wait_until_callback_workers_collected()
 
 
 def _finalize_projected_generation(
@@ -417,6 +425,10 @@ def test_shared_codex_runtime_is_idempotent_and_rehydrates(
             executable,
             session_home,
             environment=environment,
+            loaded_threads=lambda: CodexLoadedThreadSnapshot(
+                revision=0,
+                thread_ids=(),
+            ),
         )
         observer_a = daemon.connect_tui()
         observer_b = daemon.connect_tui()
@@ -617,6 +629,7 @@ def test_selection_worker_binds_codex_broker_journey(
         tmp_path,
         short_socket_root,
         monkeypatch,
+        account_a_private_generation=GENERATION,
     )
     paths = fixture.paths
     initial = _finalized_codex_selection(paths)
@@ -641,76 +654,75 @@ def test_selection_worker_binds_codex_broker_journey(
         ) as supervisor:
             supervisor.wait_until_ready()
             observer.wait_for_account_update()
-
-            events = _select_codex_account(paths, MANAGED_ACCOUNT_ID)
-
-            assert tuple(event.kind for event in events) == (
-                EventKind.ACCEPTED,
-                EventKind.SELECTION_RESULT,
-            )
-            result = events[-1].payload
-            assert isinstance(result, SelectionResult)
             assert (
-                result.outcome,
-                result.safe_code,
-                result.target_account_id,
-                result.target_generation,
-                result.epoch,
+                _finalized_codex_selection(paths),
+                set(daemon.installed_account_ids),
+                daemon.mcp_status_thread_ids,
             ) == (
-                SelectionOutcome.READY,
-                SelectionCode.SELECTION_SUCCEEDED,
-                MANAGED_ACCOUNT_ID,
-                AuthorityGeneration(NEXT_GENERATION),
-                initial.epoch.next(),
-            )
-            observer.wait_for_account_update()
-            finalized = _finalized_codex_selection(paths)
-            assert (
-                finalized.provider_id,
-                finalized.account_id,
-                finalized.epoch,
-                finalized.generation,
-            ) == (
-                ProviderId.CODEX,
-                MANAGED_ACCOUNT_ID,
-                initial.epoch.next(),
-                AuthorityGeneration(NEXT_GENERATION),
-            )
-            assert initial.finalized_at < finalized.finalized_at
-            assert finalized.finalized_at <= result.completed_at
-            assert daemon.installed_account_ids == (
-                ACCOUNT_A_PROVIDER_IDENTITY,
-                PROVIDER_IDENTITY,
-            )
-            assert daemon.mcp_status_thread_ids == (
-                "thread-alpha",
-                "thread-alpha",
-            )
-            supervisor.wait_until_selection_workers_collected()
-            _assert_callback_rejection(
-                supervisor,
-                daemon,
-                paths,
-                supervisor.schedule_stale_callback_request,
+                initial,
+                {ACCOUNT_A_PROVIDER_IDENTITY},
+                ("thread-alpha", "thread-alpha"),
             )
 
+            assert saved_generation(paths, MANAGED_ACCOUNT_ID) == GENERATION
             supervisor.schedule_selection_hook(
                 OperationKind.SELECTION_COMMIT,
                 daemon.replace_socket_listener,
             )
-            rejected_events = _select_codex_account(paths, ACCOUNT_A_ID)
+            supervisor.schedule_unavailable_readback()
+            rejected_events = _select_codex_account(
+                paths,
+                MANAGED_ACCOUNT_ID,
+            )
             rejected = rejected_events[-1].payload
-            assert isinstance(rejected, SelectionResult)
+            assert isinstance(rejected, SelectionResult), rejected_events
             assert (rejected.outcome, rejected.safe_code) == (
                 SelectionOutcome.RECOVERY_REQUIRED,
                 SelectionCode.SELECTION_RECOVERY_REQUIRED,
             )
-            assert _finalized_codex_selection(paths) == finalized
-            assert (
-                daemon.installed_account_ids.count(ACCOUNT_A_PROVIDER_IDENTITY)
-                == 1
+            supervisor.wait_until_selection_workers_collected()
+            recovered = SelectionOperationStore(paths.selection_journals).load(
+                ProviderId.CODEX
             )
-            assert daemon.installed_account_ids[-1] == PROVIDER_IDENTITY
+            assert (
+                _finalized_codex_selection(paths),
+                set(daemon.installed_account_ids),
+                saved_generation(paths, MANAGED_ACCOUNT_ID),
+                recovered.active,
+                recovered.history[-1].outcome,
+            ) == (
+                initial,
+                {ACCOUNT_A_PROVIDER_IDENTITY},
+                NEXT_GENERATION,
+                None,
+                SelectionOutcome.FAILED_OLD_EPOCH,
+            )
+            _assert_callback_rejection(
+                supervisor,
+                daemon,
+                paths,
+                ACCOUNT_A_ID,
+                ACCOUNT_A_PROVIDER_IDENTITY,
+                supervisor.schedule_stale_callback_epoch,
+            )
+            _assert_callback_rejection(
+                supervisor,
+                daemon,
+                paths,
+                ACCOUNT_A_ID,
+                ACCOUNT_A_PROVIDER_IDENTITY,
+                supervisor.schedule_stale_callback_request,
+            )
+            _assert_callback_rejection(
+                supervisor,
+                daemon,
+                paths,
+                ACCOUNT_A_ID,
+                ACCOUNT_A_PROVIDER_IDENTITY,
+                lambda: supervisor.schedule_wrong_callback_home(
+                    MANAGED_ACCOUNT_ID
+                ),
+            )
 
         observer.close()
     assert fixture.native_auth.read_bytes() == NATIVE_AUTH_SENTINEL
