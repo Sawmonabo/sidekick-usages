@@ -3,11 +3,9 @@
 import socket
 from collections.abc import Iterator
 from dataclasses import dataclass
-from pathlib import Path
 from threading import Event, Thread
 
 from sidekick_usages import __version__
-from sidekick_usages.clock import Clock
 from sidekick_usages.core.accounts.identifiers import new_request_id
 from sidekick_usages.core.accounts.types import OperationId, RequestId
 from sidekick_usages.core.selection.models import SelectionEpoch
@@ -29,6 +27,7 @@ from sidekick_usages.daemon.models.protocol import (
     CompletedPayload,
     ControlEvent,
     ControlRequest,
+    EmptyPayload,
     EventPayload,
     ProgressPayload,
 )
@@ -40,10 +39,10 @@ from sidekick_usages.daemon.selection.models import (
     ParticipantClientKind,
     ParticipantConnectionRequest,
     ParticipantManifest,
+    ParticipantNotice,
 )
 from sidekick_usages.daemon.selection.ports import SelectionSupervisorPort
 from sidekick_usages.daemon.selection.registry import ParticipantRegistry
-from sidekick_usages.daemon.types.control import ControlFailurePhase
 from sidekick_usages.daemon.types.ports import (
     ControlDispatcher,
     ResidentService,
@@ -71,9 +70,6 @@ _RESPONSE_BUFFER_SIZE = 65_540
 _SERVER_JOIN_SECONDS = 2
 _SUBSCRIPTION_WAIT_SECONDS = 2
 _BLOCKED_RECEIVE_SECONDS = 2
-_CANCELLATION_PARTICIPANT_ID = ParticipantId(
-    "5b78ccdf-5e8b-4054-a86f-e6a052bc742a"
-)
 
 
 class FragmentingSocket:
@@ -210,38 +206,12 @@ class RecordingDispatcher:
         self.release_subscription.set()
 
 
-class CancellationFaultDispatcher:
-    """Fail one exact cancellation while recording later monitor work."""
-
-    def __init__(self) -> None:
-        self.cancellations: list[RequestId] = []
-        self.attempted = (Event(), Event(), Event())
-        self.participant_unreachable = Event()
-
-    def dispatch(
-        self,
-        context: VerifiedControlRequest,
-    ) -> Iterator[ControlEvent]:
-        """Expose no request path in the monitor-only proof."""
-        del context
-        return iter(())
-
-    def cancel(self, context: VerifiedControlRequest) -> None:
-        """Fail the second cancellation and record every exact attempt."""
-        index = len(self.cancellations)
-        self.cancellations.append(context.request.request_id)
-        if index < len(self.attempted):
-            self.attempted[index].set()
-        if index == 1:
-            self.participant_unreachable.set()
-            raise RuntimeError("synthetic cancellation failure")
-
-
-class _FailingRegistryCancellation(SelectionSupervisorPort):
-    """Fail after the production registry retains unreachable truth."""
+class FailingRegistrySelection(SelectionSupervisorPort):
+    """Fail one cancellation after retaining registry disconnect truth."""
 
     def __init__(self, registry: ParticipantRegistry) -> None:
         self._registry = registry
+        self.attempted = Event()
 
     def cancel_subscription(
         self,
@@ -249,7 +219,7 @@ class _FailingRegistryCancellation(SelectionSupervisorPort):
         request: ParticipantConnectionRequest,
         peer: ProcessIdentity,
     ) -> None:
-        """Disconnect the exact registry owner before the synthetic fault."""
+        """Disconnect exactly, then fail the downstream step."""
         self._registry.require_peer(
             request.participant_id,
             request.connection_generation,
@@ -260,7 +230,152 @@ class _FailingRegistryCancellation(SelectionSupervisorPort):
             request.participant_id,
             request.connection_generation,
         )
-        raise RuntimeError("synthetic downstream cancellation failure")
+        self.attempted.set()
+        raise RuntimeError("synthetic cancellation failure")
+
+
+@dataclass(frozen=True, slots=True)
+class RegistryMonitorResult:
+    """Observed state from one production cancellation journey."""
+
+    participant_id: ParticipantId
+    registry_state: tuple[
+        int,
+        tuple[ParticipantId, ...],
+        tuple[ParticipantNotice, ...],
+    ]
+    cancellation_states: tuple[bool, bool, bool, bool, bool, bool]
+    diagnostics: str
+
+
+class RegistryMonitorScenario:
+    """Own sockets and production services for one monitor journey."""
+
+    def __init__(
+        self,
+        state: FoundationState,
+        resident: ResidentService,
+    ) -> None:
+        self._state = state
+        self._resident = resident
+
+    def exercise(self) -> RegistryMonitorResult:
+        """Run registration, failed cancellation, and later cancellation."""
+        participant_id = ParticipantId("5b78ccdf-5e8b-4054-a86f-e6a052bc742a")
+        process = ProcessIdentity(101, 202)
+        registry = ParticipantRegistry(self._state.selected)
+        registry.register(
+            ParticipantManifest(
+                participant_id=participant_id,
+                provider_id=ProviderId.CLAUDE,
+                client_kind=ParticipantClientKind.CLAUDE_CODE,
+                capability_version=1,
+                connection_generation=1,
+            ),
+            process,
+        )
+        participant = ParticipantConnectionRequest(participant_id, 1)
+        first, first_peer = _subscription_pair(
+            RequestKind.PARTICIPANT_SUBSCRIBE,
+            participant,
+            process,
+        )
+        notices = registry.subscribe(
+            first.context.request.request_id,
+            participant,
+        )
+        next(notices)
+        registry.close_admission(ProviderId.CLAUDE, SelectionEpoch(1))
+        selection = FailingRegistrySelection(registry)
+        diagnostic = ControlFailureDiagnosticSink(
+            SanitizedDiagnosticLog(self._state.paths.service_logs),
+            FixedClock(),
+        )
+        dispatcher = SupervisorDispatcher(
+            self._state.queue,
+            ServiceStateStore(self._state.paths.service_state),
+            OperationEventHub(diagnostic.failed),
+            self._resident,
+            FixedClock(),
+            Event().set,
+            Event().set,
+            selection=selection,
+        )
+        monitor = ControlSubscriptionMonitor(
+            dispatcher,
+            failure_reporter=diagnostic.failed,
+        )
+        failed_registration, failed_peer = _subscription_pair(
+            RequestKind.SUBSCRIBE,
+            EmptyPayload(),
+        )
+        later, later_peer = _subscription_pair(
+            RequestKind.SUBSCRIBE,
+            EmptyPayload(),
+        )
+        failed_registration.connection.close()
+        monitor.start()
+        try:
+            monitor.register(failed_registration)
+            registration_cancelled = failed_registration.cancelled.wait(2)
+            first_peer.close()
+            monitor.register(first)
+            cancellation_attempted = selection.attempted.wait(2)
+            observed_notices = tuple(notices) if cancellation_attempted else ()
+            later_peer.close()
+            monitor.register(later)
+            later_cancelled = later.cancelled.wait(2)
+        finally:
+            monitor.close()
+            for subscription, peer in (
+                (first, first_peer),
+                (failed_registration, failed_peer),
+                (later, later_peer),
+            ):
+                subscription.connection.close()
+                peer.close()
+        snapshot = registry.snapshot(ProviderId.CLAUDE)
+        return RegistryMonitorResult(
+            participant_id=participant_id,
+            registry_state=(
+                snapshot.reachable_count,
+                snapshot.unreachable_participant_ids,
+                observed_notices,
+            ),
+            cancellation_states=(
+                registration_cancelled,
+                cancellation_attempted,
+                first.cancelled.is_set(),
+                first.cancellation_failed.is_set(),
+                later_cancelled,
+                later.cancellation_failed.is_set(),
+            ),
+            diagnostics=(
+                self._state.paths.service_logs / "supervisor.jsonl"
+            ).read_text(),
+        )
+
+
+def _subscription_pair(
+    kind: RequestKind,
+    payload: EmptyPayload | ParticipantConnectionRequest,
+    process: ProcessIdentity | None = None,
+) -> tuple[ControlSubscription, socket.socket]:
+    server, client = socket.socketpair()
+    request = ControlRequest(
+        PROTOCOL_VERSION,
+        new_request_id(),
+        kind,
+        payload,
+        __version__,
+    )
+    return (
+        ControlSubscription(
+            server,
+            VerifiedControlRequest(request, PeerIdentity(1000, process)),
+        ),
+        client,
+    )
 
 
 def _service_event(
@@ -310,150 +425,6 @@ def exercise_closed_subscription_monitor(
     monitor.start()
     monitor.close()
     client.close()
-
-
-def exercise_subscription_monitor_failures(
-    context: VerifiedControlRequest,
-    log_root: Path,
-) -> None:
-    """Prove failed registration and cancellation remain fault-isolated."""
-    dispatcher = CancellationFaultDispatcher()
-    diagnostic = ControlFailureDiagnosticSink(
-        SanitizedDiagnosticLog(log_root),
-        FixedClock(),
-    )
-    monitor = ControlSubscriptionMonitor(
-        dispatcher,
-        failure_reporter=diagnostic.failed,
-    )
-    monitor.start()
-    subscriptions: list[ControlSubscription] = []
-    clients: list[socket.socket] = []
-    try:
-        failed_server, failed_client = socket.socketpair()
-        failed_server.close()
-        failed_registration = ControlSubscription(failed_server, context)
-        subscriptions.append(failed_registration)
-        clients.append(failed_client)
-        monitor.register(failed_registration)
-
-        first_server, first_client = socket.socketpair()
-        first_client.close()
-        failed_cancellation = ControlSubscription(first_server, context)
-        subscriptions.append(failed_cancellation)
-        monitor.register(failed_cancellation)
-
-        second_server, second_client = socket.socketpair()
-        second_client.close()
-        later_cancellation = ControlSubscription(second_server, context)
-        subscriptions.append(later_cancellation)
-        monitor.register(later_cancellation)
-
-        if not all(
-            attempt.wait(_SUBSCRIPTION_WAIT_SECONDS)
-            for attempt in dispatcher.attempted
-        ):
-            raise AssertionError("Monitor did not isolate subscription.")
-    finally:
-        monitor.close()
-        for subscription in subscriptions:
-            subscription.connection.close()
-        for client in clients:
-            client.close()
-    if len(dispatcher.cancellations) != len(dispatcher.attempted):
-        raise AssertionError("Monitor did not attempt each cancellation.")
-    if not failed_registration.cancelled.is_set():
-        raise AssertionError("Failed registration did not cancel its stream.")
-    if (
-        not failed_cancellation.cancellation_failed.is_set()
-        or failed_cancellation.cancelled.is_set()
-    ):
-        raise AssertionError("Failed cancellation was reported as success.")
-    if not later_cancellation.cancelled.is_set():
-        raise AssertionError("Later subscription was not monitored.")
-    if not dispatcher.participant_unreachable.is_set():
-        raise AssertionError("Failed participant remained falsely reachable.")
-    diagnostic_payload = (log_root / "supervisor.jsonl").read_text(
-        encoding="utf-8"
-    )
-    if (
-        diagnostic_payload.count(
-            ControlFailurePhase.SUBSCRIPTION_CANCELLATION.value
-        )
-        != 1
-        or "synthetic cancellation failure" in diagnostic_payload
-    ):
-        raise AssertionError("Cancellation failure was not diagnosed once.")
-
-
-def exercise_registry_cancellation_truth(
-    state: FoundationState,
-    resident: ResidentService,
-    clock: Clock,
-) -> None:
-    """Prove production dispatch retains registry unreachable truth."""
-    registry = ParticipantRegistry(state.selected)
-    peer = ProcessIdentity(101, 202)
-    manifest = ParticipantManifest(
-        participant_id=_CANCELLATION_PARTICIPANT_ID,
-        provider_id=ProviderId.CLAUDE,
-        client_kind=ParticipantClientKind.CLAUDE_CODE,
-        capability_version=1,
-        connection_generation=1,
-    )
-    registry.register(manifest, peer)
-    request_id = new_request_id()
-    connection = ParticipantConnectionRequest(
-        _CANCELLATION_PARTICIPANT_ID,
-        1,
-    )
-    notices = registry.subscribe(request_id, connection)
-    next(notices)
-    registry.close_admission(ProviderId.CLAUDE, SelectionEpoch(1))
-    dispatcher = SupervisorDispatcher(
-        state.queue,
-        ServiceStateStore(state.paths.service_state),
-        OperationEventHub(),
-        resident,
-        clock,
-        Event().set,
-        Event().set,
-        selection=_FailingRegistryCancellation(registry),
-    )
-    request = ControlRequest(
-        PROTOCOL_VERSION,
-        request_id,
-        RequestKind.PARTICIPANT_SUBSCRIBE,
-        connection,
-        __version__,
-    )
-    try:
-        dispatcher.cancel(
-            VerifiedControlRequest(request, PeerIdentity(1000, peer))
-        )
-    except RuntimeError:
-        pass
-    else:
-        raise AssertionError("Synthetic cancellation failure did not escape.")
-    snapshot = registry.snapshot(ProviderId.CLAUDE)
-    if (
-        snapshot.reachable_count != 0
-        or snapshot.unreachable_participant_ids
-        != (_CANCELLATION_PARTICIPANT_ID,)
-    ):
-        raise AssertionError("Registry did not retain unreachable truth.")
-    if tuple(notices):
-        raise AssertionError("Disconnected subscription remained blocked.")
-
-
-def exercise_control_cancellation_failures(
-    context: VerifiedControlRequest,
-    state: FoundationState,
-    resident: ResidentService,
-) -> None:
-    """Prove monitor isolation and production registry truth together."""
-    exercise_subscription_monitor_failures(context, state.paths.service_logs)
-    exercise_registry_cancellation_truth(state, resident, FixedClock())
 
 
 def rejected_protocol_response(

@@ -116,11 +116,11 @@ from sidekick_usages.platform.types import PeerFailureCode, PeerVerifier
 from tests.fakes.daemon.control import (
     FragmentingSocket,
     RecordingDispatcher,
+    RegistryMonitorScenario,
     RejectedPeer,
     VerifiedPeer,
     exercise_blocked_stream_cancellation,
     exercise_closed_subscription_monitor,
-    exercise_control_cancellation_failures,
     rejected_protocol_response,
     serve_protocol_connection,
 )
@@ -138,9 +138,8 @@ from tests.support.time import REFERENCE_TIME, FixedClock
 class _OperatorSelection(SelectionSupervisorPort):
     """Return one immediate result through the operator control surface."""
 
-    def __init__(self, failure: Exception | None = None) -> None:
+    def __init__(self) -> None:
         self.operation_id: OperationId | None = None
-        self._failure = failure
 
     def select(
         self,
@@ -149,8 +148,8 @@ class _OperatorSelection(SelectionSupervisorPort):
         target_account_id: SidekickAccountId,
     ) -> SelectionResult:
         """Record and complete one exact synthetic selection."""
-        if self._failure is not None:
-            raise self._failure
+        if self.operation_id is not None:
+            raise ValueError("synthetic fault")
         self.operation_id = operation_id
         return SelectionResult(
             operation_id=operation_id,
@@ -168,14 +167,19 @@ class _OperatorSelection(SelectionSupervisorPort):
             completed_at=REFERENCE_TIME,
         )
 
-    def fail(self) -> None:
-        """Make the next synthetic selection expose a programming fault."""
-        self._failure = ValueError("synthetic fault")
-
 
 def _verified(request: ControlRequest) -> VerifiedControlRequest:
     """Pair one direct dispatcher request with same-user proof."""
     return VerifiedControlRequest(request, PeerIdentity(1000))
+
+
+def _assert_monitor(state: FoundationState, resident: ResidentState) -> None:
+    """Assert the complete transactional cancellation contract."""
+    result = RegistryMonitorScenario(state, resident).exercise()
+    assert result.cancellation_states == (True, True, False, True, True, False)
+    assert result.registry_state == (0, (result.participant_id,), ())
+    assert result.diagnostics.count("subscription_cancellation_failed") == 1
+    assert "synthetic cancellation failure" not in result.diagnostics
 
 
 def _assert_reused_operation_follows_current_events(
@@ -301,8 +305,7 @@ def test_authenticated_control_stream_frames_completes_and_cancels(
         _verified(fragmented_request),
     )
     assert dispatcher.cancellations == [accepted.request_id]
-    state = foundation_state(tmp_path)
-    resident = ResidentState()
+    state, resident = foundation_state(tmp_path), ResidentState()
     durable_dispatcher = SupervisorDispatcher(
         state.queue,
         ServiceStateStore(state.paths.service_state),
@@ -312,11 +315,7 @@ def test_authenticated_control_stream_frames_completes_and_cancels(
         Event().set,
         Event().set,
     )
-    exercise_control_cancellation_failures(
-        _verified(fragmented_request),
-        state,
-        resident,
-    )
+    _assert_monitor(state, resident)
     approved_request = replace(
         fragmented_request,
         request_id=new_request_id(),
@@ -546,7 +545,6 @@ def test_select_accepts_with_the_correlated_operation_id(
     assert isinstance(completed.payload, SelectionResult)
     assert completed.payload.operation_id == operation_id
     assert selection.operation_id == operation_id
-    selection.fail()
     failed = tuple(dispatcher.dispatch(_verified(request)))[-1]
     assert isinstance(failed.payload, FailedPayload)
     assert failed.payload.code == ProtocolErrorCode.DISPATCH_FAILED.value
