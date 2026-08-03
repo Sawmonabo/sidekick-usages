@@ -8,6 +8,7 @@ from sidekick_usages.core.accounts.models import (
     CodexManagedAuthority,
     SavedAccount,
 )
+from sidekick_usages.core.recovery import PreparationReport
 from sidekick_usages.core.selection.models import safe_outcome_code
 from sidekick_usages.core.time import as_utc
 from sidekick_usages.daemon.types.protocol import MAX_PROTOCOL_VERSION
@@ -17,6 +18,10 @@ from sidekick_usages.daemon.types.service import (
 )
 
 _MAX_ACTIVE_WORKERS = 64
+
+
+class ServicePreparationReport(PreparationReport[str]):
+    """Bounded provider-neutral dry-run operator recovery guidance."""
 
 
 def requires_codex_broker(account: SavedAccount) -> bool:
@@ -42,6 +47,7 @@ class ServiceState:
     broker_ready: bool
     active_workers: int
     failure_code: str | None = None
+    preparation_report: ServicePreparationReport | None = None
 
     def __post_init__(self) -> None:
         """Validate bounded counters and readiness invariants."""
@@ -63,11 +69,21 @@ class ServiceState:
             raise ValueError("Active worker count is invalid.")
         object.__setattr__(self, "observed_at", as_utc(self.observed_at))
         code = safe_outcome_code(self.failure_code)
+        report = self.preparation_report
+        if report is not None and (
+            not isinstance(report, ServicePreparationReport)
+            or code is None
+            or self.broker_ready
+        ):
+            raise ValueError(
+                "Service preparation requires a degraded broker failure."
+            )
         if self.phase is ServicePhase.READY and (
             not self.queue_recovered
             or not self.journals_reconciled
             or not self.broker_ready
             or code is not None
+            or report is not None
         ):
             raise ValueError(
                 "Ready service state requires recovered resident state."

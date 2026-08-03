@@ -11,16 +11,25 @@ from sidekick_usages.core.accounts.types import (
     AuthorityId,
     SidekickAccountId,
 )
-from sidekick_usages.paths import ApplicationPaths, managed_codex_home
+from sidekick_usages.paths import (
+    ApplicationPaths,
+    discover_application_paths,
+    managed_codex_home,
+)
 from sidekick_usages.persistence.accounts.reader import AccountIndexReader
 from sidekick_usages.persistence.private.credentials import (
     PrivateCredentialTree,
 )
+from sidekick_usages.providers.claude.auth.storage.service import (
+    claude_credential_basename,
+)
+from sidekick_usages.providers.codex.auth.home import default_codex_home
+from sidekick_usages.providers.codex.auth.storage import codex_auth_basename
 from sidekick_usages.providers.codex.broker.errors import CodexBrokerError
-from sidekick_usages.providers.codex.broker.types import CodexBrokerFailure
-from sidekick_usages.providers.codex.session.home import (
+from sidekick_usages.providers.codex.broker.service import (
     prepare_codex_session_home,
 )
+from sidekick_usages.providers.codex.broker.types import CodexBrokerFailure
 from sidekick_usages.providers.codex.session.models import (
     CODEX_SESSION_OPERATOR_PRECONDITION,
     CodexSessionConfigurationReason,
@@ -51,6 +60,11 @@ def _prepare(paths: ApplicationPaths) -> Path:
             account_path=paths.accounts,
         ),
         AccountIndexReader(paths.accounts).load,
+        native_home=default_codex_home(),
+        forbidden_entries=(
+            codex_auth_basename(),
+            claude_credential_basename(),
+        ),
     )
 
 
@@ -69,6 +83,17 @@ def test_session_home_is_created_only_by_its_qualified_owner(
     assert stat.S_IMODE(metadata.st_mode) == _PRIVATE_DIRECTORY_MODE
     assert prepared.resolve(strict=True) == prepared
     assert tuple(prepared.iterdir()) == ()
+
+
+def test_session_home_preserves_unrelated_settings(tmp_path: Path) -> None:
+    paths = make_application_paths(tmp_path / "state")
+    paths.codex_session_home.mkdir(parents=True, mode=0o700)
+    settings = paths.codex_session_home / "config.toml"
+    expected = b'analytics = false\nmodel = "synthetic"\n'
+    settings.write_bytes(expected)
+
+    assert _prepare(paths) == paths.codex_session_home
+    assert settings.read_bytes() == expected
 
 
 @pytest.mark.parametrize(
@@ -141,8 +166,13 @@ def test_session_home_rejects_unsafe_or_credential_bearing_state(
     assert report.operator_steps[0] == CODEX_SESSION_OPERATOR_PRECONDITION
 
 
-def test_session_home_cannot_alias_a_saved_private_authority(
+@pytest.mark.parametrize(
+    "collision",
+    ["saved-home", "private-root", "inside-root", "contains-root"],
+)
+def test_session_home_cannot_overlap_a_saved_private_authority(
     tmp_path: Path,
+    collision: str,
 ) -> None:
     account = managed_saved_account(
         _ACCOUNT_ID,
@@ -162,7 +192,13 @@ def test_session_home_cannot_alias_a_saved_private_authority(
         },
     )
     private_home = managed_codex_home(paths, _ACCOUNT_ID)
-    colliding = replace(paths, codex_session_home=private_home)
+    session_home = {
+        "saved-home": private_home,
+        "private-root": paths.private_codex_profiles,
+        "inside-root": paths.private_codex_profiles / "neutral",
+        "contains-root": paths.private_codex_profiles.parent,
+    }[collision]
+    colliding = replace(paths, codex_session_home=session_home)
 
     with pytest.raises(CodexBrokerError) as refused:
         _prepare(colliding)
@@ -170,6 +206,39 @@ def test_session_home_cannot_alias_a_saved_private_authority(
     report = refused.value.preparation_report
     assert report is not None
     assert report.operator_steps[0] == CODEX_SESSION_OPERATOR_PRECONDITION
+    assert (
+        report.reason
+        is CodexSessionConfigurationReason.PRIVATE_AUTHORITY_COLLISION
+    )
+
+
+@pytest.mark.parametrize(
+    "authority_source",
+    ["codex-home", "codex-home-child", "xdg-home"],
+)
+def test_session_home_cannot_overlap_native_codex_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    authority_source: str,
+) -> None:
+    if authority_source.startswith("codex-home"):
+        paths = make_application_paths(tmp_path / "state")
+        native_home = paths.codex_session_home
+        if authority_source == "codex-home-child":
+            native_home /= "native-authority"
+        monkeypatch.setenv("CODEX_HOME", str(native_home))
+    else:
+        native_home = tmp_path / "native-home"
+        monkeypatch.setenv("HOME", str(native_home))
+        monkeypatch.delenv("CODEX_HOME", raising=False)
+        monkeypatch.setenv("XDG_DATA_HOME", str(native_home / ".codex"))
+        paths = discover_application_paths()
+
+    with pytest.raises(CodexBrokerError) as refused:
+        _prepare(paths)
+
+    report = refused.value.preparation_report
+    assert report is not None
     assert (
         report.reason
         is CodexSessionConfigurationReason.PRIVATE_AUTHORITY_COLLISION

@@ -126,6 +126,7 @@ def _metrics_refresh_cause_dict(
 
 def _service_dict(health: SupervisorHealth) -> JsonObject:
     """Build machine-readable resident-service health."""
+    preparation = health.broker_preparation_report
     return {
         "backend": health.backend.value,
         "cli_version": str(health.cli_version),
@@ -142,6 +143,15 @@ def _service_dict(health: SupervisorHealth) -> JsonObject:
         "protocol": health.protocol.value,
         "broker": health.broker.value,
         "broker_failure_code": health.broker_failure_code,
+        "broker_preparation_report": (
+            None
+            if preparation is None
+            else {
+                "dry_run": preparation.dry_run,
+                "operator_steps": list(preparation.operator_steps),
+                "reason": preparation.reason,
+            }
+        ),
     }
 
 

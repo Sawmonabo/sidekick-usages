@@ -15,7 +15,10 @@ from threading import (
 from sidekick_usages import __version__
 from sidekick_usages.clock import Clock
 from sidekick_usages.daemon.control.server import LocalControlServer
-from sidekick_usages.daemon.models.service import ServiceState
+from sidekick_usages.daemon.models.service import (
+    ServicePreparationReport,
+    ServiceState,
+)
 from sidekick_usages.daemon.runtime.recovery import ActivationRecoveryScheduler
 from sidekick_usages.daemon.runtime.scheduler import DurableScheduler
 from sidekick_usages.daemon.types.lifecycle import ServiceFailureCode
@@ -211,6 +214,7 @@ class SupervisorRuntime:
         journals_reconciled = self._recovery.reconciled()
         broker_ready = self._resident.available
         failure_code: str | None = None
+        preparation_report: ServicePreparationReport | None = None
         if phase is None:
             recovered = (
                 queue_recovered and journals_reconciled and broker_ready
@@ -225,6 +229,14 @@ class SupervisorRuntime:
                         or ServiceFailureCode.CODEX_BROKER_UNAVAILABLE.value
                     )
                 )
+                if failure_code == self._resident.failure_code:
+                    resident_report = self._resident.preparation_report
+                    if resident_report is not None:
+                        preparation_report = ServicePreparationReport(
+                            reason=resident_report.reason_value,
+                            operator_steps=resident_report.operator_steps,
+                            dry_run=resident_report.dry_run,
+                        )
         candidate = ServiceState(
             protocol_version=PROTOCOL_VERSION,
             package_version=self._package_version,
@@ -236,6 +248,7 @@ class SupervisorRuntime:
             broker_ready=broker_ready,
             active_workers=self._scheduler.active_count,
             failure_code=failure_code,
+            preparation_report=preparation_report,
         )
         if (
             current is not None

@@ -5,6 +5,7 @@ from pathlib import Path
 
 from sidekick_usages.core.selection.models import safe_outcome_code
 from sidekick_usages.core.types import ExitCode, ProviderId
+from sidekick_usages.daemon.models.service import ServicePreparationReport
 from sidekick_usages.daemon.types.lifecycle import (
     ServiceBackendId,
     ServiceComponentState,
@@ -211,6 +212,7 @@ class SupervisorHealth:
     journal: ServiceComponentState
     broker: ServiceComponentState
     broker_failure_code: str | None = None
+    broker_preparation_report: ServicePreparationReport | None = None
 
     def __post_init__(self) -> None:
         """Require closed component states and bounded versions."""
@@ -240,12 +242,21 @@ class SupervisorHealth:
         ):
             raise ValueError("Supervisor component health is invalid.")
         broker_failure_code = safe_outcome_code(self.broker_failure_code)
+        preparation_report = self.broker_preparation_report
         if (
             broker_failure_code is not None
             and self.broker is not ServiceComponentState.UNHEALTHY
         ):
             raise ValueError(
                 "Supervisor broker failure requires unhealthy broker state."
+            )
+        if preparation_report is not None and (
+            not isinstance(preparation_report, ServicePreparationReport)
+            or broker_failure_code is None
+            or self.broker is not ServiceComponentState.UNHEALTHY
+        ):
+            raise ValueError(
+                "Supervisor preparation requires unhealthy broker state."
             )
         object.__setattr__(
             self,

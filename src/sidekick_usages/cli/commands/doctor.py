@@ -56,6 +56,7 @@ def _scoped_supervisor(
             health,
             broker=ServiceComponentState.NOT_REQUIRED,
             broker_failure_code=None,
+            broker_preparation_report=None,
         )
     return health
 

@@ -36,6 +36,7 @@ from sidekick_usages.daemon.models.lifecycle import (
     SupervisorHealth,
 )
 from sidekick_usages.daemon.models.service import (
+    ServicePreparationReport,
     ServiceState,
     requires_codex_broker,
 )
@@ -363,6 +364,7 @@ class SupervisorReadiness:
                 journal=unavailable,
                 broker=broker,
                 broker_failure_code=None,
+                broker_preparation_report=None,
             )
 
         state_readable = True
@@ -403,6 +405,11 @@ class SupervisorReadiness:
             journal=self._journal_health(state, state_readable),
             broker=broker,
             broker_failure_code=_broker_failure_code(
+                broker,
+                state,
+                state_readable,
+            ),
+            broker_preparation_report=_broker_preparation_report(
                 broker,
                 state,
                 state_readable,
@@ -692,6 +699,21 @@ def _broker_failure_code(
     ):
         return None
     return state.failure_code
+
+
+def _broker_preparation_report(
+    broker: ServiceComponentState,
+    state: ServiceState | None,
+    state_readable: bool,
+) -> ServicePreparationReport | None:
+    if (
+        broker is not ServiceComponentState.UNHEALTHY
+        or not state_readable
+        or state is None
+        or not state.broker_degraded()
+    ):
+        return None
+    return state.preparation_report
 
 
 def _maintenance_settled(

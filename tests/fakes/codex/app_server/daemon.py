@@ -19,6 +19,7 @@ from websockets.sync.server import (
     unix_serve,
 )
 
+from sidekick_usages.core.accounts.types import ProviderIdentity
 from sidekick_usages.errors import InvalidPayloadError
 from sidekick_usages.providers.codex.account.types import CodexAuthMode
 from sidekick_usages.providers.codex.broker.responder import (
@@ -81,6 +82,7 @@ class FakeCodexDaemon:
         self._originator: str | None = None
         self._ready_account_read_count = 0
         self._auth_status_read_count = 0
+        self._model_auth_read_count = 0
         self._next_server_request_id = 0
         self._refresh_event: Event | None = None
         self._refresh_request_id: int | None = None
@@ -115,6 +117,12 @@ class FakeCodexDaemon:
         """Return effective native-auth observations."""
         with self._lock:
             return self._auth_status_read_count
+
+    @property
+    def model_auth_read_count(self) -> int:
+        """Return synthetic model reads of current external auth."""
+        with self._lock:
+            return self._model_auth_read_count
 
     @property
     def config_read_count(self) -> int:
@@ -184,6 +192,25 @@ class FakeCodexDaemon:
                 },
             }
         )
+
+    def install_external_auth(
+        self,
+        provider_identity: ProviderIdentity,
+        generation: str,
+    ) -> None:
+        """Install synthetic auth through the daemon mutation boundary."""
+        account_id = str(provider_identity)
+        access_token = _auth_access_token(managed_auth(account_id, generation))
+        self._record_external_auth(account_id, access_token)
+
+    def read_current_external_auth(self) -> ProviderIdentity:
+        """Read the daemon's actual current external-auth identity."""
+        with self._lock:
+            active = self._active_account_id
+            self._model_auth_read_count += 1
+        if active is None:
+            raise AssertionError("Fake Codex daemon has no current auth.")
+        return ProviderIdentity(active)
 
     def connect_tui(self) -> FakeCodexTuiObserver:
         """Connect one initialized official-shaped TUI observer."""
@@ -530,10 +557,7 @@ class FakeCodexDaemon:
             or _token_account_id(access_token) != account_id
         ):
             raise AssertionError("Codex fake projection is inconsistent.")
-        with self._lock:
-            self._active_account_id = account_id
-            self._active_access_token = access_token
-            self._installed_account_ids.append(account_id)
+        self._record_external_auth(account_id, access_token)
         _send(
             connection,
             {
@@ -570,6 +594,17 @@ class FakeCodexDaemon:
             ):
                 raise AssertionError("Fake Codex install was not resumed.")
             self._install_resumed.set()
+
+    def _record_external_auth(
+        self,
+        account_id: str,
+        access_token: str,
+    ) -> None:
+        """Record one external-auth installation used by all fake paths."""
+        with self._lock:
+            self._active_account_id = account_id
+            self._active_access_token = access_token
+            self._installed_account_ids.append(account_id)
 
     def _read_account(
         self,

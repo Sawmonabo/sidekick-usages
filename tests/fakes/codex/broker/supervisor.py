@@ -15,6 +15,7 @@ from sidekick_usages.daemon.control.dispatch import (
     SupervisorDispatcher,
 )
 from sidekick_usages.daemon.control.server import LocalControlServer
+from sidekick_usages.daemon.models.service import ServicePreparationReport
 from sidekick_usages.daemon.models.worker import ProviderLaunchers
 from sidekick_usages.daemon.runtime.codex import (
     DurableCodexOperationDispatcher,
@@ -313,6 +314,12 @@ class FakeCodexSupervisor:
         """Return the broker's retained safe typed failure."""
         return self._broker.failure_code
 
+    @property
+    def broker_preparation_report(self) -> ServicePreparationReport | None:
+        """Return the persisted supervised recovery guidance."""
+        state = self._service_state.load()
+        return None if state is None else state.preparation_report
+
     def start(self) -> None:
         """Start the production runtime in one owned background thread."""
         if self._thread is not None:
@@ -333,6 +340,16 @@ class FakeCodexSupervisor:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise AssertionError("Fake supervisor did not become ready.")
+            self._stop.wait(min(_WAIT_INTERVAL_SECONDS, remaining))
+
+    def wait_until_broker_available(self) -> None:
+        """Wait for the runtime without requiring journal reconciliation."""
+        deadline = time.monotonic() + _READINESS_TIMEOUT_SECONDS
+        while not self.broker_available:
+            self._raise_failure()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise AssertionError("Fake broker did not become available.")
             self._stop.wait(min(_WAIT_INTERVAL_SECONDS, remaining))
 
     def wait_until_broker_failure(self, failure_code: str) -> None:

@@ -71,9 +71,14 @@ from sidekick_usages.persistence.supervisor.selection import (
     SelectionOperationStore,
 )
 from sidekick_usages.persistence.supervisor.service import ServiceStateStore
+from sidekick_usages.providers.claude.auth.storage.service import (
+    claude_credential_basename,
+)
 from sidekick_usages.providers.codex.app_server.executable import (
     discover_codex_executable_from_launcher,
 )
+from sidekick_usages.providers.codex.auth.home import default_codex_home
+from sidekick_usages.providers.codex.auth.storage import codex_auth_basename
 from sidekick_usages.providers.codex.broker.responder import CodexRuntimeBroker
 from sidekick_usages.providers.codex.broker.service import (
     CodexSharedRuntime,
@@ -111,6 +116,11 @@ def _create_codex_runtime(
             account_path=paths.accounts,
         ),
         AccountIndexReader(paths.accounts).load,
+        native_home=default_codex_home(),
+        forbidden_entries=(
+            codex_auth_basename(),
+            claude_credential_basename(),
+        ),
     )
     executable = discover_codex_executable_from_launcher(
         launcher,

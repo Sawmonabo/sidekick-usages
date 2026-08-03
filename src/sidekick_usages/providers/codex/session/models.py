@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from enum import StrEnum
 
+from sidekick_usages.core.recovery import PreparationReport
 from sidekick_usages.providers.codex.app_server.models import CodexVersion
 from sidekick_usages.providers.codex.app_server.release import (
     CODEX_SESSION_VERSION,
@@ -16,8 +17,6 @@ CODEX_SESSION_OPERATOR_PRECONDITION = (
     "Out of band, confirm no integrated Codex session is active; do not use "
     "account selection as session preparation."
 )
-_MAX_PREPARATION_STEPS = 3
-_MAX_OPERATOR_STEP_BYTES = 256
 
 
 class CodexSessionConfigurationReason(StrEnum):
@@ -30,28 +29,16 @@ class CodexSessionConfigurationReason(StrEnum):
     RESIDENT_CONFIG_STALE = "resident_config_stale"
 
 
-@dataclass(frozen=True, slots=True)
-class CodexSessionPreparationReport:
+class CodexSessionPreparationReport(
+    PreparationReport[CodexSessionConfigurationReason]
+):
     """Bounded token-free dry-run detail for operator recovery."""
 
-    reason: CodexSessionConfigurationReason
-    operator_steps: tuple[str, ...]
-    dry_run: bool = True
-
     def __post_init__(self) -> None:
-        """Require one bounded immutable dry-run recovery sequence."""
-        if (
-            not isinstance(self.reason, CodexSessionConfigurationReason)
-            or self.dry_run is not True
-            or not 1 <= len(self.operator_steps) <= _MAX_PREPARATION_STEPS
-            or any(
-                not isinstance(step, str)
-                or not step
-                or len(step.encode("utf-8")) > _MAX_OPERATOR_STEP_BYTES
-                for step in self.operator_steps
-            )
-        ):
+        """Require one exact Codex reason and shared bounded sequence."""
+        if not isinstance(self.reason, CodexSessionConfigurationReason):
             raise ValueError("Codex session preparation report is invalid.")
+        super().__post_init__()
 
 
 @dataclass(frozen=True, slots=True)

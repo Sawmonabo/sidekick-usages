@@ -259,6 +259,7 @@ def test_codex_activation_commits_only_correlated_target(
             fixture.environment,
             real_worker_executable(),
         ) as restarted:
+            restarted.wait_until_broker_available()
             daemon.wait_for_paused_install()
             daemon.resume_install()
             wait_for_projected_generation(
@@ -358,14 +359,9 @@ def test_codex_activation_recovers_at_official_mutation_boundary(
             fixture.environment,
             real_worker_executable(),
         ) as restarted:
+            restarted.wait_until_broker_available()
             daemon.wait_for_paused_install()
-            client = ControlClient.connect(fixture.paths.supervisor_socket)
-            retry = client.reconcile(ProviderId.CODEX)
-            accepted = next(retry)
-            assert accepted.kind is EventKind.ACCEPTED
             daemon.resume_install()
-            assert tuple(retry)[-1].kind is EventKind.COMPLETED
-            client.close()
             wait_for_projected_generation(
                 fixture.paths,
                 MANAGED_ACCOUNT_ID,

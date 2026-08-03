@@ -87,6 +87,39 @@ CLAUDE_RECOVERY_OPERATION_ID = OperationId(
 )
 NATIVE_SUPERSEDED_CODE = "superseded_by_native_login"
 MANAGED_AUTH_MIGRATION_REQUIRED_CODE = "managed_auth_migration_required"
+_LEGACY_SERVICE_STATE = b"""{
+  "active_workers": 0,
+  "broker_ready": true,
+  "failure_code": null,
+  "journals_reconciled": true,
+  "observed_at": "2025-01-15T12:00:00.000000Z",
+  "package_version": "0.7.0",
+  "phase": "ready",
+  "protocol_version": 3,
+  "queue_recovered": true,
+  "revision": 9,
+  "schema_version": 2
+}
+"""
+
+
+def _prove_legacy_starting_upgrade(
+    runtime: SupervisorRuntime,
+    state_path: Path,
+) -> SupervisorRuntime:
+    """Prove exact canonical v2 state upgrades on STARTING publication."""
+    state_path.write_bytes(_LEGACY_SERVICE_STATE)
+    state_path.chmod(0o600)
+    runtime._publish(ServicePhase.STARTING)
+    upgraded = ServiceStateStore(state_path).load()
+    assert upgraded is not None
+    assert (
+        upgraded.phase,
+        upgraded.revision,
+        upgraded.preparation_report,
+    ) == (ServicePhase.STARTING, 10, None)
+    assert b'"schema_version": 3' in state_path.read_bytes()
+    return runtime
 
 
 class _GlobalSelectionRecovery:
@@ -351,12 +384,15 @@ def test_supervisor_and_workers_isolate_failures_and_recover_durably(
         state.queue,
         selection_recovery=selection_recovery,
     )
-    runtime = foundation_runtime(
-        state.paths,
-        scheduler,
-        recovery,
-        clock,
-        wakeup,
+    runtime = _prove_legacy_starting_upgrade(
+        foundation_runtime(
+            state.paths,
+            scheduler,
+            recovery,
+            clock,
+            wakeup,
+        ),
+        state.paths.service_state,
     )
 
     _recover_runtime_selection(runtime, selection_recovery)

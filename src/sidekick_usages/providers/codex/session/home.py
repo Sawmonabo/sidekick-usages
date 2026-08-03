@@ -10,9 +10,6 @@ from sidekick_usages.core.accounts.models import SavedAccount
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.errors import UsageError
 from sidekick_usages.paths import ApplicationPaths, managed_codex_home
-from sidekick_usages.providers.codex.broker.errors import (
-    codex_session_configuration_error,
-)
 from sidekick_usages.providers.codex.session.errors import (
     CodexSessionConfigurationError,
 )
@@ -35,22 +32,26 @@ _STATE_RECOVERY = (
 )
 _COLLISION_RECOVERY = (
     CODEX_SESSION_OPERATOR_PRECONDITION,
-    "Restore the canonical session path outside saved Codex private homes, "
-    "then restart Sidekick.",
+    "Restore the canonical session path outside native and saved Codex "
+    "private homes, then restart Sidekick.",
 )
 
-type _StorageFactory = Callable[[Path], _CodexSessionHomeStorage]
-type _AccountReader = Callable[[], tuple[SavedAccount, ...]]
+type CodexSessionStorageFactory = Callable[[Path], CodexSessionHomeStorage]
+type CodexSessionAccountReader = Callable[[], tuple[SavedAccount, ...]]
 
 
-class _CodexSessionHomeStorage(Protocol):
+class CodexSessionHomeStorage(Protocol):
     """Qualified filesystem operations required by the session owner."""
 
     def ensure_owned_directory(self, directory: Path) -> None:
         """Create or validate one qualified direct child."""
 
-    def relative_bundle_present(self, relative: str) -> bool:
-        """Return whether one qualified direct child contains state."""
+    def relative_entry_present(
+        self,
+        relative: str,
+        basename: str,
+    ) -> bool:
+        """Return whether one qualified direct child contains an entry."""
 
 
 def _current_user_id() -> int:
@@ -58,20 +59,22 @@ def _current_user_id() -> int:
     return os.geteuid()
 
 
-def prepare_codex_session_home(
+def qualify_codex_session_home(
     paths: ApplicationPaths,
-    storage_factory: _StorageFactory,
-    account_reader: _AccountReader,
+    storage_factory: CodexSessionStorageFactory,
+    account_reader: CodexSessionAccountReader,
+    *,
+    native_home: Path,
+    forbidden_entries: tuple[str, ...],
 ) -> Path:
     """Create and qualify the canonical token-free Codex session home."""
-    try:
-        return _CodexSessionHome(
-            paths,
-            storage_factory,
-            account_reader,
-        ).prepare()
-    except CodexSessionConfigurationError as error:
-        raise codex_session_configuration_error(error) from None
+    return _CodexSessionHome(
+        paths,
+        storage_factory,
+        account_reader,
+        native_home=native_home,
+        forbidden_entries=forbidden_entries,
+    ).prepare()
 
 
 class _CodexSessionHome:
@@ -80,13 +83,25 @@ class _CodexSessionHome:
     def __init__(
         self,
         paths: ApplicationPaths,
-        storage_factory: _StorageFactory,
-        account_reader: _AccountReader,
+        storage_factory: CodexSessionStorageFactory,
+        account_reader: CodexSessionAccountReader,
+        *,
+        native_home: Path,
+        forbidden_entries: tuple[str, ...],
     ) -> None:
         if not paths.codex_session_home.is_absolute():
             raise ValueError("Codex session home must be absolute.")
+        if not native_home.is_absolute():
+            raise ValueError("Native Codex home must be absolute.")
+        if not forbidden_entries or any(
+            not entry or Path(entry).name != entry
+            for entry in forbidden_entries
+        ):
+            raise ValueError("Forbidden session entries are invalid.")
         self._paths = paths
         self._home = paths.codex_session_home
+        self._native_home = native_home
+        self._forbidden_entries = forbidden_entries
         self._storage_factory = storage_factory
         self._account_reader = account_reader
 
@@ -113,11 +128,14 @@ class _CodexSessionHome:
                     CodexSessionConfigurationReason.HOME_UNSAFE,
                     _HOME_RECOVERY,
                 )
-            if tree.relative_bundle_present(self._home.name):
-                self._refuse(
-                    CodexSessionConfigurationReason.CREDENTIAL_STATE_PRESENT,
-                    _STATE_RECOVERY,
-                )
+            for basename in self._forbidden_entries:
+                if tree.relative_entry_present(self._home.name, basename):
+                    self._refuse(
+                        (
+                            CodexSessionConfigurationReason.CREDENTIAL_STATE_PRESENT
+                        ),
+                        _STATE_RECOVERY,
+                    )
         except CodexSessionConfigurationError:
             raise
         except UsageError, OSError, RuntimeError:
@@ -128,9 +146,27 @@ class _CodexSessionHome:
         return self._home
 
     def _require_canonical_separation(self) -> None:
+        try:
+            native_home = self._native_home.resolve(strict=False)
+        except OSError, RuntimeError:
+            self._refuse(
+                CodexSessionConfigurationReason.PRIVATE_AUTHORITY_COLLISION,
+                _COLLISION_RECOVERY,
+            )
+        if (
+            self._home == native_home
+            or self._home.is_relative_to(native_home)
+            or native_home.is_relative_to(self._home)
+        ):
+            self._refuse(
+                CodexSessionConfigurationReason.PRIVATE_AUTHORITY_COLLISION,
+                _COLLISION_RECOVERY,
+            )
         private_root = self._paths.private_codex_profiles
-        if self._home == private_root or self._home.is_relative_to(
-            private_root
+        if (
+            self._home == private_root
+            or self._home.is_relative_to(private_root)
+            or private_root.is_relative_to(self._home)
         ):
             self._refuse(
                 CodexSessionConfigurationReason.PRIVATE_AUTHORITY_COLLISION,

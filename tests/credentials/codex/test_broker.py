@@ -52,6 +52,10 @@ from sidekick_usages.providers.codex.broker.external_auth.refresh import (
 )
 from sidekick_usages.providers.codex.broker.service import CodexSharedRuntime
 from sidekick_usages.providers.codex.broker.types import CodexBrokerFailure
+from sidekick_usages.providers.codex.session.models import (
+    CODEX_SESSION_OPERATOR_PRECONDITION,
+    CodexSessionConfigurationReason,
+)
 from tests.fakes.codex.app_server.daemon import FakeCodexDaemon
 from tests.fakes.codex.app_server.executable import (
     configure_codex_daemon_lifecycle,
@@ -261,14 +265,24 @@ def test_stale_resident_config_is_terminal_until_operator_restart(
             app_server_version="0.146.0",
             already_running=True,
         )
-        with FakeCodexBroker(
+        with FakeCodexSupervisor(
             fixture.paths,
             fixture.executable,
             fixture.session_home,
             fixture.environment,
-        ) as broker:
-            broker.wait_until_failure(
+            real_worker_executable(),
+        ) as supervisor:
+            supervisor.wait_until_broker_failure(
                 CodexBrokerFailure.SESSION_CONFIGURATION_REQUIRED.value
+            )
+            report = supervisor.broker_preparation_report
+            assert report is not None
+            assert report.reason == (
+                CodexSessionConfigurationReason.RESIDENT_CONFIG_STALE.value
+            )
+            assert report.dry_run is True
+            assert (
+                report.operator_steps[0] == CODEX_SESSION_OPERATOR_PRECONDITION
             )
             observed = (
                 lifecycle.start_statuses,
@@ -276,9 +290,10 @@ def test_stale_resident_config_is_terminal_until_operator_restart(
                 lifecycle.restart_count,
             )
             time.sleep(_TERMINAL_FAILURE_OBSERVATION_SECONDS)
-            assert broker.failure_code == (
+            assert supervisor.broker_failure_code == (
                 CodexBrokerFailure.SESSION_CONFIGURATION_REQUIRED.value
             )
+            assert supervisor.broker_preparation_report == report
             assert (
                 lifecycle.start_statuses,
                 lifecycle.version_count,

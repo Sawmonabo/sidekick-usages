@@ -101,19 +101,22 @@ class _SessionCase:
 
 def _prove_synthetic_current_auth_http(
     capability: CodexSessionCapability,
+    daemon: FakeCodexDaemon,
 ) -> None:
     """Prove only the synthetic model-attempt selection boundary."""
     accounts = (
         ProviderIdentity("synthetic-account-a"),
         ProviderIdentity("synthetic-account-b"),
     )
-    current_accounts = iter(accounts)
     model_attempt = SyntheticCodexModelAttempt(
         capability,
-        lambda: next(current_accounts),
+        daemon.read_current_external_auth,
     )
+    daemon.install_external_auth(accounts[0], "synthetic-generation-a")
     model_attempt.attempt()
+    daemon.install_external_auth(accounts[1], "synthetic-generation-b")
     model_attempt.attempt()
+    assert daemon.model_auth_read_count == _SYNTHETIC_MODEL_ATTEMPTS
     assert model_attempt.auth_resolutions == _SYNTHETIC_MODEL_ATTEMPTS
     assert model_attempt.http_accounts == accounts
     assert model_attempt.websocket_opens == 0
@@ -411,7 +414,7 @@ def test_neutral_runtime_requires_current_auth_without_model_websockets(
         )
         assert capability.supported is case.supported
         if case.supported:
-            _prove_synthetic_current_auth_http(capability)
+            _prove_synthetic_current_auth_http(capability, daemon)
         assert session_settings.read_bytes() == unrelated_settings
         assert not (runtime.codex_home / "auth.json").exists()
         runtime.close()

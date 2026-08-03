@@ -13,6 +13,7 @@ from sidekick_usages.core.accounts.types import (
 from sidekick_usages.core.selection.models import ProviderAuthObservation
 from sidekick_usages.core.selection.types import ProviderAuthState
 from sidekick_usages.core.types import ProviderId
+from sidekick_usages.paths import ApplicationPaths
 from sidekick_usages.platform.types import PeerVerifier
 from sidekick_usages.providers.codex.account.auth_status import (
     observe_codex_auth_status,
@@ -60,13 +61,36 @@ from sidekick_usages.providers.codex.session.errors import (
     CodexSessionConfigurationError,
 )
 from sidekick_usages.providers.codex.session.home import (
-    prepare_codex_session_home,
+    CodexSessionAccountReader,
+    CodexSessionStorageFactory,
+    qualify_codex_session_home,
 )
 from sidekick_usages.providers.codex.session.models import (
     CodexSessionCapability,
 )
 
 __all__ = ("CodexSharedRuntime", "prepare_codex_session_home")
+
+
+def prepare_codex_session_home(
+    paths: ApplicationPaths,
+    storage_factory: CodexSessionStorageFactory,
+    account_reader: CodexSessionAccountReader,
+    *,
+    native_home: Path,
+    forbidden_entries: tuple[str, ...],
+) -> Path:
+    """Translate neutral-home refusal at the broker boundary."""
+    try:
+        return qualify_codex_session_home(
+            paths,
+            storage_factory,
+            account_reader,
+            native_home=native_home,
+            forbidden_entries=forbidden_entries,
+        )
+    except CodexSessionConfigurationError as error:
+        raise codex_session_configuration_error(error) from None
 
 
 class CodexSharedRuntime:
