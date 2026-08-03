@@ -26,6 +26,13 @@ DASHBOARD_BENCHMARK_RELATIVE_PATH = (
 DASHBOARD_BENCHMARK_HOME_PREFIX = "sidekick-dashboard-benchmark-home-"
 PUBLIC_ROOT_USAGE = "Usage: sidekick-usages"
 PRIVATE_ROOT_USAGE = "sidekick_usages.cli.runtime.application"
+CLAUDE_SESSION_DISABLED = "claude session integration is not available"
+CLAUDE_SESSION_NOT_STARTED = "provider process was not started"
+SYNTHETIC_PROVIDER_SECTIONS = (
+    "CLAUDE · 4 accounts",
+    "CODEX · 2 accounts",
+)
+SHELL_DRY_RUN = "Dry run: would change."
 SMOKE_ARGUMENTS: tuple[tuple[str, ...], ...] = (
     ("--version",),
     ("--help",),
@@ -98,22 +105,23 @@ def run_command(
     *,
     cwd: Path,
     env: dict[str, str],
+    expected_exit_code: int = 0,
 ) -> subprocess.CompletedProcess[str]:
     """Run a UTF-8 verifier subprocess with useful failure diagnostics."""
-    try:
-        return subprocess.run(
-            command,
-            cwd=cwd,
-            env=env,
-            check=True,
-            capture_output=True,
-            encoding="utf-8",
-        )
-    except subprocess.CalledProcessError as error:
-        detail = (error.stderr or error.stdout or "no output").strip()
+    result = subprocess.run(
+        command,
+        cwd=cwd,
+        env=env,
+        check=False,
+        capture_output=True,
+        encoding="utf-8",
+    )
+    if result.returncode != expected_exit_code:
+        detail = (result.stderr or result.stdout or "no output").strip()
         raise WheelVerificationError(
-            f"Command failed ({error.returncode}): {command!r}\n{detail}"
-        ) from error
+            f"Command failed ({result.returncode}): {command!r}\n{detail}"
+        )
+    return result
 
 
 def require_uv_executable() -> str:
@@ -163,7 +171,7 @@ def _dashboard_benchmark_env(
     home: Path,
     public_script: Path,
 ) -> dict[str, str]:
-    """Return a provider-free native environment for the Unix PTY gate."""
+    """Return a provider-free environment for the installed runtime gate."""
     return isolated_console_environment(
         _isolated_command_env(home),
         home=home,
@@ -194,18 +202,78 @@ def _verify_dashboard_benchmark(
     ) as raw_home:
         home = Path(raw_home).resolve()
         command = [str(python), str(benchmark)]
-        env = _isolated_command_env(home)
+        env = _dashboard_benchmark_env(home, verified_public_script)
         if os.name != "nt":
             command.append(str(verified_public_script))
-            env = _dashboard_benchmark_env(home, verified_public_script)
         result = run_command(
             command,
             cwd=run_dir,
             env=env,
         )
-        if os.name == "nt" and tuple(home.iterdir()):
+        report = run_command(
+            [str(public_script), "--no-interactive", "check"],
+            cwd=run_dir,
+            env=env,
+            expected_exit_code=1,
+        )
+        rendered = report.stdout + report.stderr
+        if (
+            any(
+                section not in rendered
+                for section in SYNTHETIC_PROVIDER_SECTIONS
+            )
+            or "External " in rendered
+        ):
             raise WheelVerificationError(
-                "Dashboard benchmark created files below its isolated home."
+                "Installed-wheel one-shot reporting violated its "
+                "synthetic saved-account contract."
+            )
+        if os.name != "nt":
+            shell = run_command(
+                [
+                    str(public_script),
+                    "session",
+                    "shell",
+                    "install",
+                    "--shell",
+                    "bash",
+                    "--dry-run",
+                ],
+                cwd=run_dir,
+                env=env,
+            )
+            shell_integration = (
+                Path(env["XDG_DATA_HOME"])
+                / "sidekick-usages"
+                / "shell-integration.sh"
+            )
+            if (
+                SHELL_DRY_RUN not in shell.stdout
+                or (home / ".bashrc").exists()
+                or shell_integration.exists()
+            ):
+                raise WheelVerificationError(
+                    "Installed-wheel shell dry-run changed isolated state."
+                )
+        claude = run_command(
+            [
+                str(public_script),
+                "session",
+                "claude",
+                "--",
+                "synthetic",
+            ],
+            cwd=run_dir,
+            env=env,
+            expected_exit_code=1,
+        )
+        claude_output = claude.stdout + claude.stderr
+        if (
+            CLAUDE_SESSION_DISABLED not in claude_output
+            or CLAUDE_SESSION_NOT_STARTED not in claude_output
+        ):
+            raise WheelVerificationError(
+                "Installed-wheel Claude session did not fail closed."
             )
     if DASHBOARD_BENCHMARK_SUCCESS not in result.stdout:
         raise WheelVerificationError(

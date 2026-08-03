@@ -8,6 +8,7 @@ from architecture.source import finding, matches, matches_any, scan_imports
 
 _CODEX_JSONRPC_ROOT = "src/sidekick_usages/providers/codex/app_server/jsonrpc/"
 _CODEX_BROKER_WIRE_FILE = "src/sidekick_usages/providers/codex/broker/wire.py"
+_CODEX_SESSION_ROOT = "src/sidekick_usages/providers/codex/session/"
 _CACHED_DASHBOARD_SERVICE_FILE = (
     "src/sidekick_usages/usage/dashboard/service.py"
 )
@@ -381,7 +382,15 @@ def _check_import(
             module,
             "sidekick_usages.http",
         )
-        if forbidden_provider or persistence_leak or jsonrpc_leak:
+        session_transport_leak = path.startswith(
+            _CODEX_SESSION_ROOT
+        ) and matches(module, "sidekick_usages.http")
+        if (
+            forbidden_provider
+            or persistence_leak
+            or jsonrpc_leak
+            or session_transport_leak
+        ):
             violations.append(
                 finding(
                     unit,

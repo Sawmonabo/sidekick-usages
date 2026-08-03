@@ -69,6 +69,45 @@ def scan_imports(unit: SourceUnit) -> Iterable[tuple[ast.AST, str]]:
                 )
 
 
+def scan_calls(unit: SourceUnit) -> Iterable[tuple[ast.Call, str]]:
+    """Yield call names resolved through static import bindings."""
+    bindings = _import_bindings(unit)
+    for node in ast.walk(unit.tree):
+        if not isinstance(node, ast.Call):
+            continue
+        name = dotted_name(node.func)
+        root, separator, suffix = name.partition(".")
+        owner = bindings.get(root)
+        if owner is None:
+            resolved = name
+        elif separator:
+            resolved = f"{owner}.{suffix}"
+        else:
+            resolved = owner
+        yield node, resolved
+
+
+def _import_bindings(unit: SourceUnit) -> dict[str, str]:
+    """Return local names bound by every static import."""
+    bindings: dict[str, str] = {}
+    for node in ast.walk(unit.tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                local = alias.asname or alias.name.partition(".")[0]
+                target = alias.name if alias.asname else local
+                bindings[local] = target
+        elif isinstance(node, ast.ImportFrom):
+            base = _import_from_base(unit, node)
+            for alias in node.names:
+                if alias.name == "*":
+                    continue
+                local = alias.asname or alias.name
+                bindings[local] = ".".join(
+                    part for part in (base, alias.name) if part
+                )
+    return bindings
+
+
 def _import_from_base(unit: SourceUnit, node: ast.ImportFrom) -> str:
     """Resolve one ``from`` import base against its importing package."""
     if node.level == 0:

@@ -9,6 +9,10 @@ from dashboard_benchmark.command import (
     execute,
 )
 from dashboard_benchmark.errors import DashboardBenchmarkError
+from dashboard_benchmark.fixtures import (
+    REFERENCE_ACCOUNT_COUNT,
+    seed_cached_dashboard,
+)
 from sidekick_usages.cli.dashboard.models.controller import (
     RefreshDueAccountsIntent,
 )
@@ -39,6 +43,7 @@ def main() -> int:
             "Native Windows dashboard gate accepts no arguments."
         )
     paths = discover_application_paths()
+    seed_cached_dashboard(paths, REFERENCE_ACCOUNT_COUNT)
     intent = RefreshDueAccountsIntent()
     result = GuidedServiceSetup(
         build_daemon_manager(

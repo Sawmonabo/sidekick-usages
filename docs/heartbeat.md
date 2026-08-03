@@ -11,6 +11,12 @@ session starts.
 Heartbeat does not create free quota. A successful warm is a real model
 request, appears as provider usage, and consumes a small amount of your quota.
 
+Heartbeat enrollment is independent of the selected account and runtime
+session enrollment. Selected and unselected saved accounts stay reportable and
+maintained. Claude setup-token and mixed selection remain release-disabled,
+but that restriction does not disable their supported usage or heartbeat
+route.
+
 ## Commands
 
 ```bash

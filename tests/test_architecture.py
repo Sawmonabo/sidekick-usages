@@ -193,8 +193,41 @@ _MUTATIONS = (
     architecture.models.SourceMutation(
         "CLI001",
         "src/sidekick_usages/cli/runtime/bootstrap.py",
+        "from sidekick_usages.cli.runtime.routing import (\n",
+        (
+            "from sidekick_usages.cli import dashboard\n"
+            "from sidekick_usages.cli.runtime.routing import (\n"
+        ),
+    ),
+    architecture.models.SourceMutation(
+        "CLI001",
+        "src/sidekick_usages/cli/runtime/bootstrap.py",
         "    return os.execve(executable, command, environment)\n",
         "    raise RuntimeError\n",
+    ),
+    architecture.models.SourceMutation(
+        "PATH002",
+        (
+            "src/sidekick_usages/providers/codex/session/"
+            "architecture_fixture.py"
+        ),
+        "",
+        (
+            "from sidekick_usages import paths\n"
+            "PATHS = paths.discover_application_paths()\n"
+        ),
+    ),
+    architecture.models.SourceMutation(
+        "DEP004",
+        (
+            "src/sidekick_usages/providers/codex/session/"
+            "http_architecture_fixture.py"
+        ),
+        "",
+        (
+            "from sidekick_usages.http.client import HttpClient\n"
+            "CLIENT = HttpClient\n"
+        ),
     ),
     architecture.models.SourceMutation(
         "HTTP001",
@@ -323,6 +356,25 @@ def test_every_static_rule_rejects_a_deliberate_violation() -> None:
     assert any(
         violation.rule_id == "CLI001"
         and violation.path.as_posix() == _RICH_FREE_STARTUP_PATH
+        for violation in report.violations
+    )
+    assert any(
+        violation.rule_id == "CLI001"
+        and violation.path.as_posix()
+        == "src/sidekick_usages/cli/runtime/bootstrap.py"
+        and "cached-first boundaries" in violation.message
+        for violation in report.violations
+    )
+    assert any(
+        violation.rule_id == "PATH002"
+        and violation.path.name == "architecture_fixture.py"
+        and "path discovery" in violation.message
+        for violation in report.violations
+    )
+    assert any(
+        violation.rule_id == "DEP004"
+        and violation.path.name == "http_architecture_fixture.py"
+        and "provider adapter" in violation.message
         for violation in report.violations
     )
 

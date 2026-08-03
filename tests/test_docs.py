@@ -9,6 +9,7 @@ OPERATOR_GUIDES = (
     REPO_ROOT / "docs" / "claude" / "README.md",
     REPO_ROOT / "docs" / "claude" / "debugging.md",
     REPO_ROOT / "docs" / "claude" / "schema.md",
+    REPO_ROOT / "docs" / "codex" / "README.md",
     REPO_ROOT / "docs" / "token-maintenance.md",
     REPO_ROOT / "docs" / "persistence-and-recovery.md",
     REPO_ROOT / "docs" / "heartbeat.md",
@@ -102,6 +103,18 @@ def test_operator_guides_describe_only_current_secret_safe_flows() -> None:
         "trusted capture evidence",
     ):
         assert contract in claude
+    normalized_combined = " ".join(combined.split())
+    for contract in (
+        "saved accounts are the only focusable rows",
+        "fixed status and key footer",
+        "queued in participant memory",
+        "unmanaged and alive",
+        "setup-token and mixed selection remain release-disabled",
+        "sidekick-usages session shell install",
+        "sidekick-usages session shell status",
+        "sidekick-usages session shell uninstall",
+    ):
+        assert contract in normalized_combined
     for stale in STALE_CURRENT_COMMANDS:
         assert stale not in combined
 

@@ -23,7 +23,6 @@ PUBLIC_BOOTSTRAP_IMPORTS = (
     "subprocess",
     "sys",
     "sidekick_usages.cli.contexts.dashboard.snapshot",
-    "sidekick_usages.cli.dashboard",
     "sidekick_usages.cli.runtime.routing",
     "sidekick_usages.clock",
     "sidekick_usages.core.types",
@@ -32,7 +31,6 @@ PUBLIC_BOOTSTRAP_IMPORTS = (
     "sidekick_usages.persistence.errors",
     "sidekick_usages.platform.errors",
     "sidekick_usages.platform.executable",
-    "sidekick_usages.usage.presentation.dashboard.render.style",
 )
 RICH_IMPORT_ROOT = "rich"
 B606_NO_SHELL_CALLS = frozenset(

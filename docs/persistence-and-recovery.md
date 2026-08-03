@@ -33,6 +33,12 @@ The data root contains:
 | `operations/` | Durable supervisor work |
 | `service-state.json` | Resident-service readiness |
 
+Selected state contains only provider ID, one saved stable account ID,
+monotonic epoch, proven generation, and safe timestamps or outcomes.
+Participant status never persists tokens, prompts, responses, emails, process
+arguments, or provider payloads. An ambient or unmanaged login is not
+persisted as an account selection.
+
 Do not copy or edit these files manually. In particular, never copy a provider
 login file into the Sidekick data root or copy a Sidekick authority into the
 provider's native login location.
@@ -74,6 +80,14 @@ every bounded simultaneous cause. Provider and label filters retain global
 causes plus only the requested accounts; the human view uses saved labels,
 while JSON keeps stable account IDs. A malformed or unsafe authority is not
 treated as an empty store.
+
+Selection diagnostics distinguish the target and phase plus exact required,
+ready, adopted, lost, and unreachable participant counts. Unmanaged status is
+reported as unavailable until a provider-neutral count owner exists. Before
+provider commit, a failed preparation leaves sessions alive on the previous
+account. After commit, recovery moves forward and never rolls provider
+credentials backward. An in-flight operation finishes naturally; a boundary
+prompt remains queued in participant memory.
 
 ## Account recovery
 

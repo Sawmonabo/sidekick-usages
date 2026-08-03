@@ -218,6 +218,56 @@ private authority, while the selected Claude native state and selected Codex
 runtime state remain separate. Unselected accounts continue to participate in
 maintenance, usage, and opted-in heartbeat.
 
+The panel count is the persisted account count: saved accounts are the only
+focusable rows. An ambient provider login or a session that Sidekick cannot
+coordinate is session status, not another account. It never changes the panel
+count, receives the selection cursor, or turns Enter into a silent action.
+
+The interactive layout responds to terminal columns and rows. It uses a
+compact masthead when height is limited, scrolls the account body to keep the
+stable focused account visible, and retains a fixed status and key footer.
+Resizing does not create another painter or reset focus by list position.
+
+### Coordinated provider sessions
+
+Session enrollment is explicit. Preview changes before installing shell
+forwarding, and inspect or remove only Sidekick-owned content:
+
+```bash
+sidekick-usages session shell install --dry-run
+sidekick-usages session shell install
+sidekick-usages session shell status
+sidekick-usages session shell uninstall
+
+sidekick-usages session claude -- <claude-arguments>
+sidekick-usages session codex -- <codex-arguments>
+```
+
+An integrated session participates in the selected provider's account epoch.
+An in-flight turn, retry, tool, hook, approval, or MCP operation finishes under
+the account that admitted it. A prompt submitted during the boundary stays
+queued in participant memory and is sent once the new epoch opens. Selection
+does not cancel, replay, restart, reconnect, or replace the provider process,
+terminal, conversation, or app server. Existing conversation context remains
+in that same session; selection changes the authority used by a later admitted
+turn, not the conversation history.
+
+Refreshable native Claude sessions adopt a proven native account change on
+their next request. Claude setup-token and mixed selection remain
+release-disabled: selecting those modes returns a visible typed refusal while
+their saved usage, maintenance, and heartbeat behavior continues. Codex
+integration is available only when the installed release passes its exact
+app-server and relay capability checks; otherwise it fails before starting a
+provider process.
+
+Shell forwarding is an enrollment boundary, not command replacement. An
+absolute provider path, `command claude`, `command codex`, a stale shell, or a
+process launched before enrollment bypasses Sidekick. That session remains
+unmanaged and alive; Sidekick does not kill it or claim it adopted a selected
+account. Run `sidekick-usages doctor`, `sidekick-usages daemon status`, and
+`sidekick-usages session shell status` for secret-free participant,
+capability, selection-phase, and enrollment diagnostics.
+
 Claude `add` is idempotent by access token. It auto-detects Claude credentials
 first, then falls back to piped stdin or a hidden prompt when no local login is
 found. Use `--force` only to replace an existing label intentionally.

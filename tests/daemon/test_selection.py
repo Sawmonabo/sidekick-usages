@@ -13,6 +13,11 @@ from sidekick_usages.core.accounts.types import (
     ProviderIdentity,
     SidekickAccountId,
 )
+from sidekick_usages.core.models import (
+    Account,
+    ClaudeSetupTokenCredentials,
+    CodexCredentials,
+)
 from sidekick_usages.core.selection.models import (
     ActivationRecord,
     AuthorityReadyProof,
@@ -36,7 +41,7 @@ from sidekick_usages.core.selection.types import (
     SelectionOutcome,
     SelectionPhase,
 )
-from sidekick_usages.core.types import ProviderId
+from sidekick_usages.core.types import AccountLabel, ProviderId
 from sidekick_usages.daemon.models.scheduler import SchedulerCompletion
 from sidekick_usages.daemon.models.worker import SelectionWorkerMetadata
 from sidekick_usages.daemon.selection import protocol
@@ -53,6 +58,7 @@ from sidekick_usages.daemon.selection.worker import SelectionWorkerGateway
 from sidekick_usages.daemon.types.protocol import EventKind
 from sidekick_usages.daemon.types.worker import WorkerOutcome
 from sidekick_usages.paths import ApplicationPaths
+from sidekick_usages.persistence.filesystem.reader import PrivateFileReader
 from sidekick_usages.persistence.models.artifact import (
     ExpectedAuthority,
     FileSnapshot,
@@ -81,6 +87,7 @@ from sidekick_usages.persistence.supervisor.selection import (
 )
 from sidekick_usages.platform.models import ProcessIdentity
 from tests.support.persistence import (
+    make_account_store_with_private,
     make_application_paths,
     seed_finalized_selections,
 )
@@ -683,17 +690,60 @@ def test_selection_transition_graph_has_only_exact_legal_edges(
 def test_selected_state_v2_migrates_only_saved_authority(
     tmp_path: Path,
 ) -> None:
-    """Migration snapshots v2 and drops ambient provider pseudo-state."""
+    """Six saved authorities survive reversible v2 selection migration."""
     paths = make_application_paths(tmp_path)
-    authority_path = paths.private_credentials / "provider-authority.bin"
-    PrivateFilesystem(authority_path).commit_opaque_private(AUTHORITY_CANARY)
-    PrivateFilesystem(paths.selected_state).commit_opaque_private(
-        VERSION_TWO_SELECTED_STATE
+    accounts = tuple(
+        Account(
+            label=AccountLabel(f"claude-{ordinal}"),
+            credentials=ClaudeSetupTokenCredentials(
+                access_token=f"synthetic-claude-{ordinal}"
+            ),
+        )
+        for ordinal in range(4)
+    ) + tuple(
+        Account(
+            label=AccountLabel(f"codex-{ordinal}"),
+            credentials=CodexCredentials(
+                access_token=f"synthetic-codex-{ordinal}",
+                account_id=f"codex-account-{ordinal}",
+            ),
+        )
+        for ordinal in range(2)
     )
+    account_store, _private = make_account_store_with_private(
+        tmp_path,
+        accounts,
+    )
+    saved_before = account_store.saved_accounts()
+    codex_saved = tuple(
+        account
+        for account in saved_before
+        if account.provider_id is ProviderId.CODEX
+    )
+    for account in codex_saved:
+        marker = (
+            paths.private_codex_profiles
+            / str(account.account_id)
+            / "authority.bin"
+        )
+        PrivateFilesystem(marker).commit_opaque_private(AUTHORITY_CANARY)
+    authority_before = {
+        path.relative_to(paths.private_credentials): (
+            path.read_bytes(),
+            stat.S_IMODE(path.stat().st_mode),
+        )
+        for path in paths.private_credentials.rglob("*")
+        if path.is_file()
+    }
+    version_two = VERSION_TWO_SELECTED_STATE.replace(
+        str(TARGET_ACCOUNT_ID).encode(),
+        str(saved_before[0].account_id).encode(),
+    )
+    PrivateFilesystem(paths.selected_state).commit_opaque_private(version_two)
     store = SelectedStateStore(paths.selected_state)
     expected = FinalizedSelection(
         provider_id=ProviderId.CLAUDE,
-        account_id=TARGET_ACCOUNT_ID,
+        account_id=saved_before[0].account_id,
         epoch=SelectionEpoch(0),
         generation=AuthorityGeneration("legacy-generation"),
         finalized_at=REFERENCE_TIME,
@@ -720,11 +770,49 @@ def test_selected_state_v2_migrates_only_saved_authority(
         )
     )
     assert len(snapshots) == 1
-    assert snapshots[0].read_bytes() == VERSION_TWO_SELECTED_STATE
+    assert snapshots[0].read_bytes() == version_two
     assert stat.S_IMODE(snapshots[0].stat().st_mode) == PRIVATE_FILE_MODE
-    assert authority_path.read_bytes() == AUTHORITY_CANARY
+    selected_snapshot = PrivateFileReader(
+        paths.selected_state
+    ).read_opaque_private()
+    assert selected_snapshot is not None
+    restored = PrivateFilesystem(paths.selected_state).commit_opaque_private(
+        snapshots[0].read_bytes(),
+        expected_source=selected_snapshot.fingerprint,
+    )
+    assert stat.S_IMODE(paths.selected_state.stat().st_mode) == (
+        PRIVATE_FILE_MODE
+    )
+    assert restored.data == version_two
+    reopened = SelectedStateStore(paths.selected_state)
+    assert reopened.load_all() == (expected,)
+    assert b'"schema_version": 3' in paths.selected_state.read_bytes()
+    assert {
+        path.relative_to(paths.private_credentials): (
+            path.read_bytes(),
+            stat.S_IMODE(path.stat().st_mode),
+        )
+        for path in paths.private_credentials.rglob("*")
+        if path.is_file()
+    } == authority_before
+    reopened_accounts, _reopened_private = make_account_store_with_private(
+        tmp_path
+    )
+    saved_after = reopened_accounts.saved_accounts()
+    assert saved_after == saved_before
+    assert tuple(
+        len(reopened_accounts.saved_accounts(provider_id))
+        for provider_id in ProviderId
+    ) == (4, 2)
+    assert frozenset(
+        paths.private_codex_profiles / str(account.account_id)
+        for account in codex_saved
+    ) == frozenset(
+        path.parent
+        for path in paths.private_codex_profiles.glob("*/authority.bin")
+    )
 
-    assert SelectedStateStore(paths.selected_state).load_all() == (advanced,)
+    assert SelectedStateStore(paths.selected_state).load_all() == (expected,)
     assert (
         len(
             tuple(

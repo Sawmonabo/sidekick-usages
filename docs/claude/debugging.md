@@ -20,6 +20,12 @@ capability, refresh result, heartbeat state, and whether manual action is
 required. It does not emit credential values, provider identities, emails, or
 scope lists.
 
+The session diagnostic separates saved accounts from runtime participants. A
+saved account affects the Claude panel count; integrated, unreachable, lost,
+and unmanaged sessions are status only. An unmanaged session remains alive
+and may continue using the authority it already resolved. It is never shown as
+an external account or counted as globally converged.
+
 Do not manually inspect or edit `accounts.json`, a Claude credential file, or
 refresh staging. Manual copies bypass variant, identity, permission,
 serialization, and recovery checks.
@@ -140,3 +146,10 @@ When asking for help, include only:
 Remove labels and local paths. Never include account files, credential files,
 provider responses, terminal capture from authentication, or full environment
 output.
+
+For account-change failures, include the redacted provider phase, target label,
+epoch, exact required, ready, adopted, lost, and unreachable counts, plus the
+unmanaged-status availability. An unmanaged count is unavailable until a
+provider-neutral owner exists. Do not include participant identifiers. A
+setup-token or mixed selection refusal is expected while the protected Claude
+host is release-disabled; use and maintenance remain separate.

@@ -13,6 +13,7 @@ from architecture.source import (
     dotted_name,
     finding,
     function_node,
+    scan_calls,
 )
 
 _ROBOT_ART = (
@@ -48,6 +49,7 @@ def _check_paths(
     }
     for unit in units:
         path = str(unit.path)
+        _check_provider_session_paths(unit, path, violations)
         for node in ast.walk(unit.tree):
             if (
                 isinstance(node, ast.BinOp)
@@ -100,6 +102,34 @@ def _check_paths(
                 1,
                 "PATH002",
                 f"ApplicationPaths owners are {sorted(owners)}",
+            )
+        )
+
+
+def _check_provider_session_paths(
+    unit: SourceUnit,
+    path: str,
+    violations: list[ArchitectureFinding],
+) -> None:
+    """Reject application-path discovery inside provider sessions."""
+    provider_session = path.startswith("src/sidekick_usages/providers/") and (
+        "/session/" in path or path.endswith("/structured/session.py")
+    )
+    path_discovery = next(
+        (
+            node
+            for node, name in scan_calls(unit)
+            if name == "sidekick_usages.paths.discover_application_paths"
+        ),
+        None,
+    )
+    if provider_session and path_discovery is not None:
+        violations.append(
+            finding(
+                unit,
+                path_discovery,
+                "PATH002",
+                "provider sessions require injected path discovery",
             )
         )
 

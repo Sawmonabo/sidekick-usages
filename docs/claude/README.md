@@ -46,6 +46,28 @@ login. A setup-token-only account requires `--replace-identity` once to approve
 its first subscription identity association; the setup token remains attached.
 An established subscription identity must match on later repair.
 
+## Runtime account selection
+
+Refreshable Claude selection uses the official native login transaction.
+Already-open native Claude sessions keep an in-flight request on its admitted
+authority and reread the proven native authority for the next request. An
+ordinary open Claude terminal is not a disconnect conflict, and Sidekick does
+not restart or signal it.
+
+Claude setup-token and mixed selection remain release-disabled. A setup token
+continues to support saved usage, maintenance, and heartbeat, but it cannot be
+presented as a refreshable native login. Enter and `sidekick-usages use`
+return a visible capability refusal for this selection path. Sidekick never
+falls back to restarting Claude, rewriting an already-running process's
+environment, or claiming that an unmanaged process converged.
+
+An enrolled future protected session must drain its active turn, retain a
+prompt queued in participant memory, and prove next-turn adoption without
+changing its process or conversation. Until exact-build host, security,
+identity, and provider release gates pass, that mechanism stays unavailable.
+Use `sidekick-usages doctor --provider claude` for its redacted capability and
+participant state.
+
 ## Lifetime model
 
 Subscription logins have independent lifetimes:
