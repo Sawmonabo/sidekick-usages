@@ -59,6 +59,24 @@ class CodexRelayAuthority:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class CodexLoadedThreadSnapshot:
+    """Versioned deterministic loaded-thread readiness input."""
+
+    revision: int
+    thread_ids: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        """Require one monotonic revision for sorted unique IDs."""
+        if (
+            isinstance(self.revision, bool)
+            or self.revision < 0
+            or self.revision != len(self.thread_ids)
+            or self.thread_ids != tuple(sorted(set(self.thread_ids)))
+        ):
+            raise ValueError("Codex loaded-thread snapshot is invalid.")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class CodexRelayAdmission:
     """One stable relay turn admitted now or retained for later."""
 

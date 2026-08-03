@@ -35,6 +35,7 @@ from sidekick_usages.providers.codex.broker.wire import (
     CodexRelayServer,
 )
 from sidekick_usages.providers.codex.session.models import (
+    CodexLoadedThreadSnapshot,
     CodexRelayAdmission,
     CodexRelayAdmissionState,
     CodexRelayAuthority,
@@ -120,9 +121,13 @@ class CodexAdmissionRelay:
         self._turns: dict[tuple[str, str], TurnId] = {}
         self._realtime: dict[str, TurnId] = {}
         self._loaded_threads: set[str] = set()
+        self._loaded_threads_revision = 0
         self._active: set[TurnId] = set()
+        self._baseline_authority: CodexRelayAuthority | None = None
         self._ready_target: CodexRelayAuthority | None = None
+        self._ready_threads_revision: int | None = None
         self._opened_target: CodexRelayAuthority | None = None
+        self._adoption_target: CodexRelayAuthority | None = None
         self._adopted_target: CodexRelayAuthority | None = None
         self._failure: CodexRelayError | None = None
         self._session_started = False
@@ -163,12 +168,32 @@ class CodexAdmissionRelay:
         return self._socket_path
 
     @property
-    def loaded_thread_ids(self) -> tuple[str, ...]:
-        """Return bounded ephemeral thread IDs for readiness readback."""
+    def loaded_threads_snapshot(self) -> CodexLoadedThreadSnapshot:
+        """Return an immutable revision-bound readiness input."""
         with self._lock:
-            return tuple(sorted(self._loaded_threads))
+            return self._loaded_threads_snapshot_locked()
 
-    def mark_ready(self, target: CodexRelayAuthority) -> None:
+    def seed_baseline(self, authority: CodexRelayAuthority) -> None:
+        """Seed one exact finalized authority before participant traffic."""
+        with self._lock:
+            self._raise_if_unusable()
+            if (
+                self._baseline_authority is not None
+                or self._session_started
+                or self._queue
+                or self._active
+            ):
+                raise CodexRelayError(
+                    SelectionCode.SELECTION_RECOVERY_REQUIRED
+                )
+            self._baseline_authority = authority
+            self._opened_target = authority
+
+    def mark_ready(
+        self,
+        target: CodexRelayAuthority,
+        loaded_threads: CodexLoadedThreadSnapshot,
+    ) -> None:
         """Acknowledge target readiness only after every lease drained."""
         with self._lock:
             self._raise_if_unusable()
@@ -179,7 +204,12 @@ class CodexAdmissionRelay:
                     else SelectionCode.ACTIVE_OPERATION_TIMEOUT
                 )
                 raise CodexRelayError(code)
-            if self._ready_target == target:
+            if loaded_threads != self._loaded_threads_snapshot_locked():
+                raise CodexRelayError(SelectionCode.AUTHORITY_PROOF_FAILED)
+            if (
+                self._ready_target == target
+                and self._ready_threads_revision == loaded_threads.revision
+            ):
                 return
             if (
                 self._ready_target is not None
@@ -188,37 +218,45 @@ class CodexAdmissionRelay:
                 raise CodexRelayError(
                     SelectionCode.SELECTION_RECOVERY_REQUIRED
                 )
-        self._readiness.ready(target)
-        with self._lock:
+            self._readiness.ready(target)
             self._ready_target = target
+            self._ready_threads_revision = loaded_threads.revision
             self._adopted_target = None
 
     def open_admission(self, target: CodexRelayAuthority) -> None:
         """Release queued raw frames once under one finalized target."""
         with self._lock:
             self._raise_if_unusable()
-            if self._ready_target != target:
+            if (
+                self._ready_target != target
+                or self._ready_threads_revision
+                != self._loaded_threads_revision
+            ):
                 raise CodexRelayError(
                     SelectionCode.SELECTION_RECOVERY_REQUIRED
                 )
+            changed = self._opened_target != target
             self._opened_target = target
-        while True:
-            with self._lock:
-                if not self._queue:
-                    return
-                queued = self._queue[0]
-            admission = self._admission.begin(queued.lease.turn_id)
-            if admission.state is CodexRelayAdmissionState.QUEUED:
-                return
-            if admission.authority != target:
-                raise CodexRelayError(SelectionCode.AUTHORITY_PROOF_FAILED)
-            with self._lock:
-                if not self._queue or self._queue[0] is not queued:
-                    raise CodexRelayError(
-                        SelectionCode.SELECTION_RECOVERY_REQUIRED
-                    )
-                self._queue.popleft()
-            self._transmit_start(queued, admission)
+            self._baseline_authority = target
+            self._adoption_target = target
+            if changed:
+                self._adopted_target = None
+            self._drain_queue_locked(target)
+
+    def reopen_baseline(self, authority: CodexRelayAuthority) -> None:
+        """Reopen one exact unchanged baseline without publishing ready."""
+        with self._lock:
+            self._raise_if_unusable()
+            if self._baseline_authority != authority or (
+                self._ready_target is not None
+                and self._ready_target != self._opened_target
+            ):
+                raise CodexRelayError(
+                    SelectionCode.SELECTION_RECOVERY_REQUIRED
+                )
+            self._opened_target = authority
+            self._adoption_target = None
+            self._drain_queue_locked(authority)
 
     def close(self) -> None:
         """Close only session-owned relay resources and unlink its socket."""
@@ -279,8 +317,8 @@ class CodexAdmissionRelay:
                 payload = downstream.receive(_RELAY_POLL_SECONDS)
                 if payload is not None:
                     self._route_downstream(payload)
-        except CodexAppServerError, CodexRelayError:
-            self._record_failure()
+        except (CodexAppServerError, CodexRelayError) as error:
+            self._record_failure(error)
         finally:
             downstream.close()
             self._upstream.close()
@@ -301,15 +339,15 @@ class CodexAdmissionRelay:
                     payload,
                     from_client=False,
                 )
-                self._record_loaded_thread(routing)
-                self._observe_upstream(routing)
+                with self._lock:
+                    self._record_loaded_thread_locked(routing.thread_id)
+                    self._observe_upstream(routing)
                 downstream.send(routing.raw)
-        except CodexAppServerError, CodexRelayError:
-            self._record_failure()
+        except (CodexAppServerError, CodexRelayError) as error:
+            self._record_failure(error)
 
     def _route_downstream(self, payload: bytes) -> None:
         routing = decode_json_rpc_routing(payload, from_client=True)
-        self._record_loaded_thread(routing)
         method = routing.method
         if method in _ACCOUNT_MUTATION_METHODS:
             if routing.request_id is None:
@@ -319,11 +357,20 @@ class CodexAdmissionRelay:
             )
             return
         if method not in {TURN_START_METHOD, THREAD_REALTIME_START_METHOD}:
-            self._upstream.send(routing.raw)
+            with self._lock:
+                self._raise_if_unusable()
+                self._ensure_loaded_thread_capacity_locked(routing.thread_id)
+                self._upstream.send(routing.raw)
+                self._record_loaded_thread_locked(routing.thread_id)
             return
+        self._route_start(routing)
+
+    def _route_start(self, routing: JsonRpcRouting) -> None:
         if routing.request_id is None or routing.thread_id is None:
             raise CodexRelayError(SelectionCode.AUTHORITY_PROOF_FAILED)
         with self._lock:
+            self._raise_if_unusable()
+            self._ensure_loaded_thread_capacity_locked(routing.thread_id)
             if len(self._queue) >= MAX_CODEX_RELAY_QUEUED_FRAMES:
                 self._require_downstream().send(
                     encode_relay_backpressure_refusal(routing.request_id)
@@ -334,55 +381,79 @@ class CodexAdmissionRelay:
                 queued.lease.turn_id == turn_id for queued in self._queue
             ):
                 raise CodexRelayError(SelectionCode.AUTHORITY_PROOF_FAILED)
-        lease = CodexRelayLease(
-            turn_id=turn_id,
-            kind=(
-                CodexRelayLeaseKind.TURN
-                if method == TURN_START_METHOD
-                else CodexRelayLeaseKind.REALTIME
-            ),
-            request_id=routing.request_id,
-            thread_id=routing.thread_id,
-        )
-        queued = _QueuedStart(raw=routing.raw, lease=lease)
-        admission = self._admission.begin(turn_id)
-        if admission.state is CodexRelayAdmissionState.QUEUED:
-            with self._lock:
+            lease = CodexRelayLease(
+                turn_id=turn_id,
+                kind=(
+                    CodexRelayLeaseKind.TURN
+                    if routing.method == TURN_START_METHOD
+                    else CodexRelayLeaseKind.REALTIME
+                ),
+                request_id=routing.request_id,
+                thread_id=routing.thread_id,
+            )
+            queued = _QueuedStart(raw=routing.raw, lease=lease)
+            admission = self._admission.begin(turn_id)
+            if self._queue:
+                if admission.state is not CodexRelayAdmissionState.QUEUED:
+                    raise CodexRelayError(
+                        SelectionCode.SELECTION_RECOVERY_REQUIRED
+                    )
                 self._queue.append(queued)
-            return
-        self._transmit_start(queued, admission)
+                return
+            if admission.state is CodexRelayAdmissionState.QUEUED:
+                self._queue.append(queued)
+                return
+            target = self._opened_target
+            if target is None:
+                raise CodexRelayError(
+                    SelectionCode.SELECTION_RECOVERY_REQUIRED
+                )
+            self._transmit_start_locked(queued, admission, target)
 
-    def _transmit_start(
+    def _drain_queue_locked(self, target: CodexRelayAuthority) -> None:
+        while self._queue:
+            queued = self._queue[0]
+            admission = self._admission.begin(queued.lease.turn_id)
+            if admission.state is CodexRelayAdmissionState.QUEUED:
+                return
+            if admission.authority != target:
+                raise CodexRelayError(SelectionCode.AUTHORITY_PROOF_FAILED)
+            self._queue.popleft()
+            self._transmit_start_locked(queued, admission, target)
+
+    def _transmit_start_locked(
         self,
         queued: _QueuedStart,
         admission: CodexRelayAdmission,
+        expected: CodexRelayAuthority,
     ) -> None:
         authority = admission.authority
-        if authority is None or admission.turn_id != queued.lease.turn_id:
+        if (
+            authority is None
+            or authority != expected
+            or admission.turn_id != queued.lease.turn_id
+        ):
             raise CodexRelayError(SelectionCode.AUTHORITY_PROOF_FAILED)
         self._admission.recheck(admission)
-        with self._lock:
-            if queued.lease.request_id in self._pending_requests:
-                raise CodexRelayError(SelectionCode.AUTHORITY_PROOF_FAILED)
-            if (
-                queued.lease.kind is CodexRelayLeaseKind.REALTIME
-                and queued.lease.thread_id in self._realtime
-            ):
-                raise CodexRelayError(SelectionCode.AUTHORITY_PROOF_FAILED)
-            self._pending_requests[queued.lease.request_id] = queued.lease
-            self._active.add(queued.lease.turn_id)
-            if queued.lease.kind is CodexRelayLeaseKind.REALTIME:
-                self._realtime[queued.lease.thread_id] = queued.lease.turn_id
+        if queued.lease.request_id in self._pending_requests:
+            raise CodexRelayError(SelectionCode.AUTHORITY_PROOF_FAILED)
+        if (
+            queued.lease.kind is CodexRelayLeaseKind.REALTIME
+            and queued.lease.thread_id in self._realtime
+        ):
+            raise CodexRelayError(SelectionCode.AUTHORITY_PROOF_FAILED)
+        self._pending_requests[queued.lease.request_id] = queued.lease
+        self._active.add(queued.lease.turn_id)
+        if queued.lease.kind is CodexRelayLeaseKind.REALTIME:
+            self._realtime[queued.lease.thread_id] = queued.lease.turn_id
         self._upstream.send(queued.raw)
-        with self._lock:
-            adopt = (
-                self._opened_target == authority
-                and self._adopted_target != authority
-            )
-        if adopt:
+        self._record_loaded_thread_locked(queued.lease.thread_id)
+        if (
+            self._adoption_target == authority
+            and self._adopted_target != authority
+        ):
+            self._adopted_target = authority
             self._readiness.adopted(queued.lease.turn_id, authority)
-            with self._lock:
-                self._adopted_target = authority
 
     def _observe_upstream(self, routing: JsonRpcRouting) -> None:
         if routing.method is None:
@@ -475,18 +546,34 @@ class CodexAdmissionRelay:
             raise CodexRelayError(SelectionCode.AUTHORITY_PROOF_FAILED)
         return routing.thread_id
 
-    def _record_loaded_thread(self, routing: JsonRpcRouting) -> None:
-        thread_id = routing.thread_id
+    def _loaded_threads_snapshot_locked(self) -> CodexLoadedThreadSnapshot:
+        return CodexLoadedThreadSnapshot(
+            revision=self._loaded_threads_revision,
+            thread_ids=tuple(sorted(self._loaded_threads)),
+        )
+
+    def _ensure_loaded_thread_capacity_locked(
+        self,
+        thread_id: str | None,
+    ) -> None:
+        if (
+            thread_id is not None
+            and thread_id not in self._loaded_threads
+            and len(self._loaded_threads) >= MAX_CODEX_RELAY_LOADED_THREADS
+        ):
+            raise CodexRelayError(SelectionCode.UNSUPPORTED_SESSION_CAPABILITY)
+
+    def _record_loaded_thread_locked(self, thread_id: str | None) -> None:
         if thread_id is None:
             return
-        with self._lock:
-            if thread_id in self._loaded_threads:
-                return
-            if len(self._loaded_threads) >= MAX_CODEX_RELAY_LOADED_THREADS:
-                raise CodexRelayError(
-                    SelectionCode.UNSUPPORTED_SESSION_CAPABILITY
-                )
-            self._loaded_threads.add(thread_id)
+        if thread_id in self._loaded_threads:
+            return
+        self._ensure_loaded_thread_capacity_locked(thread_id)
+        self._loaded_threads.add(thread_id)
+        self._loaded_threads_revision += 1
+        if self._ready_target != self._opened_target:
+            self._ready_target = None
+            self._ready_threads_revision = None
 
     def _require_downstream(self) -> CodexRelayFrameConnection:
         with self._lock:
@@ -501,11 +588,18 @@ class CodexAdmissionRelay:
         if self._failure is not None:
             raise self._failure
 
-    def _record_failure(self) -> None:
+    def _record_failure(
+        self,
+        error: CodexAppServerError | CodexRelayError,
+    ) -> None:
         with self._lock:
             if self._failure is None:
-                self._failure = CodexRelayError(
-                    SelectionCode.SELECTION_RECOVERY_REQUIRED
+                self._failure = (
+                    error
+                    if isinstance(error, CodexRelayError)
+                    else CodexRelayError(
+                        SelectionCode.SELECTION_RECOVERY_REQUIRED
+                    )
                 )
             downstream = self._downstream
         if downstream is not None:

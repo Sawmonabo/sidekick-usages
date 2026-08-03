@@ -5,6 +5,7 @@ import os
 import socket
 from dataclasses import dataclass
 from pathlib import Path
+from threading import Condition, Event, RLock, Thread
 
 import pytest
 
@@ -50,7 +51,10 @@ from sidekick_usages.providers.codex.session.models import (
     CodexSessionCapability,
     CodexSessionConfigurationReason,
 )
-from sidekick_usages.providers.codex.session.relay import CodexAdmissionRelay
+from sidekick_usages.providers.codex.session.relay import (
+    CodexAdmissionRelay,
+    CodexRelayError,
+)
 from sidekick_usages.serialization.json import JsonObject
 from tests.fakes.codex.app_server.daemon import (
     FakeCodexDaemon,
@@ -96,8 +100,19 @@ _SESSION_SCHEMA_MANIFEST = (
     "v2/ListMcpServerStatusResponse.json",
     "v2/McpServerStatusUpdatedNotification.json",
 )
-_TURN_A = TurnId("bbfa6548-9236-45d9-9af6-fae767d9e7bc")
 _ROUTING_REQUEST_ID = 7
+_RELAY_WAIT_SECONDS = 5.0
+_LOADED_THREAD_BOUND = 256
+_BASELINE_AUTHORITY = CodexRelayAuthority(
+    account_id=_ACCOUNT_ID,
+    generation=AuthorityGeneration(_GENERATION),
+    epoch=SelectionEpoch(1),
+)
+_TARGET_AUTHORITY = CodexRelayAuthority(
+    account_id=SidekickAccountId("44444444-4444-4444-8444-444444444444"),
+    generation=AuthorityGeneration("2026-07-24T11:00:00.000000000Z"),
+    epoch=SelectionEpoch(2),
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,46 +130,118 @@ class _SessionCase:
 
 
 class _RelayControl:
-    """Typed fake for provider-local admission and readiness ports."""
-
-    def __init__(self) -> None:
+    def __init__(self, authority: CodexRelayAuthority) -> None:
+        self._condition = Condition(RLock())
+        self._authority = authority
+        self._open = True
+        self._pause_states: set[CodexRelayAdmissionState] = set()
+        self._block_adoption = False
+        self.events = {
+            name: Event()
+            for name in (
+                "queued-started",
+                "queued-resume",
+                "admitted-started",
+                "admitted-resume",
+                "adoption-started",
+                "adoption-resume",
+            )
+        }
         self.begun: list[TurnId] = []
+        self.ended: list[TurnId] = []
+        self.ready_targets: list[CodexRelayAuthority] = []
+        self.adoptions: list[tuple[TurnId, CodexRelayAuthority]] = []
+
+    def close_gate(self) -> None:
+        with self._condition:
+            self._open = False
+
+    def open_gate(self, authority: CodexRelayAuthority) -> None:
+        with self._condition:
+            self._authority = authority
+            self._open = True
+
+    def arm_open_race(self) -> None:
+        with self._condition:
+            self._pause_states = set(CodexRelayAdmissionState)
+            self._block_adoption = True
+        for event in self.events.values():
+            event.clear()
+
+    def wait_count(
+        self,
+        values: list[TurnId] | list[tuple[TurnId, CodexRelayAuthority]],
+        count: int,
+        timeout: float = _RELAY_WAIT_SECONDS,
+    ) -> bool:
+        with self._condition:
+            return self._condition.wait_for(
+                lambda: len(values) >= count,
+                timeout=timeout,
+            )
 
     def begin(self, turn_id: TurnId) -> CodexRelayAdmission:
-        """Retain one stable queued turn identifier."""
-        self.begun.append(turn_id)
+        with self._condition:
+            state = (
+                CodexRelayAdmissionState.ADMITTED
+                if self._open
+                else CodexRelayAdmissionState.QUEUED
+            )
+            authority = self._authority if self._open else None
+            pause = state in self._pause_states
+            self._pause_states.discard(state)
+            started = self.events[f"{state.value}-started"]
+            resumed = self.events[f"{state.value}-resume"]
+            self.begun.append(turn_id)
+            self._condition.notify_all()
+        if pause:
+            started.set()
+            self._wait_event(resumed)
         return CodexRelayAdmission(
             turn_id=turn_id,
-            state=CodexRelayAdmissionState.QUEUED,
-            authority=None,
+            state=state,
+            authority=authority,
         )
 
     def recheck(self, admission: CodexRelayAdmission) -> None:
-        """Reject transmission from this closed fake gate."""
-        raise AssertionError("Queued fake admission was transmitted.")
+        with self._condition:
+            if not self._open or admission.authority != self._authority:
+                raise AssertionError("Relay admission was not rechecked.")
 
     def end(self, turn_id: TurnId) -> None:
-        """Reject a terminal event for a never-forwarded fake turn."""
-        raise AssertionError("Queued fake admission ended.")
+        with self._condition:
+            self.ended.append(turn_id)
+            self._condition.notify_all()
 
     def ready(self, target: CodexRelayAuthority) -> None:
-        """Reject readiness from this routing-only fake."""
-        raise AssertionError("Routing-only fake became ready.")
+        with self._condition:
+            self.ready_targets.append(target)
+            self._condition.notify_all()
 
     def adopted(
         self,
         turn_id: TurnId,
         target: CodexRelayAuthority,
     ) -> None:
-        """Reject adoption from this routing-only fake."""
-        raise AssertionError("Routing-only fake adopted a turn.")
+        with self._condition:
+            block = self._block_adoption
+            self._block_adoption = False
+            self.adoptions.append((turn_id, target))
+            self._condition.notify_all()
+        if block:
+            self.events["adoption-started"].set()
+            self._wait_event(self.events["adoption-resume"])
+
+    @staticmethod
+    def _wait_event(event: Event) -> None:
+        if not event.wait(_RELAY_WAIT_SECONDS):
+            raise AssertionError("Timed out at a relay race boundary.")
 
 
 def _receive_response(
     tui: FakeCodexTuiObserver,
     request_id: int,
 ) -> JsonObject:
-    """Receive through notifications until one response is correlated."""
     for _message_index in range(16):
         message = tui.receive()
         if message.get("id") == request_id:
@@ -162,13 +249,52 @@ def _receive_response(
     raise AssertionError("Fake Codex TUI saw no correlated response.")
 
 
-def _prove_relay_routing_codec() -> None:
+def _receive_method(tui: FakeCodexTuiObserver, method: str) -> None:
+    for _message_index in range(16):
+        if tui.receive().get("method") == method:
+            return
+    raise AssertionError("Fake Codex TUI saw no provider terminal event.")
+
+
+def _send_turn(
+    tui: FakeCodexTuiObserver,
+    request_id: int,
+    thread_id: str,
+) -> None:
+    tui.send_request(
+        request_id,
+        "turn/start",
+        {"input": [], "threadId": thread_id},
+    )
+
+
+def _resume_thread(
+    tui: FakeCodexTuiObserver,
+    request_id: int,
+    thread_id: str,
+) -> None:
+    tui.send_request(request_id, "thread/resume", {"threadId": thread_id})
+    _receive_response(tui, request_id)
+
+
+def _prove_relay_routing_codec(monkeypatch: pytest.MonkeyPatch) -> None:
     """Prove only relay-owned identifiers and raw bytes are observed."""
     raw_turn = (
         b'{"id":7,"method":"turn/start","params":'
-        b'{"input":[],"threadId":"thread-alpha"}}'
+        b'{"input":[{"text":"provider-content"}],'
+        b'"threadId":"thread-alpha"}}'
     )
-    routing = decode_json_rpc_routing(raw_turn, from_client=True)
+
+    def reject_recursive_decode(_payload: bytes) -> JsonObject:
+        raise AssertionError("Relay routing decoded provider content.")
+
+    with monkeypatch.context() as routing_context:
+        routing_context.setattr(
+            "sidekick_usages.providers.codex.app_server.jsonrpc.codec."
+            "decode_json_object",
+            reject_recursive_decode,
+        )
+        routing = decode_json_rpc_routing(raw_turn, from_client=True)
     assert (
         routing.request_id,
         routing.method,
@@ -182,56 +308,151 @@ def _prove_relay_routing_codec() -> None:
         None,
         raw_turn,
     )
-    routing_cases = (
-        (
-            b'{"id":7,"result":{"turn":{"id":"turn-alpha"}}}',
-            None,
-            None,
-            "turn-alpha",
-        ),
-        (
-            b'{"id":8,"result":{"thread":{"id":"thread-gamma"}}}',
-            None,
-            "thread-gamma",
-            None,
-        ),
-        (
-            b'{"emittedAtMs":1,"method":"turn/completed",'
-            b'"params":{"threadId":"thread-alpha",'
-            b'"turn":{"id":"turn-alpha"}}}',
-            "turn/completed",
-            "thread-alpha",
-            "turn-alpha",
-        ),
-        (
-            b'{"emittedAtMs":2,"method":"thread/realtime/closed",'
-            b'"params":{"threadId":"thread-beta"}}',
-            "thread/realtime/closed",
-            "thread-beta",
-            None,
-        ),
+
+
+def _prove_relay_baseline(
+    relay: CodexAdmissionRelay,
+    tui: FakeCodexTuiObserver,
+    control: _RelayControl,
+    daemon: FakeCodexDaemon,
+) -> None:
+    """Prove natural terminals, bounded FIFO, and baseline reopen."""
+    tui.send_request(
+        10,
+        "turn/start",
+        {
+            "input": [{"text": "provider-content"}],
+            "threadId": "thread-turn-a",
+        },
     )
-    for raw, method, thread_id, turn_id in routing_cases:
-        observed = decode_json_rpc_routing(raw, from_client=False)
-        assert (observed.method, observed.thread_id, observed.turn_id) == (
-            method,
-            thread_id,
-            turn_id,
-        )
-        assert observed.raw == raw
+    assert _receive_response(tui, 10).get("result") == {
+        "turn": {"id": "turn-10"}
+    }
+    _receive_method(tui, "turn/completed")
+    tui.send_request(
+        11,
+        "thread/realtime/start",
+        {"threadId": "thread-realtime-a"},
+    )
+    assert _receive_response(tui, 11).get("result") == {}
+    _receive_method(tui, "thread/realtime/closed")
+    assert control.wait_count(control.ended, 2)
+
+    control.close_gate()
+    baseline_ids = tuple(range(20, 36))
+    for request_id in baseline_ids:
+        _send_turn(tui, request_id, f"thread-baseline-{request_id}")
+    assert control.wait_count(control.begun, 18)
+    _send_turn(tui, 36, "thread-refused")
+    backpressure = _receive_response(tui, 36).get("error")
+    assert isinstance(backpressure, dict)
+    assert backpressure.get("data") == {
+        "code": SelectionCode.ACTIVE_OPERATION_TIMEOUT.value
+    }
+
+    control.open_gate(_BASELINE_AUTHORITY)
+    relay.reopen_baseline(_BASELINE_AUTHORITY)
+    for request_id in baseline_ids:
+        _receive_response(tui, request_id)
+    assert control.wait_count(control.ended, 18)
+    assert daemon.relay_start_request_ids == (10, 11, *baseline_ids)
+    assert control.ready_targets == []
+    assert control.adoptions == []
+
+
+def _prove_relay_target(
+    relay: CodexAdmissionRelay,
+    tui: FakeCodexTuiObserver,
+    control: _RelayControl,
+    daemon: FakeCodexDaemon,
+) -> None:
+    """Prove versioned readiness, atomic OPEN, and one adoption."""
+    control.close_gate()
+    _resume_thread(tui, 60, "thread-snapshot-a")
+    stale_snapshot = relay.loaded_threads_snapshot
+    _resume_thread(tui, 61, "thread-snapshot-b")
+    with pytest.raises(CodexRelayError) as stale_ready:
+        relay.mark_ready(_TARGET_AUTHORITY, stale_snapshot)
+    assert stale_ready.value.code is SelectionCode.AUTHORITY_PROOF_FAILED
+
+    relay.mark_ready(_TARGET_AUTHORITY, relay.loaded_threads_snapshot)
+    _resume_thread(tui, 62, "thread-snapshot-c")
+    with pytest.raises(CodexRelayError) as invalidated_open:
+        relay.open_admission(_TARGET_AUTHORITY)
+    assert (
+        invalidated_open.value.code
+        is SelectionCode.SELECTION_RECOVERY_REQUIRED
+    )
+    relay.mark_ready(_TARGET_AUTHORITY, relay.loaded_threads_snapshot)
+
+    control.arm_open_race()
+    _send_turn(tui, 70, "thread-race-first")
+    _RelayControl._wait_event(control.events["queued-started"])
+    open_started, open_finished = Event(), Event()
+
+    def open_target() -> None:
+        control.open_gate(_TARGET_AUTHORITY)
+        open_started.set()
+        relay.open_admission(_TARGET_AUTHORITY)
+        open_finished.set()
+
+    open_thread = Thread(target=open_target)
+    open_thread.start()
+    _RelayControl._wait_event(open_started)
+    finished_before_queue_install = open_finished.wait(0.1)
+    control.events["queued-resume"].set()
+    if finished_before_queue_install:
+        open_thread.join(timeout=_RELAY_WAIT_SECONDS)
+    assert not finished_before_queue_install
+
+    _RelayControl._wait_event(control.events["admitted-started"])
+    _send_turn(tui, 71, "thread-race-second")
+    control.events["admitted-resume"].set()
+    _RelayControl._wait_event(control.events["adoption-started"])
+    duplicate = control.wait_count(control.adoptions, 2, 0.1)
+    control.events["adoption-resume"].set()
+    open_thread.join(timeout=_RELAY_WAIT_SECONDS)
+    assert not open_thread.is_alive()
+    assert not duplicate
+    _receive_response(tui, 70)
+    _receive_response(tui, 71)
+    assert control.wait_count(control.ended, 20)
+    assert daemon.relay_start_request_ids[-2:] == (70, 71)
+    assert control.adoptions == [(control.begun[-2], _TARGET_AUTHORITY)]
+    assert control.ready_targets == [_TARGET_AUTHORITY, _TARGET_AUTHORITY]
+
+
+def _prove_loaded_thread_bound(
+    relay: CodexAdmissionRelay,
+    tui: FakeCodexTuiObserver,
+) -> None:
+    """Prove relay state is bounded and fails closed on overflow."""
+
+    for request_id in range(100, 333):
+        _resume_thread(tui, request_id, f"thread-bound-{request_id}")
+    full_snapshot = relay.loaded_threads_snapshot
+    assert len(full_snapshot.thread_ids) == _LOADED_THREAD_BOUND
+    tui.send_request(400, "thread/resume", {"threadId": "thread-overflow"})
+    tui.wait_closed()
+    with pytest.raises(CodexRelayError) as overflow:
+        relay.mark_ready(_TARGET_AUTHORITY, full_snapshot)
+    assert overflow.value.code is SelectionCode.UNSUPPORTED_SESSION_CAPABILITY
 
 
 def _prove_versioned_relay_journey(short_socket_root: Path) -> None:
-    """Prove raw routing, local queuing, and mutation refusal."""
+    """Prove the complete provider-local relay state boundary."""
     daemon_home = short_socket_root / "relay-daemon"
     relay_root = short_socket_root / "relay"
     daemon_home.mkdir(mode=0o700)
     relay_root.mkdir(mode=0o700)
     relay_path = relay_root / "participant.sock"
-    control = _RelayControl()
+    control = _RelayControl(_BASELINE_AUTHORITY)
+    turn_index = 0
 
     def next_turn_id() -> TurnId:
-        return _TURN_A
+        nonlocal turn_index
+        turn_index += 1
+        return TurnId(f"10000000-0000-4000-8000-{turn_index:012d}")
 
     with FakeCodexDaemon(
         daemon_home,
@@ -246,6 +467,7 @@ def _prove_versioned_relay_journey(short_socket_root: Path) -> None:
             control,
             turn_id_factory=next_turn_id,
         )
+        relay.seed_baseline(_BASELINE_AUTHORITY)
         try:
             tui = daemon.connect_tui(relay.socket_path)
             try:
@@ -257,18 +479,6 @@ def _prove_versioned_relay_journey(short_socket_root: Path) -> None:
                 result = _receive_response(tui, 2).get("result")
                 assert isinstance(result, dict)
                 assert result.get("requiresOpenaiAuth") is True
-                tui.send_request(
-                    3,
-                    "turn/start",
-                    {
-                        "input": [],
-                        "threadId": "thread-alpha",
-                    },
-                )
-                assert tui.receive_optional(0.1) is None
-                assert control.begun == [_TURN_A]
-                assert relay.loaded_thread_ids == ("thread-alpha",)
-
                 for request_id, method in enumerate(
                     (
                         "account/login/start",
@@ -286,6 +496,10 @@ def _prove_versioned_relay_journey(short_socket_root: Path) -> None:
                             SelectionCode.UNCOORDINATED_AUTH_MUTATION.value
                         )
                     }
+
+                _prove_relay_baseline(relay, tui, control, daemon)
+                _prove_relay_target(relay, tui, control, daemon)
+                _prove_loaded_thread_bound(relay, tui)
 
             finally:
                 tui.close()
@@ -393,7 +607,7 @@ def test_versioned_codex_app_server_boundary_is_complete(
         assert isinstance(notification, JsonRpcNotification)
         assert notification.method == "account/updated"
 
-        _prove_relay_routing_codec()
+        _prove_relay_routing_codec(monkeypatch)
 
         target = CodexRelayAuthority(
             account_id=_ACCOUNT_ID,

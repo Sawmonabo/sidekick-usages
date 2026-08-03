@@ -1,5 +1,8 @@
 """Strict bounded Codex app-server JSON-RPC message codec."""
 
+import json
+import math
+import re
 from dataclasses import dataclass, field
 from typing import NoReturn
 
@@ -42,6 +45,10 @@ _MAX_METHOD_BYTES = 256
 _MAX_ERROR_MESSAGE_BYTES = 1024
 _MAX_SERVER_REQUEST_ID_BYTES = 256
 _MAX_ROUTING_ID_BYTES = 256
+_MAX_ROUTING_MEMBERS = 128
+_MAX_JSON_MEMBER_NAME_BYTES = 256
+_MAX_JSON_NUMBER_BYTES = 128
+_MAX_JSON_SKIP_DEPTH = 64
 _UNICODE_CONTROL_LIMIT = 0x20
 _MAX_UNIX_TIMESTAMP_MILLISECONDS = (1 << 63) - 1
 _SAFE_RELAY_ERROR_CODE = -32001
@@ -60,6 +67,14 @@ _THREAD_ROUTING_METHODS = frozenset(
     }
 )
 _TURN_ROUTING_METHODS = frozenset({TURN_COMPLETED_METHOD, TURN_STARTED_METHOD})
+_TOP_ROUTING_MEMBERS = frozenset(
+    {"emittedAtMs", "error", "id", "method", "params", "result"}
+)
+_JSON_NUMBER_PATTERN = re.compile(
+    r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?"
+)
+
+type _RoutingSpan = tuple[int, int]
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -83,18 +98,24 @@ def decode_json_rpc_routing(
     if not payload or len(payload) > MAX_JSON_RPC_MESSAGE_BYTES:
         return _malformed()
     try:
-        decoded = decode_json_object(payload)
-    except InvalidPayloadError:
-        raise CodexAppServerError(
-            CodexAppServerFailure.PROTOCOL_MALFORMED
-        ) from None
-    if "method" in decoded:
-        return _decode_routing_call(
-            decoded,
+        text = payload.decode("utf-8")
+    except UnicodeDecodeError:
+        return _malformed()
+    cursor = _RoutingEnvelopeCursor(text)
+    keys, fields = cursor.read_object_fields(
+        _TOP_ROUTING_MEMBERS,
+        max_members=len(_TOP_ROUTING_MEMBERS),
+    )
+    cursor.require_complete()
+    if "method" in keys:
+        return _decode_scanned_routing_call(
+            text,
+            keys,
+            fields,
             payload,
             from_client=from_client,
         )
-    return _decode_routing_response(decoded, payload)
+    return _decode_scanned_routing_response(text, keys, fields, payload)
 
 
 def encode_account_mutation_refusal(request_id: int | str) -> bytes:
@@ -215,42 +236,340 @@ def validated_json_rpc_error(code: int, message: str) -> JsonObject:
     return {"code": code, "message": message}
 
 
-def _decode_routing_call(
-    payload: JsonObject,
+class _RoutingEnvelopeCursor:
+    """Validate one relay envelope while retaining routing member spans."""
+
+    def __init__(
+        self,
+        text: str,
+        start: int = 0,
+        end: int | None = None,
+    ) -> None:
+        self._text = text
+        self._index = start
+        self._end = len(text) if end is None else end
+
+    def read_object_fields(
+        self,
+        selected: frozenset[str],
+        *,
+        max_members: int = _MAX_ROUTING_MEMBERS,
+    ) -> tuple[set[str], dict[str, _RoutingSpan]]:
+        """Return member names and spans without materializing values."""
+        self._skip_space()
+        self._expect("{")
+        keys: set[str] = set()
+        fields: dict[str, _RoutingSpan] = {}
+        self._skip_space()
+        if self._take("}"):
+            return keys, fields
+        while True:
+            if len(keys) >= max_members:
+                return _malformed()
+            key = self._read_member_name()
+            if key in keys:
+                return _malformed()
+            keys.add(key)
+            self._skip_space()
+            self._expect(":")
+            self._skip_space()
+            span = self._value_span()
+            if key in selected:
+                fields[key] = span
+            self._skip_space()
+            if self._take("}"):
+                return keys, fields
+            self._expect(",")
+            self._skip_space()
+
+    def require_complete(self) -> None:
+        """Require only JSON whitespace after the parsed value."""
+        self._skip_space()
+        if self._index != self._end:
+            return _malformed()
+        return None
+
+    def _read_member_name(self) -> str:
+        span = self._string_span()
+        if span[1] - span[0] > (_MAX_JSON_MEMBER_NAME_BYTES * 6) + 2:
+            return _malformed()
+        value = _decoded_span(self._text, span)
+        if not isinstance(value, str):
+            return _malformed()
+        try:
+            encoded = value.encode("utf-8")
+        except UnicodeEncodeError:
+            return _malformed()
+        if not encoded or len(encoded) > _MAX_JSON_MEMBER_NAME_BYTES:
+            return _malformed()
+        return value
+
+    def _value_span(self) -> _RoutingSpan:
+        start = self._index
+        self._skip_value(0)
+        return start, self._index
+
+    def _skip_value(self, depth: int) -> None:
+        if depth > _MAX_JSON_SKIP_DEPTH or self._index >= self._end:
+            return _malformed()
+        character = self._text[self._index]
+        if character == '"':
+            self._string_span()
+        elif character == "{":
+            self._skip_object(depth + 1)
+        elif character == "[":
+            self._skip_array(depth + 1)
+        elif character in "-0123456789":
+            self._skip_number()
+        elif self._text.startswith("true", self._index):
+            self._index += 4
+        elif self._text.startswith("false", self._index):
+            self._index += 5
+        elif self._text.startswith("null", self._index):
+            self._index += 4
+        else:
+            return _malformed()
+        return None
+
+    def _skip_object(self, depth: int) -> None:
+        self._expect("{")
+        self._skip_space()
+        if self._take("}"):
+            return
+        while True:
+            self._string_span()
+            self._skip_space()
+            self._expect(":")
+            self._skip_space()
+            self._skip_value(depth)
+            self._skip_space()
+            if self._take("}"):
+                return
+            self._expect(",")
+            self._skip_space()
+
+    def _skip_array(self, depth: int) -> None:
+        self._expect("[")
+        self._skip_space()
+        if self._take("]"):
+            return
+        while True:
+            self._skip_value(depth)
+            self._skip_space()
+            if self._take("]"):
+                return
+            self._expect(",")
+            self._skip_space()
+
+    def _string_span(self) -> _RoutingSpan:
+        start = self._index
+        self._expect('"')
+        while self._index < self._end:
+            character = self._text[self._index]
+            self._index += 1
+            if character == '"':
+                return start, self._index
+            if ord(character) < _UNICODE_CONTROL_LIMIT:
+                return _malformed()
+            if character != "\\":
+                continue
+            if self._index >= self._end:
+                return _malformed()
+            escape = self._text[self._index]
+            self._index += 1
+            if escape in '"\\/bfnrt':
+                continue
+            if escape != "u" or self._index + 4 > self._end:
+                return _malformed()
+            if any(
+                character not in "0123456789abcdefABCDEF"
+                for character in self._text[self._index : self._index + 4]
+            ):
+                return _malformed()
+            self._index += 4
+        return _malformed()
+
+    def _skip_number(self) -> None:
+        start = self._index
+        match = _JSON_NUMBER_PATTERN.match(
+            self._text,
+            self._index,
+            self._end,
+        )
+        if match is None:
+            return _malformed()
+        self._index = match.end()
+        if self._index - start > _MAX_JSON_NUMBER_BYTES:
+            return _malformed()
+        number = self._text[start : self._index]
+        if any(
+            character in number for character in ".eE"
+        ) and not math.isfinite(float(number)):
+            return _malformed()
+        return None
+
+    def _skip_space(self) -> None:
+        while self._index < self._end and self._text[self._index] in " \t\r\n":
+            self._index += 1
+
+    def _expect(self, character: str) -> None:
+        if not self._take(character):
+            return _malformed()
+        return None
+
+    def _take(self, character: str) -> bool:
+        if self._index < self._end and self._text[self._index] == character:
+            self._index += 1
+            return True
+        return False
+
+
+def _object_fields(
+    text: str,
+    span: _RoutingSpan,
+    selected: frozenset[str],
+) -> tuple[set[str], dict[str, _RoutingSpan]]:
+    cursor = _RoutingEnvelopeCursor(text, *span)
+    observed = cursor.read_object_fields(selected)
+    cursor.require_complete()
+    return observed
+
+
+def _decoded_span(text: str, span: _RoutingSpan) -> object:
+    try:
+        return json.loads(text[span[0] : span[1]])
+    except json.JSONDecodeError, RecursionError, ValueError:
+        return _malformed()
+
+
+def _span_text(text: str, span: _RoutingSpan) -> str:
+    if span[1] - span[0] > (_MAX_ERROR_MESSAGE_BYTES * 6) + 2:
+        return _malformed()
+    value = _decoded_span(text, span)
+    if not isinstance(value, str):
+        return _malformed()
+    return value
+
+
+def _required_span_text(
+    text: str,
+    fields: dict[str, _RoutingSpan],
+    name: str,
+) -> str:
+    span = fields.get(name)
+    if span is None:
+        return _malformed()
+    return _span_text(text, span)
+
+
+def _validated_routing_text(value: str) -> str:
+    try:
+        encoded = value.encode("utf-8")
+    except UnicodeEncodeError:
+        return _malformed()
+    if (
+        not encoded
+        or len(encoded) > _MAX_ROUTING_ID_BYTES
+        or any(ord(character) < _UNICODE_CONTROL_LIMIT for character in value)
+    ):
+        return _malformed()
+    return value
+
+
+def _optional_span_text(
+    text: str,
+    fields: dict[str, _RoutingSpan],
+    name: str,
+) -> str | None:
+    span = fields.get(name)
+    if span is None:
+        return None
+    return _validated_routing_text(_span_text(text, span))
+
+
+def _span_integer(text: str, span: _RoutingSpan) -> int:
+    if span[1] - span[0] > _MAX_JSON_NUMBER_BYTES:
+        return _malformed()
+    value = _decoded_span(text, span)
+    if isinstance(value, bool) or not isinstance(value, int):
+        return _malformed()
+    return value
+
+
+def _span_request_id(text: str, span: _RoutingSpan) -> int | str:
+    if span[1] - span[0] > (_MAX_SERVER_REQUEST_ID_BYTES * 6) + 2:
+        return _malformed()
+    return validated_server_request_id(_decoded_span(text, span))
+
+
+def _span_emitted_at(text: str, span: _RoutingSpan) -> int:
+    value = _span_integer(text, span)
+    if value < 0 or value > _MAX_UNIX_TIMESTAMP_MILLISECONDS:
+        return _malformed()
+    return value
+
+
+def _optional_nested_id(
+    text: str,
+    fields: dict[str, _RoutingSpan],
+    name: str,
+) -> str | None:
+    span = fields.get(name)
+    if span is None:
+        return None
+    _keys, nested = _object_fields(text, span, frozenset({"id"}))
+    return _optional_span_text(text, nested, "id")
+
+
+def _required_nested_id(
+    text: str,
+    fields: dict[str, _RoutingSpan],
+    name: str,
+) -> str:
+    value = _optional_nested_id(text, fields, name)
+    if value is None:
+        return _malformed()
+    return value
+
+
+def _decode_scanned_routing_call(
+    text: str,
+    keys: set[str],
+    fields: dict[str, _RoutingSpan],
     raw: bytes,
     *,
     from_client: bool,
 ) -> JsonRpcRouting:
-    method = _message_method(payload)
+    method = validated_json_rpc_method(
+        _required_span_text(text, fields, "method")
+    )
     if from_client and method == INITIALIZED_METHOD:
-        if set(payload) != {"method"}:
+        if keys != {"method"}:
             return _malformed()
-        params: JsonObject = {}
+        params: dict[str, _RoutingSpan] = {}
     else:
-        params = _message_params(payload)
-    request_id: int | str | None = None
-    if "id" in payload:
-        if set(payload) != {"id", "method", "params"}:
+        params_span = fields.get("params")
+        if params_span is None:
             return _malformed()
-        request_id = validated_server_request_id(payload["id"])
-    elif from_client:
-        expected = (
-            {"method"}
-            if method == INITIALIZED_METHOD
-            else {"method", "params"}
+        params_keys, params = _object_fields(
+            text,
+            params_span,
+            frozenset({"threadId", "turn"}),
         )
-        if set(payload) != expected:
-            return _malformed()
-    else:
-        if set(payload) != {"emittedAtMs", "method", "params"}:
-            return _malformed()
-        _validated_emitted_at(payload["emittedAtMs"])
-    thread_id = _routing_text(params, "threadId")
+        del params_keys
+    request_id = _scanned_call_request_id(
+        text,
+        keys,
+        fields,
+        method,
+        from_client=from_client,
+    )
+    thread_id = _optional_span_text(text, params, "threadId")
     if method in _THREAD_ROUTING_METHODS and thread_id is None:
         return _malformed()
     turn_id = None
     if method in _TURN_ROUTING_METHODS:
-        turn_id = _nested_turn_id(params)
+        turn_id = _required_nested_id(text, params, "turn")
     return JsonRpcRouting(
         raw=raw,
         request_id=request_id,
@@ -261,34 +580,65 @@ def _decode_routing_call(
     )
 
 
-def _decode_routing_response(
-    payload: JsonObject,
+def _scanned_call_request_id(
+    text: str,
+    keys: set[str],
+    fields: dict[str, _RoutingSpan],
+    method: str,
+    *,
+    from_client: bool,
+) -> int | str | None:
+    if "id" in keys:
+        if keys != {"id", "method", "params"}:
+            return _malformed()
+        return _span_request_id(text, fields["id"])
+    if from_client:
+        expected = (
+            {"method"}
+            if method == INITIALIZED_METHOD
+            else {"method", "params"}
+        )
+        if keys != expected:
+            return _malformed()
+        return None
+    if keys != {"emittedAtMs", "method", "params"}:
+        return _malformed()
+    _span_emitted_at(text, fields["emittedAtMs"])
+    return None
+
+
+def _decode_scanned_routing_response(
+    text: str,
+    keys: set[str],
+    fields: dict[str, _RoutingSpan],
     raw: bytes,
 ) -> JsonRpcRouting:
-    if "id" not in payload:
+    if "id" not in keys:
         _malformed()
-    request_id = validated_server_request_id(payload["id"])
+    request_id = _span_request_id(text, fields["id"])
     error_response = False
     thread_id = None
     turn_id = None
-    if set(payload) == {"id", "result"}:
-        result = payload["result"]
-        if not isinstance(result, dict):
-            _malformed()
-        thread_id = _optional_nested_routing_id(result, "thread")
-        turn_id = _optional_nested_routing_id(result, "turn")
-    elif set(payload) == {"id", "error"}:
-        error = payload["error"]
-        if not isinstance(error, dict):
-            _malformed()
-        code = error.get("code")
-        message = error.get("message")
-        if (
-            isinstance(code, bool)
-            or not isinstance(code, int)
-            or not isinstance(message, str)
-        ):
-            _malformed()
+    if keys == {"id", "result"}:
+        _result_keys, result = _object_fields(
+            text,
+            fields["result"],
+            frozenset({"thread", "turn"}),
+        )
+        thread_id = _optional_nested_id(text, result, "thread")
+        turn_id = _optional_nested_id(text, result, "turn")
+    elif keys == {"id", "error"}:
+        _error_keys, error = _object_fields(
+            text,
+            fields["error"],
+            frozenset({"code", "message"}),
+        )
+        code_span = error.get("code")
+        message_span = error.get("message")
+        if code_span is None or message_span is None:
+            return _malformed()
+        code = _span_integer(text, code_span)
+        message = _span_text(text, message_span)
         validated_json_rpc_error(code, message)
         error_response = True
     else:
@@ -386,62 +736,6 @@ def _message_params(payload: JsonObject) -> JsonObject:
     if not isinstance(params, dict):
         return _malformed()
     return params
-
-
-def _routing_text(params: JsonObject, name: str) -> str | None:
-    value = params.get(name)
-    if value is None:
-        return None
-    if not isinstance(value, str):
-        return _malformed()
-    try:
-        encoded = value.encode("utf-8")
-    except UnicodeEncodeError:
-        return _malformed()
-    if (
-        not encoded
-        or len(encoded) > _MAX_ROUTING_ID_BYTES
-        or any(ord(character) < _UNICODE_CONTROL_LIMIT for character in value)
-    ):
-        return _malformed()
-    return value
-
-
-def _required_routing_text(params: JsonObject, name: str) -> str:
-    value = _routing_text(params, name)
-    if value is None:
-        return _malformed()
-    return value
-
-
-def _nested_turn_id(params: JsonObject) -> str:
-    turn = params.get("turn")
-    if not isinstance(turn, dict):
-        return _malformed()
-    return _required_routing_text(turn, "id")
-
-
-def _optional_nested_routing_id(
-    payload: JsonObject,
-    name: str,
-) -> str | None:
-    nested = payload.get(name)
-    if nested is None:
-        return None
-    if not isinstance(nested, dict):
-        return _malformed()
-    return _required_routing_text(nested, "id")
-
-
-def _validated_emitted_at(value: object) -> int:
-    if (
-        isinstance(value, bool)
-        or not isinstance(value, int)
-        or value < 0
-        or value > _MAX_UNIX_TIMESTAMP_MILLISECONDS
-    ):
-        return _malformed()
-    return value
 
 
 def _malformed() -> NoReturn:
