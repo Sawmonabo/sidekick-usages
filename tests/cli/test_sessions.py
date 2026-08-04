@@ -74,7 +74,8 @@ _ORIGINAL_BASH = "# user alias\nalias ll='ls -l'\n"
 _SIDEKICK_EXECUTABLE = ExecutableProvenance(
     Path("/opt/sidekick usages/bin/sidekick-usages"), 1, 1, 1, 1
 )
-_POSIX_FUNCTIONS = """claude() {
+_POSIX_FUNCTIONS = """unalias claude codex 2>/dev/null || true
+claude() {
     command '/opt/sidekick usages/bin/sidekick-usages' session claude -- "$@"
 }
 codex() {

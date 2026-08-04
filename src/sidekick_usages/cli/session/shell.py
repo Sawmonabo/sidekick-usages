@@ -25,6 +25,7 @@ from sidekick_usages.platform.models import ExecutableProvenance
 _START_MARKER = "# >>> sidekick-usages session >>>"
 _END_MARKER = "# <<< sidekick-usages session <<<"
 _RESTORE_NO_NEWLINE_TAG = " # sidekick-usages:restore-no-final-newline"
+_POSIX_ALIAS_RESET = "unalias claude codex 2>/dev/null || true"
 _LEGACY_POSIX_FUNCTIONS = b"""claude() {
     command sidekick-usages session claude -- "$@"
 }
@@ -535,7 +536,8 @@ def _source_block(
 
 def _posix_functions(sidekick_executable: Path) -> bytes:
     command = shlex.quote(str(sidekick_executable))
-    return f"""claude() {{
+    return f"""{_POSIX_ALIAS_RESET}
+claude() {{
     command {command} session claude -- "$@"
 }}
 codex() {{
@@ -565,9 +567,10 @@ def _managed_functions(payload: bytes, shell_kind: ShellKind) -> bool:
         return True
     try:
         lines = payload.decode("utf-8").splitlines()
+        offset = int(lines[0] == _POSIX_ALIAS_RESET)
         commands = (
-            tuple(shlex.split(lines[1].strip())),
-            tuple(shlex.split(lines[4].strip())),
+            tuple(shlex.split(lines[1 + offset].strip())),
+            tuple(shlex.split(lines[4 + offset].strip())),
         )
         executable = Path(commands[0][1])
     except IndexError, UnicodeDecodeError, ValueError:
@@ -584,7 +587,12 @@ def _managed_functions(payload: bytes, shell_kind: ShellKind) -> bool:
         if shell_kind is ShellKind.FISH
         else _posix_functions(executable)
     )
-    return payload == rendered
+    if payload == rendered:
+        return True
+    return (
+        shell_kind is not ShellKind.FISH
+        and payload == rendered.partition(b"\n")[2]
+    )
 
 
 def _managed_range(
