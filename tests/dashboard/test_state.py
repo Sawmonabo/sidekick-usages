@@ -834,7 +834,7 @@ def test_dashboard_controller_journey_preserves_verified_truth(
             ProviderId.CODEX,
             ProviderId.CLAUDE,
         ),
-        startup_account_id=CLAUDE_PREVIEW_ACCOUNT_ID,
+        startup_account_id=CLAUDE_ACTIVE_ACCOUNT_ID,
         startup_footer=DashboardFooter(
             navigation=DashboardNavigationKind.KEYS,
             status=DashboardStatus(

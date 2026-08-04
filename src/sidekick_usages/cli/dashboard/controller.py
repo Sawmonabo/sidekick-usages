@@ -193,7 +193,13 @@ class DashboardController:
         )
         if account is None:
             raise ValueError("Selection proof account is not displayed.")
-        if (
+        future_selection = (
+            result is not None
+            and result.outcome is SelectionOutcome.READY
+            and result.required_count == 0
+            and result.epoch == provider.finalized_epoch
+        )
+        if not future_selection and (
             provider.active_account_id != proof.account_id
             or not account.active
         ):

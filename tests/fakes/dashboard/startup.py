@@ -82,7 +82,7 @@ def exercise_startup_reconciliation(
         invalidation.wait_for(
             lambda: (
                 connector.reconciliations == expected_reconciliations
-                and session.view.controller.account_id == preview_account_id
+                and session.view.controller.account_id == active_account_id
             )
         )
         assert session.view.footer == DashboardFooter(

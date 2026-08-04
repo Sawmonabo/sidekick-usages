@@ -451,12 +451,6 @@ class InteractiveDashboardSession:
             if snapshot is not None:
                 controller = controller.rebase(
                     self._apply_lookup(snapshot),
-                    restore_provider=(
-                        result.provider_id
-                        if result.state
-                        is DashboardStartupReconciliationState.VERIFIED
-                        else None
-                    ),
                 )
             footer = self._view.footer
             if result.state is DashboardStartupReconciliationState.VERIFIED:
