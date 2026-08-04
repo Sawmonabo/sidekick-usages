@@ -775,6 +775,7 @@ class ParticipantRegistry:
         self,
         operation_id: OperationId,
         finalized: FinalizedSelection,
+        target_participant_id: ParticipantId | None = None,
     ) -> None:
         """Open only participants that installed exact finalized authority."""
         with self._condition:
@@ -789,6 +790,10 @@ class ParticipantRegistry:
                     for participant_id, participant in records.items()
                     if participant.manifest.provider_id
                     is finalized.provider_id
+                    and (
+                        target_participant_id is None
+                        or participant_id == target_participant_id
+                    )
                 ),
                 operation_id,
                 finalized,

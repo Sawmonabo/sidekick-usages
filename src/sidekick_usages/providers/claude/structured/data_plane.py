@@ -77,6 +77,7 @@ _CLAUDE_PROJECTION_KINDS = frozenset(
         OperationKind.CLAUDE_PARTICIPANT_BIND,
     }
 )
+_BINDING_MISMATCH = "The protected participant binding does not match."
 
 
 def claude_participant_ack_required(
@@ -311,9 +312,7 @@ class ClaudeParticipantChannelRegistry:
                 current.connection_generation != connection_generation
                 or current.peer != peer
             ):
-                raise ClaudeProtectedChannelError(
-                    "The protected participant binding does not match."
-                )
+                raise ClaudeProtectedChannelError(_BINDING_MISMATCH)
             endpoint = self._channels.pop(participant_id).endpoint
         endpoint.close()
 
@@ -368,8 +367,8 @@ class ClaudeParticipantChannelRegistry:
         participant_id: ParticipantId,
         connection_generation: int,
         peer: ProcessIdentity,
-    ) -> bool:
-        """Refresh and report whether one exact channel is unbound."""
+    ) -> tuple[bool, OperationId | None]:
+        """Refresh and report exact binding state for one channel."""
         with self._distribution_lock:
             with self._lock:
                 channel = self._channels.get(participant_id)
@@ -377,9 +376,7 @@ class ClaudeParticipantChannelRegistry:
                     channel.connection_generation != connection_generation
                     or channel.peer != peer
                 ):
-                    raise ClaudeProtectedChannelError(
-                        "The protected participant binding does not match."
-                    )
+                    raise ClaudeProtectedChannelError(_BINDING_MISMATCH)
             nonce = new_request_id()
             payload = encode_protected_binding_query(
                 nonce, participant_id, connection_generation
@@ -403,7 +400,9 @@ class ClaudeParticipantChannelRegistry:
                             "The participant reconnected during query."
                         )
                     current.binding = report
-                return report is None
+                return report is None, (
+                    None if report is None else report.operation_id
+                )
             except ClaudeProtectedChannelError, OSError, ValueError:
                 self._discard_failed(participant_id, channel)
                 raise ClaudeProtectedChannelError(
@@ -444,6 +443,24 @@ class ClaudeParticipantChannelRegistry:
             for participant_id, channel in channels:
                 if channel.binding == binding:
                     continue
+                self._install_one(participant_id, channel, binding, oauth)
+
+    def install_target(
+        self,
+        binding: ClaudeStructuredBinding,
+        oauth: bytearray,
+        participant_id: ParticipantId,
+        connection_generation: int,
+    ) -> None:
+        """Install one binding on one exact participant connection."""
+        with self._distribution_lock:
+            with self._lock:
+                channel = self._channels.get(participant_id)
+                if channel is None or (
+                    channel.connection_generation != connection_generation
+                ):
+                    raise ClaudeProtectedChannelError(_BINDING_MISMATCH)
+            if channel.binding != binding:
                 self._install_one(participant_id, channel, binding, oauth)
 
     def _install_one(
@@ -761,6 +778,7 @@ class _PendingProjection:
     kind: OperationKind
     nonce: RequestId
     exchange: ClaudeProtectedSupervisorExchange
+    target: tuple[ParticipantId, int] | None
     frame: ClaudeProtectedOAuthFrame | None = None
 
 
@@ -783,12 +801,18 @@ class ClaudeProtectedCommitRelay:
         parent_operation_id: OperationId,
         provider_id: ProviderId,
         kind: OperationKind,
+        target: tuple[ParticipantId, int] | None = None,
     ) -> bool:
         """Create one exact Claude exchange before durable enqueue."""
         if provider_id is not ProviderId.CLAUDE or (
             kind not in _CLAUDE_PROJECTION_KINDS
         ):
             return False
+        targeted = kind is OperationKind.CLAUDE_PARTICIPANT_BIND
+        if targeted != (target is not None):
+            raise ClaudeProtectedChannelError(
+                "The protected projection target does not match its kind."
+            )
         nonce = new_request_id()
         response_deadline = monotonic() + CLAUDE_PROTECTED_RESPONSE_SECONDS
         completion_deadline = monotonic() + CLAUDE_PROTECTED_COMPLETION_SECONDS
@@ -820,6 +844,7 @@ class ClaudeProtectedCommitRelay:
                 kind,
                 nonce,
                 exchange,
+                target,
             )
         return True
 
@@ -877,7 +902,10 @@ class ClaudeProtectedCommitRelay:
             )
         oauth = frame.take_protected_oauth()
         try:
-            self._channels.install(binding, oauth)
+            if pending.target is None:
+                self._channels.install(binding, oauth)
+            else:
+                self._channels.install_target(binding, oauth, *pending.target)
         finally:
             clear_secret_buffer(oauth)
             frame.close_protected_frame()

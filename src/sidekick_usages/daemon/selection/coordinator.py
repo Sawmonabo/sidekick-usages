@@ -37,7 +37,6 @@ from sidekick_usages.daemon.selection.models import (
     ParticipantNotice,
     ParticipantReadyRequest,
     ParticipantRegistration,
-    ParticipantRequestError,
     SelectionRequestError,
     SelectionStatus,
     TurnAdmission,
@@ -48,11 +47,11 @@ from sidekick_usages.daemon.selection.ports import (
     FinalizedSelectionStore,
     SelectionAuthorityAdapter,
     SelectionJournal,
-    SelectionParticipantBinder,
 )
 from sidekick_usages.daemon.selection.projection import (
     project_operation_snapshot,
 )
+from sidekick_usages.daemon.selection.registration import ParticipantRegistrar
 from sidekick_usages.daemon.selection.registry import ParticipantRegistry
 from sidekick_usages.persistence.errors import PersistenceError
 from sidekick_usages.platform.models import ProcessIdentity
@@ -64,7 +63,6 @@ from sidekick_usages.platform.types import (
 
 OLD_TURN_DRAIN_TIMEOUT_SECONDS = 120.0
 PARTICIPANT_READY_TIMEOUT_SECONDS = 30.0
-_AUTHORITY_PROOF_FAILED = SelectionCode.AUTHORITY_PROOF_FAILED
 
 
 @dataclass(slots=True)
@@ -110,8 +108,15 @@ class SelectionCoordinator:
             else process_inspector
         )
         self._flight_lock = Lock()
-        self._registration_lock = Lock()
         self._flights: dict[ProviderId, _SelectionFlight] = {}
+        self._registrar = ParticipantRegistrar(
+            selected,
+            journal,
+            participants,
+            adapter,
+            clock,
+            self._resume_if_recovered,
+        )
 
     def register(
         self,
@@ -121,92 +126,11 @@ class SelectionCoordinator:
         protected_endpoint: socket.socket | None = None,
     ) -> ParticipantRegistration:
         """Durably register one exact kernel-proven participant."""
-
-        def persist_required(pending_epoch: SelectionEpoch) -> None:
-            active = self._journal.load(manifest.provider_id).active
-            if active is None or active.pending_epoch != pending_epoch:
-                raise RuntimeError("selection_journal_unavailable")
-            self._journal.add_required(
-                manifest.provider_id,
-                active.operation_id,
-                active.pending_epoch,
-                manifest.participant_id,
-                updated_at=self._clock.now(),
-            )
-
-        requires_endpoint = self._participants.requires_attachment(
-            manifest.provider_id
+        return self._registrar.register(
+            manifest,
+            peer,
+            protected_endpoint,
         )
-        if not requires_endpoint:
-            if protected_endpoint is not None:
-                protected_endpoint.close()
-                raise ParticipantRequestError(_AUTHORITY_PROOF_FAILED)
-            registration = self._participants.register(
-                manifest,
-                peer,
-                persist_required=persist_required,
-            )
-        else:
-            if protected_endpoint is None:
-                raise ParticipantRequestError(_AUTHORITY_PROOF_FAILED)
-            with self._registration_lock:
-                try:
-                    transaction = self._participants.stage_attachment(
-                        manifest, peer, protected_endpoint
-                    )
-                except Exception:
-                    raise ParticipantRequestError(
-                        _AUTHORITY_PROOF_FAILED
-                    ) from None
-                try:
-                    registration = self._participants.register(
-                        manifest,
-                        peer,
-                        persist_required=persist_required,
-                        attachment=transaction,
-                    )
-                except BaseException:
-                    transaction.rollback()
-                    raise
-            member_id = manifest.participant_id
-            generation = manifest.connection_generation
-            owner = self._participants.attachment_registry(
-                manifest.provider_id
-            )
-            if owner is None:
-                raise ParticipantRequestError(_AUTHORITY_PROOF_FAILED)
-            try:
-                unbound = owner.refresh_binding(member_id, generation, peer)
-                self._participants.record_prebootstrap_proof(
-                    member_id, generation, peer, unbound)
-            except Exception:
-                raise ParticipantRequestError(
-                    _AUTHORITY_PROOF_FAILED
-                ) from None
-        self._bind_registered_participant(manifest.provider_id, registration)
-        return registration
-
-    def _bind_registered_participant(
-        self,
-        provider_id: ProviderId,
-        registration: ParticipantRegistration,
-    ) -> None:
-        binder = self._adapter
-        if registration.pending_epoch is not None:
-            active = self._journal.load(provider_id).active
-            if (
-                active is not None
-                and active.target_generation is not None
-                and isinstance(binder, SelectionParticipantBinder)
-            ):
-                binder.bind_participant(active)
-            self._resume_if_recovered(provider_id)
-        elif self._participants.requires_finalized_attachment(
-            provider_id
-        ) and isinstance(binder, SelectionParticipantBinder):
-            finalized = self._selected.load(provider_id)
-            if finalized is not None:
-                binder.bind_finalized(finalized)
 
     def subscribe(
         self,

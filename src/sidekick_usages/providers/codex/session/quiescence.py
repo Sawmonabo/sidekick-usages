@@ -332,7 +332,7 @@ class CodexParticipantProofSet:
         participant_id: ParticipantId,
         connection_generation: int,
         peer: ProcessIdentity,
-    ) -> bool:
+    ) -> tuple[bool, OperationId | None]:
         """Require the exact process-wide Codex attachment to remain."""
         with self._lock:
             channel = self._channels.get(participant_id)
@@ -343,7 +343,7 @@ class CodexParticipantProofSet:
                 raise CodexParticipantProofError(
                     "The Codex participant attachment does not match."
                 )
-        return False
+        return False, None
 
     def prepare(
         self,

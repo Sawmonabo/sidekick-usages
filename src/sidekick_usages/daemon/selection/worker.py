@@ -21,6 +21,7 @@ from sidekick_usages.core.selection.types import (
     OperationKind,
     OperationPriority,
     OperationState,
+    ParticipantId,
     SelectionCode,
     SelectionPhase,
 )
@@ -34,6 +35,7 @@ from sidekick_usages.persistence.supervisor.queue import OperationQueueStore
 
 _WorkerKey = tuple[ProviderId, OperationId, OperationKind]
 _ParentKey = tuple[ProviderId, OperationId]
+_BindKey = tuple[ProviderId, OperationId, ParticipantId, int]
 _RECOVERY_READBACK_PHASES = frozenset(
     {
         SelectionPhase.PREVALIDATING,
@@ -69,6 +71,7 @@ class SelectionWorkerExchangeOwner(Protocol):
         parent_operation_id: OperationId,
         provider_id: ProviderId,
         kind: OperationKind,
+        target: tuple[ParticipantId, int] | None = None,
     ) -> bool:
         """Prepare an exact child exchange before durable enqueue."""
 
@@ -112,7 +115,7 @@ class SelectionWorkerGateway:
         self._condition = Condition()
         self._waiters: dict[_WorkerKey, _SelectionWaiter] = {}
         self._readbacks: dict[_ParentKey, OperationId] = {}
-        self._binds: dict[_ParentKey, OperationId] = {}
+        self._binds: dict[_BindKey, OperationId] = {}
         self._exchange_children: dict[OperationId, _WorkerKey] = {}
         self._closed = False
 
@@ -225,7 +228,12 @@ class SelectionWorkerGateway:
         self._wake()
         return effective
 
-    def bind_participant(self, operation: OpenSelectionOperation) -> None:
+    def bind_participant(
+        self,
+        operation: OpenSelectionOperation,
+        participant_id: ParticipantId,
+        connection_generation: int,
+    ) -> None:
         """Enqueue one protected bind without blocking registration I/O."""
         if operation.target_generation is None or operation.phase not in {
             SelectionPhase.AWAITING_READY,
@@ -243,13 +251,14 @@ class SelectionWorkerGateway:
             operation.target_account_id,
             OperationKind.CLAUDE_PARTICIPANT_BIND,
         )
-        key = (operation.provider_id, operation.operation_id)
+        target = participant_id, connection_generation
+        key = operation.provider_id, operation.operation_id, *target
         with self._condition:
             child_id = self._binds.get(key)
             if child_id is not None and self._queue.find(child_id) is not None:
                 return
         try:
-            if not self._prepare_exchange(due):
+            if not self._prepare_exchange(due, target):
                 raise SelectionRequestError(
                     SelectionCode.SELECTION_RECOVERY_REQUIRED
                 )
@@ -262,13 +271,19 @@ class SelectionWorkerGateway:
             self.abort_exchange(due.operation_id)
             raise
 
-    def bind_finalized(self, finalized: FinalizedSelection) -> None:
+    def bind_finalized(
+        self,
+        finalized: FinalizedSelection,
+        participant_id: ParticipantId,
+        connection_generation: int,
+    ) -> None:
         """Enqueue one exact finalized bind before participant admission."""
         if finalized.provider_id is not ProviderId.CLAUDE:
             raise SelectionRequestError(SelectionCode.AUTHORITY_PROOF_FAILED)
         due = self._finalized_bind_operation(finalized)
+        target = participant_id, connection_generation
         try:
-            if not self._prepare_exchange(due):
+            if not self._prepare_exchange(due, target):
                 raise SelectionRequestError(
                     SelectionCode.SELECTION_RECOVERY_REQUIRED
                 )
@@ -450,7 +465,11 @@ class SelectionWorkerGateway:
                 if self._waiters.get(key) is waiter:
                     self._waiters.pop(key)
 
-    def _prepare_exchange(self, operation: DueOperation) -> bool:
+    def _prepare_exchange(
+        self,
+        operation: DueOperation,
+        target: tuple[ParticipantId, int] | None = None,
+    ) -> bool:
         owner = self._exchange_owner
         if owner is None:
             return False
@@ -459,6 +478,7 @@ class SelectionWorkerGateway:
             operation.required_selection_operation_id,
             operation.provider_id,
             operation.kind,
+            target,
         )
         if owned:
             with self._condition:

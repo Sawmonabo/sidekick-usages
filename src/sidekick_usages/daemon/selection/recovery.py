@@ -1,6 +1,5 @@
 """Forward-only active selection recovery before supervisor readiness."""
 
-from contextlib import suppress
 from dataclasses import replace
 from threading import Lock
 
@@ -416,8 +415,6 @@ class SelectionRecovery:
         if operation.phase is not SelectionPhase.AWAITING_READY:
             return self._recovery_required(operation)
         if not self._participants.target_prepared(operation.provider_id):
-            with suppress(SelectionRequestError):
-                self._workers.bind_participant(operation)
             return self._recovery_required(operation)
         if not self._participants.ready_resolved(operation.provider_id):
             return self._recovery_required(operation)

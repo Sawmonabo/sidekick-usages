@@ -205,10 +205,16 @@ class _SelectionAdapter:
             raise RuntimeError("Synthetic crash after protected install.")
         return proof
 
-    def bind_participant(self, operation: OpenSelectionOperation) -> None:
+    def bind_participant(
+        self, operation: OpenSelectionOperation,
+        _participant_id: ParticipantId, _connection_generation: int,
+    ) -> None:
         raise AssertionError(str(operation.operation_id))
 
-    def bind_finalized(self, finalized: FinalizedSelection) -> None:
+    def bind_finalized(
+        self, finalized: FinalizedSelection,
+        participant_id: ParticipantId, connection_generation: int,
+    ) -> None:
         if self._protected is None:
             return
         _channels, _registry, _hosts, scheduler = self._protected
@@ -219,7 +225,9 @@ class _SelectionAdapter:
                 account_id=finalized.account_id,
                 generation=finalized.generation,
                 epoch=finalized.epoch,
-            )
+            ),
+            (participant_id,),
+            target=(participant_id, connection_generation),
         )
         scheduler.completed(
             _completion(
@@ -233,6 +241,8 @@ class _SelectionAdapter:
         self,
         binding: ClaudeStructuredBinding,
         participant_ids: tuple[ParticipantId, ...] | None = None,
+        *,
+        target: tuple[ParticipantId, int] | None = None,
     ) -> None:
         assert self._protected is not None
         channels, _registry, protected_hosts, _scheduler = self._protected
@@ -251,7 +261,10 @@ class _SelectionAdapter:
             receivers.append(receiver)
         oauth = bytearray(b"protected-target-oauth-canary")
         try:
-            channels.install(binding, oauth)
+            if target is None:
+                channels.install(binding, oauth)
+            else:
+                channels.install_target(binding, oauth, *target)
         finally:
             clear_secret_buffer(oauth)
         for receiver in receivers:

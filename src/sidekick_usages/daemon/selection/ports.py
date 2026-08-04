@@ -91,8 +91,8 @@ class ParticipantAttachmentRegistry(Protocol):
         participant_id: ParticipantId,
         connection_generation: int,
         peer: ProcessIdentity,
-    ) -> bool:
-        """Return whether one refreshed exact attachment is unbound."""
+    ) -> tuple[bool, OperationId | None]:
+        """Return unbound state and any exact reported operation."""
 
     def matches_target(
         self,
@@ -149,10 +149,20 @@ class SelectionAuthorityAdapter(Protocol):
 class SelectionParticipantBinder(Protocol):
     """Schedule one protected bind for a newly attached participant."""
 
-    def bind_participant(self, operation: OpenSelectionOperation) -> None:
+    def bind_participant(
+        self,
+        operation: OpenSelectionOperation,
+        participant_id: ParticipantId,
+        connection_generation: int,
+    ) -> None:
         """Bind the current target before this participant can be ready."""
 
-    def bind_finalized(self, finalized: FinalizedSelection) -> None:
+    def bind_finalized(
+        self,
+        finalized: FinalizedSelection,
+        participant_id: ParticipantId,
+        connection_generation: int,
+    ) -> None:
         """Bind persisted target authority before a first participant turn."""
 
 
