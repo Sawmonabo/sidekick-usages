@@ -25,7 +25,6 @@ from sidekick_usages.daemon.types.ports import (
 from sidekick_usages.daemon.types.worker import WorkerOutcome
 from sidekick_usages.daemon.worker.exchange import (
     operation_requires_provider_preparation,
-    operation_requires_worker_exchange,
 )
 from sidekick_usages.daemon.worker.pool import (
     WorkerLaunchError,
@@ -126,14 +125,14 @@ class DurableScheduler:
         monotonic_now = self._monotonic()
         for operation in self._queue.due(now):
             callback = operation.priority is OperationPriority.CODEX_CALLBACK
-            requires_provider_preparation = (
-                operation_requires_provider_preparation(operation)
-            )
             if (
-                requires_provider_preparation
+                not callback
                 and not self._workers.has_capacity_for(operation)
             ):
                 continue
+            requires_provider_preparation = (
+                operation_requires_provider_preparation(operation)
+            )
             if requires_provider_preparation and (
                 self._exchange_preparer is None
                 or not self._exchange_preparer.prepare_operation(operation)
@@ -145,8 +144,10 @@ class DurableScheduler:
             ):
                 continue
             if not self._workers.can_start(operation):
-                if operation_requires_worker_exchange(operation):
-                    self._workers.cancel_exchange(operation.operation_id)
+                self._reject_operation(
+                    operation,
+                    "worker_exchange_unavailable",
+                )
                 continue
             try:
                 running = self._queue.transition(
@@ -246,7 +247,7 @@ class DurableScheduler:
         monotonic_now: float,
     ) -> bool:
         if self._workers.codex_transition_active():
-            self._reject_callback(callback, "callback_authority_busy")
+            self._reject_operation(callback, "callback_authority_busy")
             return False
         try:
             preempted = self._workers.preempt_for_callback(
@@ -254,34 +255,34 @@ class DurableScheduler:
                 monotonic_now=monotonic_now,
             )
         except WorkerLaunchError:
-            self._reject_callback(callback, "callback_authority_busy")
+            self._reject_operation(callback, "callback_authority_busy")
             return False
         if preempted is None:
             return True
         completion = self._finalize_exit(preempted)
         if completion is not None:
             return True
-        self._reject_callback(callback, "callback_authority_busy")
+        self._reject_operation(callback, "callback_authority_busy")
         return False
 
-    def _reject_callback(
+    def _reject_operation(
         self,
-        callback: DueOperation,
+        operation: DueOperation,
         code: str,
     ) -> None:
         removed = False
         try:
             self._queue.remove(
-                callback.operation_id,
-                expected_state=OperationState.SCHEDULED,
+                operation.operation_id,
+                expected_state=operation.state,
             )
             removed = True
         except ManagedStateConflictError:
             pass
         finally:
-            self._workers.cancel_exchange(callback.operation_id)
+            self._workers.cancel_exchange(operation.operation_id)
         if removed:
-            self._events.failed(callback, code)
+            self._events.failed(operation, code)
 
     def _complete_exit(
         self,

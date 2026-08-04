@@ -72,6 +72,7 @@ from sidekick_usages.daemon.selection.worker import (
 )
 from sidekick_usages.daemon.types.service import ServicePhase
 from sidekick_usages.daemon.types.worker import WorkerOutcome
+from sidekick_usages.daemon.worker.exchange import WorkerExchangeRegistry
 from sidekick_usages.daemon.worker.pool import WorkerPool
 from sidekick_usages.entrypoints import worker
 from sidekick_usages.entrypoints.supervisor import (
@@ -941,3 +942,59 @@ def test_supervisor_and_workers_isolate_failures_and_recover_durably(
         durable
     )
     wakeup.close()
+
+
+def test_scheduler_retains_exchange_during_capacity_contention(
+    tmp_path: Path,
+) -> None:
+    """Retain one protected bind until its provider lane is free."""
+    capacity = foundation_state(tmp_path)
+    for queued in capacity.operations:
+        capacity.queue.remove(queued.operation_id, expected_state=queued.state)
+    blocker_id, bind_id = (new_operation_id() for _index in range(2))
+    blocker = replace(
+        capacity.operations[0],
+        operation_id=blocker_id,
+        selection_operation_id=None,
+        kind=OperationKind.RECONCILE,
+    )
+    bind = replace(
+        blocker,
+        operation_id=bind_id,
+        selection_operation_id=bind_id,
+        kind=OperationKind.CLAUDE_PARTICIPANT_BIND,
+    )
+    capacity_clock = RuntimeClock()
+    capacity_results = WorkerResultStore(capacity.paths.durable_operations)
+    release = Event()
+    exchanges = WorkerExchangeRegistry(capacity_clock.monotonic)
+    now = capacity_clock.monotonic()
+    exchanges.create(bind_id, b"protected", now + 10, now + 12)
+    capacity_launcher = FakeWorkerLauncher(
+        capacity_results,
+        capacity_clock,
+        frozenset({bind_id}),
+        natural_completions={blocker_id: release},
+    )
+    capacity_workers = WorkerPool(
+        capacity_launcher,
+        worker_planner(),
+        lambda: None,
+        exchanges=exchanges,
+        monotonic=capacity_clock.monotonic,
+    )
+    capacity_scheduler = DurableScheduler(
+        capacity.queue,
+        capacity_results,
+        capacity_workers,
+        capacity_clock,
+        monotonic=capacity_clock.monotonic,
+    )
+    capacity.queue.enqueue(blocker)
+    assert len(capacity_scheduler.dispatch_due()) == 1
+    capacity.queue.enqueue(bind)
+    capacity_scheduler.dispatch_due()
+    assert exchanges.available(bind_id)
+    release.set()
+    assert len(capacity_scheduler.collect()) == 1
+    assert capacity_scheduler.dispatch_due()[0].operation_id == bind_id
