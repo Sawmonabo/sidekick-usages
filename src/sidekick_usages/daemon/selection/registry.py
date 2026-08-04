@@ -356,10 +356,9 @@ class ParticipantRegistry:
                 request.connection_generation,
             )
             admission = self._turns.get(request.turn_id)
-            if (
-                admission is None
-                or admission.participant_id != request.participant_id
-            ):
+            if admission is None:
+                return
+            if admission.participant_id != request.participant_id:
                 raise ParticipantRequestError(_AUTHORITY_PROOF_FAILED)
             self._turns.pop(request.turn_id)
             self._condition.notify_all()

@@ -3,9 +3,25 @@
 from uuid import uuid4
 
 from sidekick_usages.core.selection.types import SelectionCode, TurnId
+from sidekick_usages.daemon.control.protocol import ConnectionClosedError
+from sidekick_usages.providers.claude.structured.codec import (
+    ClaudeProtectedChannelClosedError,
+)
 from sidekick_usages.providers.claude.structured.models import (
     ClaudeStructuredAdoptionReceipt,
     ClaudeStructuredTerminalEvent,
+)
+
+CLAUDE_REATTACH_DELAYS_SECONDS = (0.0, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0)
+CLAUDE_ATTACHMENT_RETRY_ERRORS = (
+    BrokenPipeError,
+    ClaudeProtectedChannelClosedError,
+    ConnectionAbortedError,
+    ConnectionClosedError,
+    ConnectionRefusedError,
+    ConnectionResetError,
+    FileNotFoundError,
+    TimeoutError,
 )
 
 

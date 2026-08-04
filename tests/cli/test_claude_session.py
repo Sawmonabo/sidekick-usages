@@ -312,6 +312,7 @@ def test_claude_session_keeps_one_engine_across_a_queued_switch() -> None:
     control.recover_initial_projection_once()
     control.recover_target_projection_once()
     control.disconnect_initial_once()
+    control.lose_end_ack_once()
     host, supervisor = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
     runtime = ClaudeSessionRuntime(
         engine,
@@ -422,7 +423,9 @@ def test_claude_session_keeps_one_engine_across_a_queued_switch() -> None:
         "presentation:Claude usage limits are nearly exhausted.",
         "presentation:Claude authentication requires attention.",
         "interrupt",
-        "end",
+        "end_applied",
+        "reattach:4",
+        "end_ack",
         "close_input",
         "wait",
     ]

@@ -17,6 +17,7 @@ from sidekick_usages.core.selection.types import (
     TurnId,
 )
 from sidekick_usages.core.types import ProviderId
+from sidekick_usages.daemon.control.protocol import ConnectionClosedError
 from sidekick_usages.daemon.selection.models import (
     ParticipantAdoptionProof,
     ParticipantManifest,
@@ -293,6 +294,8 @@ class ClaudeSessionControlFake:
         self._recover_initial = False
         self._recover_target = False
         self._target_recovery_sent = False
+        self._lose_end_ack = False
+        self._end_applied = False
         self._recovered_initial = False
         self._initial_projected = False
         self._initial_receipt_proven = False
@@ -493,6 +496,10 @@ class ClaudeSessionControlFake:
         if not self._failed_attachment_closed.wait(timeout=2):
             raise AssertionError("Fatal Claude attachment remained open.")
 
+    def lose_end_ack_once(self) -> None:
+        """Lose one response after applying the exact turn completion."""
+        self._lose_end_ack = True
+
     def refuse_once(self) -> None:
         """Publish a recoverable precommit refusal for the live engine."""
         self._notices.put(
@@ -580,7 +587,15 @@ class ClaudeSessionControlFake:
         """Record the naturally terminal exact turn."""
         if turn_id != SESSION_TURN:
             raise AssertionError("Unexpected Claude turn completion.")
-        self._events.append("end")
+        if not self._lose_end_ack:
+            self._events.append("end")
+            return
+        if not self._end_applied:
+            self._end_applied = True
+            self._events.append("end_applied")
+            self.disconnect()
+            raise ConnectionClosedError("Synthetic END response loss.")
+        self._events.append("end_ack")
 
     def close(self) -> None:
         """Release only fake control resources."""

@@ -19,6 +19,8 @@ from sidekick_usages.cli.session.claude.coordination import (
     require_first_claude_notice,
 )
 from sidekick_usages.cli.session.claude.lifecycle import (
+    CLAUDE_ATTACHMENT_RETRY_ERRORS,
+    CLAUDE_REATTACH_DELAYS_SECONDS,
     ClaudeProviderTerminatedError,
     ClaudeSessionGateError,
     ClaudeTerminalEventsClosedError,
@@ -48,7 +50,6 @@ from sidekick_usages.daemon.selection.models import (
     TurnAdmissionState,
 )
 from sidekick_usages.providers.claude.structured.codec import (
-    ClaudeProtectedChannelClosedError,
     clear_secret_buffer,
     decode_control_success,
 )
@@ -94,17 +95,6 @@ _ENGINE_POLL_SECONDS = 0.1
 _ENGINE_EXIT_TIMEOUT_SECONDS = 30.0
 _THREAD_JOIN_SECONDS = 2.0
 _COMPLETED_CONTROL_LIMIT = 256
-_REATTACH_DELAYS_SECONDS = (0.0, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0)
-_ATTACHMENT_RETRY_ERRORS = (
-    BrokenPipeError,
-    ClaudeProtectedChannelClosedError,
-    ConnectionAbortedError,
-    ConnectionClosedError,
-    ConnectionRefusedError,
-    ConnectionResetError,
-    FileNotFoundError,
-    TimeoutError,
-)
 
 
 class ClaudeSessionRuntime:
@@ -243,7 +233,7 @@ class ClaudeSessionRuntime:
                 notices = self._control.notices()
                 first = require_first_claude_notice(notices)
                 self._apply_notice(first)
-            except _ATTACHMENT_RETRY_ERRORS:
+            except CLAUDE_ATTACHMENT_RETRY_ERRORS:
                 with self._condition:
                     self._gate_code = SelectionCode.SELECTION_RECOVERY_REQUIRED
                     self._reattaching = True
@@ -285,13 +275,13 @@ class ClaudeSessionRuntime:
                     None,
                 )
                 initial = channel.receive()
-            except _ATTACHMENT_RETRY_ERRORS:
+            except CLAUDE_ATTACHMENT_RETRY_ERRORS:
                 self._close_coordination(current, channel)
                 current = None
                 if factory is None:
                     raise
-                delay = _REATTACH_DELAYS_SECONDS[
-                    min(attempt, len(_REATTACH_DELAYS_SECONDS) - 1)
+                delay = CLAUDE_REATTACH_DELAYS_SECONDS[
+                    min(attempt, len(CLAUDE_REATTACH_DELAYS_SECONDS) - 1)
                 ]
                 if self._closing.wait(delay):
                     self._fail(ClaudeStructuredFailure.PROCESS_UNAVAILABLE)
@@ -330,7 +320,7 @@ class ClaudeSessionRuntime:
             if self._control_is_available():
                 try:
                     self._control.adopted(proof)
-                except _ATTACHMENT_RETRY_ERRORS:
+                except CLAUDE_ATTACHMENT_RETRY_ERRORS:
                     self._control_lost(self._connection_generation, True)
                     self._raise_gate()
             with self._engine_lock:
@@ -343,12 +333,7 @@ class ClaudeSessionRuntime:
                 raise
             failures: list[BaseException] = [error]
             try:
-                with self._session_lock:
-                    self._require_session().end_turn(turn_id)
-            except BaseException as cleanup_error:
-                failures.append(cleanup_error)
-            try:
-                self._control.end(turn_id)
+                self.end_turn(turn_id)
             except BaseException as cleanup_error:
                 failures.append(cleanup_error)
             if len(failures) > 1:
@@ -487,14 +472,28 @@ class ClaudeSessionRuntime:
         decode_control_success(response, request_id)
 
     def end_turn(self, turn_id: TurnId) -> None:
-        """Close one naturally terminal turn in both local owners."""
-        with self._session_lock:
-            self._require_session().end_turn(turn_id)
-        if self._control_is_available():
+        """Close one turn after its exact supervisor acknowledgment."""
+        while True:
+            with self._condition:
+                self._condition.wait_for(
+                    lambda: (
+                        self._control_available
+                        or not self._reattaching
+                        or self._closing.is_set()
+                    )
+                )
+                self._raise_failure()
+                if not self._control_available:
+                    self._raise_gate()
+                    self._fail(ClaudeStructuredFailure.PROCESS_UNAVAILABLE)
             try:
                 self._control.end(turn_id)
-            except _ATTACHMENT_RETRY_ERRORS:
+            except CLAUDE_ATTACHMENT_RETRY_ERRORS:
                 self._control_lost(self._connection_generation, True)
+                continue
+            break
+        with self._session_lock:
+            self._require_session().end_turn(turn_id)
 
     def finish_engine(self) -> int:
         """Close engine input and await only its ordinary exit."""
@@ -514,6 +513,8 @@ class ClaudeSessionRuntime:
     def close(self) -> None:
         """Close only host and supervisor resources owned by this runtime."""
         self._closing.set()
+        with self._condition:
+            self._condition.notify_all()
         self._coordination_changed.set()
         channel = self._channel
         if channel is not None:
@@ -612,7 +613,7 @@ class ClaudeSessionRuntime:
                     self._control_lost(connection_generation, False)
                     return
                 channel.acknowledge(receipt)
-        except _ATTACHMENT_RETRY_ERRORS:
+        except CLAUDE_ATTACHMENT_RETRY_ERRORS:
             if not self._closing.is_set():
                 self._control_lost(connection_generation, True)
         except BaseException as error:
@@ -717,7 +718,7 @@ class ClaudeSessionRuntime:
                 self._apply_notice(notice)
             if not self._closing.is_set():
                 raise ConnectionClosedError("Claude notices closed.")
-        except _ATTACHMENT_RETRY_ERRORS:
+        except CLAUDE_ATTACHMENT_RETRY_ERRORS:
             if not self._closing.is_set():
                 self._control_lost(connection_generation, True)
         except BaseException as error:
@@ -803,7 +804,7 @@ class ClaudeSessionRuntime:
                 revision = self._open_revision
             try:
                 admission = self._control.begin(turn_id)
-            except _ATTACHMENT_RETRY_ERRORS:
+            except CLAUDE_ATTACHMENT_RETRY_ERRORS:
                 self._control_lost(self._connection_generation, True)
                 continue
             if admission.state is TurnAdmissionState.ADMITTED:
@@ -903,8 +904,8 @@ class ClaudeSessionRuntime:
         attempt = 0
         reported = False
         while True:
-            delay = _REATTACH_DELAYS_SECONDS[
-                min(attempt, len(_REATTACH_DELAYS_SECONDS) - 1)
+            delay = CLAUDE_REATTACH_DELAYS_SECONDS[
+                min(attempt, len(CLAUDE_REATTACH_DELAYS_SECONDS) - 1)
             ]
             if self._closing.wait(delay):
                 return
@@ -951,7 +952,7 @@ class ClaudeSessionRuntime:
             self._raise_failure()
             if self._control_is_available() or self._closing.is_set():
                 return True
-        except _ATTACHMENT_RETRY_ERRORS:
+        except CLAUDE_ATTACHMENT_RETRY_ERRORS:
             self._close_coordination(coordination, channel)
             return False
         except BaseException:
