@@ -150,6 +150,13 @@ output.
 For account-change failures, include the redacted provider phase, target label,
 epoch, exact required, ready, adopted, lost, and unreachable counts, plus the
 unmanaged-status availability. An unmanaged count is unavailable until a
-provider-neutral owner exists. Do not include participant identifiers. A
-setup-token or mixed selection refusal is expected while the protected Claude
-host is release-disabled; use and maintenance remain separate.
+provider-neutral owner exists. Do not include participant identifiers. For
+setup-token selection, also report whether at least one Sidekick-owned
+structured participant is registered and exact-build qualified. No participant
+or an unqualified build produces a visible refusal before mutation. Mixed
+refreshable selection must report native proof before protected installation.
+A wait during active or background work, tools, hooks, permissions, dialogs,
+MCP operations, or terminal children is expected; Sidekick must not interrupt
+that work. The same provider PID and conversation must remain after a
+successful switch. The feature-branch contract does not imply that the
+currently installed release has completed its qualified cutover.

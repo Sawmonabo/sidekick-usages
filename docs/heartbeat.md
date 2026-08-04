@@ -13,9 +13,9 @@ request, appears as provider usage, and consumes a small amount of your quota.
 
 Heartbeat enrollment is independent of the selected account and runtime
 session enrollment. Selected and unselected saved accounts stay reportable and
-maintained. Claude setup-token and mixed selection remain release-disabled,
-but that restriction does not disable their supported usage or heartbeat
-route.
+maintained. Setup-token or mixed runtime qualification never controls their
+supported usage or heartbeat route. A missing integrated setup participant or
+unqualified Claude build can block selection without blocking maintenance.
 
 ## Commands
 

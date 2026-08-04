@@ -178,8 +178,10 @@ sidekick-usages set-plan <label> max
 sidekick-usages remove <label>
 ```
 
-The next-release dashboard contract paints secret-free cached metrics first on
-a supported TTY, then updates accounts from one bounded concurrent lookup.
+The hardened feature-branch dashboard contract paints secret-free cached
+metrics first on a supported TTY, then updates accounts from one bounded
+concurrent lookup. The normal `sidekick-usages` dashboard is the canonical
+account chooser; `use` remains a secondary noninteractive scripting surface.
 Exactly one `›` cursor appears in the focused provider. It begins on that
 provider's verified active account, so healthy rows need no `IN USE` label.
 When no native account is verified, the first row receives navigation focus
@@ -253,20 +255,35 @@ in that same session; selection changes the authority used by a later admitted
 turn, not the conversation history.
 
 Refreshable native Claude sessions adopt a proven native account change on
-their next request. Claude setup-token and mixed selection remain
-release-disabled: selecting those modes returns a visible typed refusal while
-their saved usage, maintenance, and heartbeat behavior continues. Codex
-integration is available only when the installed release passes its exact
-app-server and relay capability checks; otherwise it fails before starting a
-provider process.
+their next request. Setup-token selection requires at least one Sidekick-owned
+structured Claude participant qualified for the exact installed build. Mixed
+refreshable selection first proves the native activation and then installs a
+lease from that exact committed authority into each integrated participant.
+Selection waits across active turns, background work, tools, hooks,
+permissions, dialogs, MCP operations, and terminal children. Queued prompts
+are released only after readiness, while the same Claude PID and conversation
+continue. An unqualified build or a setup-only target with no integrated
+participant returns a visible typed refusal without changing provider state.
+Codex integration is available only when the installed release passes its
+exact app-server and relay capability checks; otherwise it fails before
+starting a provider process.
 
-Shell forwarding is an enrollment boundary, not command replacement. An
-absolute provider path, `command claude`, `command codex`, a stale shell, or a
-process launched before enrollment bypasses Sidekick. That session remains
-unmanaged and alive; Sidekick does not kill it or claim it adopted a selected
-account. Run `sidekick-usages doctor`, `sidekick-usages daemon status`, and
+Shell forwarding is an enrollment boundary, not command replacement. It is
+installed only during the exact installed-release cutover after qualification
+passes. The marked shell change affects future launches from newly loaded
+shells; it never retrofits a running process. An absolute provider path,
+`command claude`, `command codex`, a stale shell, or a process launched before
+enrollment bypasses Sidekick. That session remains unmanaged and alive;
+Sidekick does not kill it or claim it adopted a selected account. Run
+`sidekick-usages doctor`, `sidekick-usages daemon status`, and
 `sidekick-usages session shell status` for secret-free participant,
 capability, selection-phase, and enrollment diagnostics.
+
+This describes the implementation target on
+`feat/hardened-global-account-selection`, not the currently installed release.
+Current-user, current-machine enablement is exact-build qualified. Broader
+public distribution of the private Claude integration remains gated by
+Anthropic product and legal clarification.
 
 Claude `add` is idempotent by access token. It auto-detects Claude credentials
 first, then falls back to piped stdin or a hidden prompt when no local login is

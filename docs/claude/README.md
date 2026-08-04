@@ -54,19 +54,33 @@ authority and reread the proven native authority for the next request. An
 ordinary open Claude terminal is not a disconnect conflict, and Sidekick does
 not restart or signal it.
 
-Claude setup-token and mixed selection remain release-disabled. A setup token
-continues to support saved usage, maintenance, and heartbeat, but it cannot be
-presented as a refreshable native login. Enter and `sidekick-usages use`
-return a visible capability refusal for this selection path. Sidekick never
-falls back to restarting Claude, rewriting an already-running process's
-environment, or claiming that an unmanaged process converged.
+The normal `sidekick-usages` dashboard cursor and Enter key are the canonical
+selection surface. `sidekick-usages use` exposes the same coordinator only as
+a secondary scripting command. A setup-only target requires at least one
+Sidekick-owned structured Claude participant qualified for the exact installed
+build. With no qualified participant, selection returns a visible typed
+refusal and leaves the previous account usable.
 
-An enrolled future protected session must drain its active turn, retain a
-prompt queued in participant memory, and prove next-turn adoption without
-changing its process or conversation. Until exact-build host, security,
-identity, and provider release gates pass, that mechanism stays unavailable.
-Use `sidekick-usages doctor --provider claude` for its redacted capability and
-participant state.
+Mixed refreshable selection first completes and proves the official native
+activation. It then installs a bounded access lease from that exact committed
+authority into each integrated participant. The coordinator waits for active
+turns, retries, background work, tools, hooks, permission or dialog requests,
+MCP operations, and terminal children to finish naturally. A prompt submitted
+at the boundary remains queued and is sent once after readiness. The same
+Claude engine PID and conversation continue throughout.
+
+A setup token remains inference-only and is never presented as a refreshable
+native login. Sidekick never restarts Claude, rewrites another process's
+environment, or claims that an unmanaged process converged. Shell forwarding
+enrolls only future launches from newly loaded shells after the exact
+installed-release cutover; it never retrofits or kills an existing unmanaged
+session. Use `sidekick-usages doctor --provider claude` for redacted
+capability and participant state.
+
+This is the current feature-branch target, not a claim about the installed
+release. Current-user, current-machine enablement requires exact-build runtime
+qualification. General public distribution remains gated by Anthropic product
+and legal clarification.
 
 ## Lifetime model
 

@@ -5,21 +5,22 @@
 > superpowers:executing-plans to implement this plan task-by-task. Steps use
 > checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Deliver a height-responsive, saved-account-only dashboard; enable
-only qualified provider selection; and keep Claude setup/mixed switching
-visibly unavailable until its protected-plane release gates prove seamless
-next-turn adoption without interrupting provider work.
+**Goal:** Deliver a height-responsive, saved-account-only dashboard and enable
+qualified provider selection, including exact-build current-machine Claude
+setup/mixed switching with seamless next-turn adoption and no interruption of
+provider work.
 
 **Architecture:** Keep one provider-neutral, non-secret selection-epoch
 coordinator in the existing per-user supervisor. Refreshable Claude uses the
-official native transaction. A release-disabled Claude prototype carries one
-operation-scoped lease from the isolated worker through the existing exchange
-and a provider-owned capability socket to an unchanged structured engine;
-install receipt, READY, and genuine-turn adoption remain distinct. Enrolled
-Codex TUIs use a narrow admission relay in front of the existing resident app
-server, whose Responses provider is direct HTTP and resolves current external
-auth for every attempt. Provider-owned processes remain the only durable
-credential writers, while prompt-toolkit is the only dashboard painter.
+official native transaction. The exact-build Claude structured host carries
+one operation-scoped lease from the isolated worker through the existing
+exchange and a provider-owned capability socket to an unchanged structured
+engine; install receipt, READY, and genuine-turn adoption remain distinct.
+Enrolled Codex TUIs use a narrow admission relay in front of the existing
+resident app server, whose Responses provider is direct HTTP and resolves
+current external auth for every attempt. Provider-owned processes remain the
+only durable credential writers, while prompt-toolkit is the only dashboard
+painter.
 
 **Tech Stack:** Python 3.14, Typer, prompt-toolkit 3.0.52, Rich semantic
 rendering, Pydantic 2.13.4, websockets 16.1.1, portalocker 3.2.0, strict JSON
@@ -82,10 +83,13 @@ systemd user services, LaunchAgents, Bash, Zsh, and Fish.
 - Claude refreshable selection reuses the official native login transaction
   and native identity, generation, and propagation proof. Ordinary foreground
   Claude presence is not Remote Control proof.
-- The Claude protected lease plane and structured-host prototype may be built
-  only behind a disabled capability. Setup/mixed selection remains visibly
-  unavailable until exact-build auth, complete exposed-host parity, genuine-
-  turn identity, security, forward recovery, and written Anthropic gates pass.
+- The Claude protected lease plane and structured host fail closed unless the
+  exact installed build passes runtime qualification. Setup-only selection
+  also requires at least one registered Sidekick-owned Claude participant.
+  Current-machine setup/mixed enablement requires exact-build auth, complete
+  exposed-host parity, genuine-turn identity, security, and forward recovery.
+  Written Anthropic clarification remains a separate general-public-
+  distribution gate.
 - A private Claude update acknowledgement is an install receipt only. It is
   never provider identity, READY, or next-turn adoption proof.
 - Codex uses one neutral, token-free interactive `CODEX_HOME`, one resident
@@ -130,7 +134,8 @@ systemd user services, LaunchAgents, Bash, Zsh, and Fish.
 
 ---
 
-- **Status:** Implementation active; Claude setup/mixed release-disabled
+- **Status:** Implementation active; current-machine Claude enablement pending
+  technical qualification and installed-release cutover
 - **Date:** 2026-08-01; Claude evidence amendment 2026-08-03
 - **Repository:** `/home/sabossedgh/dev/sidekick-usages`
 - **Planning baseline:** `70b70341c8cfc53127f40a2f4c14de6f21beb2f0`
@@ -1207,23 +1212,25 @@ resolved canonical file may be created atomically with current-user ownership.
 
 Bash and Zsh receive one bounded marked source line pointing at the owner-only
 generated POSIX script. Fish receives one owner-only
-`conf.d/sidekick-usages.fish`. The generated functions are exactly:
+`conf.d/sidekick-usages.fish`. Installation resolves and pins the exact
+qualified absolute Sidekick executable so later `PATH` changes cannot recurse
+or redirect forwarding. The generated functions are equivalent to:
 
 ```sh
 claude() {
-    command sidekick-usages session claude -- "$@"
+    command /qualified/absolute/sidekick-usages session claude -- "$@"
 }
 codex() {
-    command sidekick-usages session codex -- "$@"
+    command /qualified/absolute/sidekick-usages session codex -- "$@"
 }
 ```
 
-Fish uses `$argv` and `command sidekick-usages`. The persistence owner uses a
-stable read, current-user ownership, non-symlink checks, bounded size, atomic
-write, and compare-before-remove. A changed or ambiguous source block fails
-closed and prints its exact manual removal range. Uninstall removes only an
-exact marked source line and byte-matching generated file. Dry run reports
-paths, preconditions, and diffs without creating parents or files.
+Fish uses `$argv` with the same qualified absolute executable. The persistence
+owner uses a stable read, current-user ownership, non-symlink checks, bounded
+size, atomic write, and compare-before-remove. A changed or ambiguous source
+block fails closed and prints its exact manual removal range. Uninstall removes
+only an exact marked source line and byte-matching generated file. Dry run
+reports paths, preconditions, and diffs without creating parents or files.
 
 - [ ] **Step 5: Register the public command group.**
 
@@ -1511,7 +1518,7 @@ git add src/sidekick_usages/providers/claude \
 git commit -m "feat(claude): qualify structured oauth updates"
 ```
 
-### Task 8: Add the Release-Disabled Claude Protected Plane
+### Task 8: Add the Exact-Build Claude Protected Plane
 
 **Files:**
 
@@ -1574,9 +1581,11 @@ host remains the already-approved public command owner.
   provider and kind; it does not make `CodexRuntimeBroker` a generic broker.
 - Preserves: `ParticipantReadyRequest` and adoption as separate secret-free
   control messages. Neither schema contains a protected value.
-- Release result: the protected plane and host remain disabled. Public
-  selection returns a visible typed unavailable result until every Step 8 gate
-  passes.
+- Release result: the protected plane and host fail closed until every
+  technical Step 8 gate passes for the exact current-machine artifact.
+  Setup-only selection also refuses before mutation when no integrated
+  participant is registered. Public distribution retains the separate
+  Anthropic clarification gate.
 
 - [ ] **Step 1: Extend the first two consolidated journeys.**
 
@@ -1712,14 +1721,22 @@ expected for a setup target and is never sufficient rollback proof. Any target
 binding forces fresh-lease forward repair. Never retain/replay a lease or send
 the old credential as rollback.
 
-- [ ] **Step 7: Build the host behind the disabled capability.**
+- [ ] **Step 7: Build the fail-closed exact-build host.**
 
 Add typed bounded interactive send/read operations to the existing structured
 process and extend only `ClaudeStructuredEngineFake`. Wire the public Claude
-command through the existing typed session runner. The host owns one event
-loop for terminal input, structured I/O, and protected channel readiness. It
-never imports credential persistence, resolver, private path, or mutation
-authority.
+command through the existing typed session runner. One continuous structured-
+event owner drains engine output even while the terminal waits for the next
+prompt, updates activity before selection can observe idleness, and queues
+renderable events for the terminal owner. It shares the event loop with
+protected-channel readiness and never imports credential persistence,
+resolver, private path, or mutation authority.
+
+Decode permission and dialog `control_request` frames as typed terminal events,
+hold their activity open through the user decision, and send the exact
+correlated response. User Ctrl-C during an active response sends the qualified
+structured interrupt request and preserves the same engine and conversation.
+Selection never sends an interrupt, EOF, or termination request.
 
 The host must preserve one engine PID and conversation while handling the
 representative release journey: streaming, permission/question,
@@ -1732,11 +1749,12 @@ Do not claim a stock TUI, invent provider schemas from the fake, or add an
 Agent SDK unless a separate bounded proof shows that it removes owned code
 without adding a second wrapper.
 
-- [ ] **Step 8: Hold the setup/mixed release gate closed.**
+- [ ] **Step 8: Qualify setup/mixed current-machine enablement.**
 
 The exact-build host qualification is the third and final Claude journey. It
-is controlled release evidence, not an ordinary test tree. Setup/mixed
-selection remains unavailable until all of these pass together:
+is controlled current-machine evidence, not an ordinary test tree.
+Setup/mixed selection remains unavailable on the exact machine until all of
+these technical gates pass together:
 
 1. exact artifact, schema, allowlist, and positive/negative private probes;
 2. no update during any active turn, retry, tool, hook, permission, dialog,
@@ -1746,12 +1764,14 @@ selection remains unavailable until all of these pass together:
 5. complete parity for every interactive behavior the host exposes;
 6. no secret outside bounded protected buffers;
 7. forward-only recovery after any target acknowledgement;
-8. fail-closed unknown/ambiguous behavior and honest unmanaged status; and
-9. written Anthropic product/legal clarification or approval.
+8. fail-closed unknown/ambiguous behavior and honest unmanaged status.
 
-Until then, dashboard Enter and scripted selection return a visible typed
-unavailable or degraded result without native or structured mutation. Usage,
-maintenance, and saved-account visibility remain available.
+Setup-only selection additionally requires at least one registered,
+Sidekick-owned structured participant. Until these gates pass, dashboard Enter
+and scripted selection return a visible typed unavailable or degraded result
+without native or structured mutation. Usage, maintenance, and saved-account
+visibility remain available. General public distribution additionally remains
+gated by written Anthropic product and legal clarification or approval.
 
 - [ ] **Step 9: Run the two green journeys, then the static gates.**
 
@@ -1775,7 +1795,7 @@ commit. The security journey includes the atomic registration/unwind and exact
 child-exchange cleanup assertions. Add no test, matrix, snapshot, helper, fake,
 or duplicate journey for these seams.
 
-- [ ] **Step 10: Commit the release-disabled protected plane.**
+- [ ] **Step 10: Commit the exact-build protected plane.**
 
 ```bash
 git add src/sidekick_usages/credentials/claude \
@@ -1784,7 +1804,7 @@ git add src/sidekick_usages/credentials/claude \
   src/sidekick_usages/entrypoints src/sidekick_usages/cli \
   tests/credentials/claude tests/providers/claude tests/daemon \
   tests/cli/test_sessions.py tests/fakes/claude/managed.py
-git commit -m "feat(claude): add disabled protected selection plane"
+git commit -m "feat(claude): add qualified protected selection plane"
 ```
 
 ### Task 9: Pin the Codex Neutral Runtime to Direct HTTP Auth
@@ -2087,8 +2107,9 @@ git commit -m "feat(codex): gate turns without reconnecting sessions"
 **Interfaces:**
 
 - Consumes: both provider adapters and the Task 4 coordinator.
-- Produces: one selection operation path shared by dashboard Enter, scripted
-  `use`, provider-local chooser, and participant status.
+- Produces: one selection operation path whose canonical UX is dashboard Enter
+  and which is also shared by secondary scripted `use`, provider-local chooser,
+  and participant status.
 
 - [ ] **Step 1: Replace activation-only UI tests with one typed selection
   journey.**
@@ -2117,7 +2138,8 @@ uv run pytest tests/dashboard/test_actions.py \
 
 - [ ] **Step 3: Route every selection surface through one request.**
 
-`use`, dashboard Enter, Claude `/login`, and any saved chooser call
+Dashboard Enter is canonical. It, secondary scripted `use`, integrated Claude
+`/login`, and any saved chooser call
 `ControlClient.select(provider_id, account_id)`. Remove direct activation
 dispatch from public selection surfaces. Maintenance, refresh, migration, and
 credential-creation commands remain separate.
@@ -2292,11 +2314,11 @@ rule per file or a duplicated dependency graph.
 - [ ] **Step 2: Add a wheel smoke journey with synthetic providers.**
 
 Extend the existing external-wheel smoke to run help, one-shot reporting,
-dashboard PTY startup/quit, session shell dry-run, and a release-disabled
-Claude session. Exercise default Codex session composition with an isolated
-`PATH` that contains no provider executable and require the exact prelaunch
-missing-executable refusal. It uses isolated XDG/provider homes and never
-resolves live credentials or provider binaries.
+dashboard PTY startup/quit, session shell dry-run, and an exact unqualified-
+build Claude refusal. Exercise default Codex session composition with an
+isolated `PATH` that contains no provider executable and require the exact
+prelaunch missing-executable refusal. It uses isolated XDG/provider homes and
+never resolves live credentials or provider binaries.
 
 - [ ] **Step 3: Document exact product and bypass behavior.**
 
@@ -2369,7 +2391,7 @@ transactions preserve them. An identity-matching healthy managed authority
 must verify without browser login. Rehearse Sidekick schema rollback before
 provider-live work; never roll provider credentials backward.
 
-- [ ] **Step 7: Commit the release gate before live qualification.**
+- [ ] **Step 7: Commit the qualification gate before live work.**
 
 ```bash
 git add packaging README.md docs/claude docs/codex docs/heartbeat.md \
@@ -2391,10 +2413,12 @@ order/readback, active-turn/realtime drain, MCP/plugin transparency, the same
 TUI/app-server/thread/socket, and next-attempt B adoption. Record only redacted
 IDs, epochs, generations, counts, process sameness booleans, and safe outcomes.
 
-If Claude parity, Codex MCP quiescence, realtime observation, exact schema, or
-provider terms fail, leave that mechanism disabled, keep the installed 0.7.0
+If Claude parity, Codex MCP quiescence, realtime observation, or exact schema
+fails, leave that current-machine mechanism disabled, keep the installed 0.7.0
 reporter untouched, and return the failed gate to design review. Do not ship a
-restart, reconnect, proxy, timer, or credential-copy fallback.
+restart, reconnect, proxy, timer, or credential-copy fallback. Unresolved
+Anthropic product terms continue to block broader public distribution without
+changing this exact-machine technical result.
 
 - [ ] **Step 9: Perform current-machine cutover only after every gate passes.**
 
@@ -2405,8 +2429,12 @@ reporting. Before replacing the supervisor, prove every provider client and
 the official Codex daemon are outside its service cgroup. Publish the
 `KillMode=process` unit, replace only the supervisor, then prove the same
 provider PIDs, sockets, and native Claude metadata survived. Never perform the
-replacement with an unresolved ownership topology. Shell enrollment remains a
-separate explicit `session shell install`; package migration does not apply it.
+replacement with an unresolved ownership topology. Then preview and install
+the exact marked shell forwarding with `session shell install`, reread its
+status, and prove unrelated shell content is unchanged. This explicit cutover
+step affects future launches from newly loaded shells only; do not source it
+into a running provider process or claim that an existing unmanaged session
+was retrofitted.
 
 Do not assume the old binary can read the new schema after migration. Before
 migration, executable rollback keeps the old installation. After migration,
@@ -2502,8 +2530,12 @@ cutover. Correct gaps in the feature branch; do not waive them.
   and late hosts bind the target before READY or a real prompt.
 - [ ] Claude recovery uses composite native/participant evidence; native
   baseline alone never proves setup-target rollback.
-- [ ] Setup/mixed selection remains visibly unavailable until all exact-build,
-  parity, genuine-turn, security, recovery, and written Anthropic gates pass.
+- [ ] Current-machine setup/mixed selection remains visibly unavailable until
+  exact-build, parity, genuine-turn, security, and recovery gates pass.
+- [ ] Setup-only selection with no registered qualified participant refuses
+  before provider mutation and preserves the previous usable epoch.
+- [ ] General public distribution of the private Claude mechanism remains
+  gated by written Anthropic product and legal clarification.
 - [ ] No Agent SDK, token service, compatibility layer, duplicate transport,
   executor, broker thread, or polling loop duplicates existing owners.
 - [ ] Codex model Responses WebSockets are disabled while TUI/app-server
@@ -2531,8 +2563,9 @@ cutover. Correct gaps in the feature branch; do not waive them.
   persists only redacted evidence.
 - [ ] Current-machine migration preserves four Claude and two Codex saved
   accounts, authorities, private homes, order, usage, and refresh eligibility.
-- [ ] Shell enrollment and package/schema migration remain separate explicit
-  operations.
+- [ ] Shell enrollment is a separate explicit transaction within the final
+  cutover, affects future launches from newly loaded shells, and never
+  retrofits or kills an existing unmanaged session.
 - [ ] Implementation commits exist only on
   `feat/hardened-global-account-selection` until reviewed integration.
 
@@ -2540,11 +2573,12 @@ cutover. Correct gaps in the feature branch; do not waive them.
 
 Release is capability-specific. The dashboard, refreshable/native Claude, and
 qualified Codex paths may complete independently after their own gates pass.
-Claude setup/mixed switching is complete only after all three consolidated
-journeys, written Anthropic resolution, controlled live genuine-turn identity,
-and every Step 8 gate pass together. Until then, its correct product state is a
-visible typed unavailable result with saved-account reporting and maintenance
-unchanged.
+Current-user, current-machine Claude setup/mixed switching is complete only
+after all three consolidated journeys, controlled live genuine-turn identity,
+and every technical Step 8 gate pass together. Until then, its correct product
+state is a visible typed unavailable result with saved-account reporting and
+maintenance unchanged. General public distribution additionally requires
+written Anthropic product and legal resolution.
 
 Every released capability also requires all automated gates, current-machine
 migration preserving saved state/reporting, the dashboard correct at all five

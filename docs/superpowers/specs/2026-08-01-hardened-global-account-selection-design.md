@@ -1,6 +1,7 @@
 # Hardened Global Account Selection and Responsive Dashboard Design
 
-- **Status:** Approved; amended Claude release gates control implementation
+- **Status:** Approved; current-machine enablement amendment controls
+  implementation
 - **Date:** 2026-08-01; Claude evidence amendment 2026-08-03
 - **Repository:** `sidekick-usages`
 - **Branch:** `feat/hardened-global-account-selection`
@@ -32,9 +33,11 @@ proof that the current behavior satisfies this specification. Where the two
 documents conflict, this approved document controls.
 
 The separate tracked implementation plan owns file-by-file execution. This
-design owns behavior, trust boundaries, and release gates. In particular,
-implementation approval for the Claude protected plane does not authorize
-setup/mixed product enablement or controlled provider-live work.
+design owns behavior, trust boundaries, and release gates. This amendment
+authorizes exact-build-qualified setup/mixed enablement for the current user
+and machine after its technical gates pass. It does not claim that the
+currently installed release contains the feature or authorize general public
+distribution before Anthropic product and legal clarification.
 
 ## Table of Contents
 
@@ -67,6 +70,10 @@ Sidekick will expose exactly the persisted saved accounts as selectable rows.
 An unmatched ambient provider login is status, not an account. It cannot be
 counted, focused, navigated to, marked selected, or activated.
 
+The normal `sidekick-usages` dashboard cursor and Enter key are the canonical
+account-selection surface. `sidekick-usages use` invokes the same coordinator
+only as a secondary noninteractive scripting surface.
+
 The interactive dashboard will have one terminal owner: prompt-toolkit. The
 bootstrap route will select interactive or one-shot execution but will never
 paint an interactive frame. The prompt-toolkit layout will use terminal width
@@ -94,13 +101,20 @@ separate decisions that must not be collapsed:
   ordinary foreground Claude process exists. Open native sessions may observe
   the changed authority at their normal request boundary, but Sidekick claims
   convergence only after exact-build, next-real-turn identity proof.
-- The Claude protected lease plane and structured-host prototype are approved
-  for implementation behind a disabled capability. They keep credentials out
-  of generic control IPC, CLI types, persistence, logs, and receipts.
-- Setup-token and mixed-account switching remain release-blocked. They cannot
-  ship until the private update, complete exposed-host parity, account and
-  generation adoption, security, forward recovery, and Anthropic product and
-  legal gates all pass together.
+- The Claude protected lease plane and structured host are the approved
+  current-user, current-machine implementation. Setup-only selection requires
+  at least one Sidekick-owned participant qualified against the exact
+  installed Claude build. A zero-participant or unqualified target refuses
+  before provider mutation.
+- Mixed refreshable selection proves official native activation first and
+  then installs a bounded access lease from that exact committed authority
+  into every integrated structured participant. Complete activity tracking,
+  account/generation adoption, security, and forward recovery gates must pass
+  before current-machine enablement.
+- General public distribution of the private structured mechanism remains
+  blocked pending Anthropic product and legal clarification. That distribution
+  gate does not turn an exact-build current-machine implementation into a
+  permanent typed refusal.
 - Codex keeps one resident shared app-server and the existing external-auth
   installation. Its model provider is configured for direct HTTP Responses
   with current OpenAI auth and WebSockets disabled. This prevents an
@@ -109,11 +123,13 @@ separate decisions that must not be collapsed:
   background terminals.
 
 The canonical enrollment commands are `sidekick-usages session claude -- ...`
-and `sidekick-usages session codex -- ...`. Optional, explicit, reversible
-shell integration makes ordinary `claude` and `codex` commands enter those
-launchers. Sidekick never replaces either provider binary. A direct absolute-
-path launch or a process that predates enrollment remains alive and is
-reported as unmanaged; it is never counted as globally converged.
+and `sidekick-usages session codex -- ...`. Reversible shell integration is
+installed as a qualified step during the exact installed-release cutover. It
+makes ordinary `claude` and `codex` commands from newly loaded shells enter
+those launchers. Sidekick never replaces either provider binary. A direct
+absolute-path launch, stale shell, or process that predates enrollment remains
+alive and is reported as unmanaged; it is never retrofitted, killed, or
+counted as globally converged.
 
 Selection never controls whether an account is maintained. All saved accounts
 remain independently fresh and reportable. The official provider process is
@@ -128,10 +144,12 @@ The hard continuity contract is:
 > restarted, relaunched, disconnected, interrupted, cancelled, replayed, or
 > crashed by account selection.
 
-An in-flight turn completes under the epoch that admitted it. A prompt
-submitted during selection is queued. The next real turn uses the new
-authority. An unmanaged process remains alive and is reported honestly; it is
-never silently counted as converged.
+An in-flight turn completes under the epoch that admitted it. Background work,
+tools, hooks, permissions, dialogs, MCP operations, and terminal children also
+finish naturally before an authority update. A prompt submitted during
+selection is queued and sent once. The next real turn uses the new authority
+in the same PID and conversation. An unmanaged process remains alive and is
+reported honestly; it is never silently counted as converged.
 
 ## 2. Evidence, Confidence, and Scope
 
@@ -604,16 +622,19 @@ sidekick-usages session shell status
 The first two commands are registered and require no shell-file change. An
 unqualified Claude structured host fails closed before provider execution with
 a visible typed capability refusal. It never silently no-ops or launches a
-release-disabled setup/mixed mechanism.
+setup/mixed mechanism against an unqualified build.
 
-`session shell install` is an explicit, idempotent opt-in that adds a bounded,
-marked source block for the detected supported shell. The sourced Sidekick
-file defines forwarding functions so ordinary `claude` and `codex` invocations
-enter the corresponding `session` command with the original argument vector.
-It does not put a fake provider binary on `PATH`, replace a provider launcher,
-or modify Claude/Codex credential or settings files. Uninstall removes only
-the exact Sidekick-owned source block and generated integration file; a changed
-or ambiguous shell file fails closed and prints the manual removal range.
+`session shell install` is an explicit, idempotent operation run during the
+qualified installed-release cutover. It adds a bounded, marked source block
+for the detected supported shell. The sourced Sidekick file defines forwarding
+functions so ordinary `claude` and `codex` invocations enter the corresponding
+`session` command with the original argument vector. It affects future
+launches from newly loaded shells and never rewrites a running process's
+environment. It does not put a fake provider binary on `PATH`, replace a
+provider launcher, or modify Claude/Codex credential or settings files.
+Uninstall removes only the exact Sidekick-owned source block and generated
+integration file; a changed or ambiguous shell file fails closed and prints
+the manual removal range.
 
 Initial automatic shell integration supports Bash, Zsh, and Fish on Linux,
 WSL, and macOS. Bash and Zsh use one marked source line in the exact resolved
@@ -1400,10 +1421,12 @@ process to resolve this state.
 
 ### 9.4 Setup-token structured host
 
-This mechanism is an implementation-approved, release-disabled prototype. It
-launches and retains Anthropic's official Claude engine through its structured
-transport. Sidekick provides the local interactive terminal host around that
-one long-lived process, but does not call that host the stock Claude TUI.
+This mechanism is the implementation-approved, exact-build-qualified path for
+current-user, current-machine setup-token selection. It launches and retains
+Anthropic's official Claude engine through its structured transport. Sidekick
+provides the local interactive terminal host around that one long-lived
+process, but does not call that host the stock Claude TUI. Broader public
+distribution remains gated separately by Section 13.8.
 
 At a safe between-turn boundary, the installed 2.1.220 runtime accepts a
 private, correlated `update_environment_variables` control frame. Its
@@ -1413,6 +1436,14 @@ inspected in-process mechanism that may change a setup-token authority without
 replacing the Claude engine. Its response proves local mutation only. It does
 not prove saved-account identity, provider acceptance, generation, or next-
 turn adoption, and it is not a public SDK contract.
+
+Setup-only selection requires at least one registered Sidekick-owned
+structured participant whose executable identity and runtime probes match the
+qualified build. With no such participant, selection refuses before commit
+and leaves the prior epoch usable. The host observes foreground and background
+turns, tools, hooks, permissions, dialogs, MCP activity, and terminal children
+continuously. It installs a lease only after all are idle, retains queued
+prompts in memory, and continues with the same engine PID and conversation.
 
 ```mermaid
 sequenceDiagram
@@ -1504,13 +1535,22 @@ behavior in the same process and conversation:
 - current working directory and environment policy; and
 - credential scrubbing from Bash, hooks, and MCP stdio children.
 
+Exactly one continuous structured-event owner drains engine output even while
+the terminal is waiting for the next prompt. It updates activity state before
+selection can observe idleness and queues renderable events for the terminal
+owner. A permission or dialog `control_request` remains active until the user
+decision is returned in the exactly correlated response. User Ctrl-C during
+an active response sends the qualified structured interrupt request; it does
+not close stdin, terminate the engine, or end the conversation. Account
+selection never synthesizes that interrupt.
+
 Anthropic documents `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` in its
 [environment-variable reference][claude-env]. The host enables the qualified
 scrubbing behavior and verifies that provider credentials do not propagate to
 untrusted child environments. It does not claim Linux environment variables
 are invisible to every same-user privileged inspection path.
 
-The structured host is release-blocked unless parity tests show that switching
+Current-machine enablement is blocked unless parity tests show that switching
 does not change the engine PID, session/conversation identity, tool state,
 hook behavior, or child context.
 
@@ -1580,10 +1620,10 @@ This avoids mixed authority where native sessions use B but a lingering
 setup-token override keeps an integrated process on A.
 
 The private update has no qualified unset contract. Empty string, omission,
-or null cannot be assumed to restore native lookup. The prototype therefore
-installs a bounded access lease from the exact committed refreshable authority
-instead of inferring unset. The complete mixed path stays release-disabled
-until that replacement and its next real request prove the exact target.
+or null cannot be assumed to restore native lookup. The structured host
+therefore installs a bounded access lease from the exact committed refreshable
+authority instead of inferring unset. Current-machine enablement requires that
+replacement and its next real request to prove the exact target.
 
 ### 9.8 Ambient setup-token sessions
 
@@ -2373,7 +2413,9 @@ vocabulary before persistence or display.
 Official Anthropic guidance says third-party developers should use API keys or
 cloud providers and places restrictions on routing consumer subscription
 credentials. The selected structured-host design keeps the official Claude
-engine as the model transport, but setup/mixed release still requires written
+engine as the model transport. Current-user, current-machine enablement is
+limited to the exact installed build and requires the technical qualification
+in Sections 9 and 16. General public distribution still requires written
 Anthropic clarification or approval plus product/legal review of how Sidekick
 presents and controls saved setup tokens.
 
@@ -2386,8 +2428,10 @@ operation; selecting or rolling back an account is not token revocation.
 OpenAI labels Codex external auth experimental. Sidekick must describe it as a
 version-gated local integration, not a stable public compatibility promise.
 
-These are release gates. They are not justification to implement an unsafe
-credential copy, hidden restart, or false success.
+The provider clarification is a public-distribution gate, not a reason to leave
+the current-machine feature permanently disabled after its technical gates
+pass. Neither scope permits an unsafe credential copy, hidden restart, or false
+success.
 
 ## 14. Failures, Diagnostics, and Platform Lifecycle
 
@@ -2784,9 +2828,11 @@ release evidence, not a broad unit-test tree. There are no Claude
 test-per-field matrices, helper tests, snapshot suites, duplicate provider
 journeys, process-helper tests, new fake modules, or coverage-padding cases.
 
-Refreshable/native enablement requires the first journey's exact live next-
-turn identity proof. Setup/mixed enablement requires all three journeys plus
-the security, recovery, and written Anthropic gates in Sections 13 and 17.
+Refreshable/native enablement requires the first journey's exact live
+next-turn identity proof. Current-user, current-machine setup/mixed enablement
+requires all three journeys plus the security and recovery gates in Sections
+13 and 17. Written Anthropic clarification remains required before general
+public distribution of the private mechanism.
 
 ### 16.8 Codex acceptance
 
@@ -2895,16 +2941,17 @@ flowchart TD
     F --> N[Integrated session launchers and relays]
     N --> G[Claude native adapter correction]
     N --> H[Codex HTTP-only adapter]
-    N --> P[Release-disabled Claude protected lease plane]
+    N --> P[Claude protected lease plane]
     P --> I[Exact-build structured-host qualification]
-    G --> J[Release-disabled mixed Claude prototype]
+    G --> J[Mixed Claude native-first projection]
     I --> J
     H --> R[Codex realtime and config gates]
     R --> K[Cross-terminal continuity]
-    J --> Q[Claude security recovery legal gates]
+    J --> Q[Claude security and recovery gates]
     Q --> K
     L[Independent all-account maintenance] --> K
-    K --> M[Platform and provider-live release gates]
+    K --> M[Platform and provider-live qualification]
+    Q --> O[Anthropic public-distribution clarification]
 ```
 
 The tracked plan must preserve these dependency constraints:
@@ -2922,9 +2969,10 @@ The tracked plan must preserve these dependency constraints:
    structured path.
 8. Add the protected worker-to-participant route, initial/late binding, sealed
    membership, and provider-owned composite recovery before host parity work.
-9. Keep the Claude protected plane and mixed host release-disabled until all
-   exact-build, next-turn, parity, security, recovery, and written Anthropic
-   gates pass.
+9. Enable the Claude protected plane and mixed host for the current user and
+   machine only after exact-build, next-turn, parity, security, and recovery
+   gates pass. Keep general public distribution gated on written Anthropic
+   clarification.
 10. Reuse Codex external auth and disable Responses model WebSockets before
    calling
    the next-turn proof sufficient.
@@ -2937,8 +2985,8 @@ The tracked plan must preserve these dependency constraints:
     pass.
 15. Run controlled provider-live tests only with explicit authority and
     disposable accounts.
-16. Update operator docs and completion evidence only after every release gate
-    passes.
+16. Update operator docs before cutover to distinguish feature-branch target,
+    installed behavior, current-machine qualification, and public distribution.
 
 ### 17.1 Current-machine migration acceptance
 
@@ -2955,9 +3003,11 @@ The migration must prove before and after, using redacted metadata only:
 - rollback can restore the previous Sidekick schema/presentation state without
   rolling provider credentials backward.
 
-Shell enrollment is a separate explicit migration. Its dry run lists exact
-files and marked edits; installation and removal prove provider binaries,
-provider settings, protected authorities, and unrelated shell content are
+Shell enrollment is a separate, explicit transaction within the final
+installed-release cutover. Its dry run lists exact files and marked edits;
+installation affects only future launches from newly loaded shells.
+Installation and removal prove provider binaries, provider settings, protected
+authorities, running unmanaged sessions, and unrelated shell content are
 unchanged.
 
 ### 17.2 Compatibility rollout
@@ -2966,11 +3016,13 @@ The capability gate is per provider and mechanism:
 
 - dashboard repair and saved-only rows can ship independently;
 - Claude refreshable selection enables only after native propagation tests;
-- Claude protected lease and structured-host work remains unavailable behind
-  a disabled capability while it is qualified;
-- Claude setup/mixed selection enables only after the three consolidated
-  journeys prove exact-build auth, parity, genuine-turn identity, security,
-  and forward recovery, and written Anthropic product/legal resolution exists;
+- Claude protected lease and structured-host work fail closed while the exact
+  installed build is being qualified;
+- current-user, current-machine Claude setup/mixed selection enables after the
+  three consolidated journeys prove exact-build auth, parity, genuine-turn
+  identity, security, and forward recovery;
+- general public distribution of the private Claude mechanism additionally
+  requires written Anthropic product and legal clarification;
 - ordinary-command seamless guarantees enable only for shells/IDEs whose
   explicit enrollment status is proven;
 - Codex selection enables only after HTTP-only model transport, external-auth,
@@ -2978,9 +3030,10 @@ The capability gate is per provider and mechanism:
 - unsupported switching never hides usage/maintenance that remains safe.
 
 The UI shows an account's exact selection capability. It does not hide the
-account, add an external stand-in, or let Enter silently do nothing.
-While setup/mixed selection is disabled, Enter returns a visible typed
-unavailable or degraded result and does not mutate native or structured auth.
+account, add an external stand-in, or let Enter silently do nothing. Setup-only
+Enter returns a visible typed refusal before mutation when no qualified
+Sidekick-owned participant exists. An unqualified build returns the same
+fail-closed result without changing native or structured auth.
 
 ## 18. Build-versus-Adopt Decisions
 
@@ -3149,8 +3202,8 @@ waits visibly or fails before provider commit.
 | --- | --- | --- |
 | Claude private control changes | Setup-token update may corrupt protocol or no-op | Exact build gate; disable switching on mismatch |
 | Private response as adoption | False ready | Keep proofs distinct |
-| Structured host lacks interactive parity | Session behavior regresses despite auth switching | Block release; return design for review |
-| Anthropic credential-use terms change or remain incompatible | Setup-token control may not be shippable | Legal/product gate; do not substitute hidden proxy |
+| Structured host lacks interactive parity | Session behavior regresses despite auth switching | Block current-machine enablement; return design for review |
+| Anthropic credential-use terms change or remain incompatible | Private setup-token control may not be publicly distributable | Public-distribution legal/product gate; do not substitute hidden proxy |
 | Claude native reread differs by platform/version | Some open native sessions may lag | Exact platform qualification and honest degraded status |
 | Remote Control lacks a reliable status surface | Cannot prove special incompatibility | Do not infer it from foreground presence |
 | Codex external auth schema changes | Auth installation/readback may fail | Exact schema gate; retain old session/auth |
@@ -3207,8 +3260,8 @@ not silently reopen or weaken one.
 | D-009 | In-flight work finishes old; later prompts queue for new | Explicit no-interruption requirement and provider request boundaries |
 | D-010 | Refreshable Claude uses official native login and reread | User-observed `/login` convergence, current Sidekick transaction, installed 2.1.220 |
 | D-011 | Ordinary Claude foreground presence is not a conflict | Foreground probe cannot prove Remote Control |
-| D-012 | Claude structured prototype is release-disabled | Private update |
-| D-013 | Setup/mixed shipping is NO-GO pending all gates | SDK evidence |
+| D-012 | Claude structured host is exact-build qualified per machine | Private update and runtime probe |
+| D-013 | Setup/mixed current-machine enablement follows technical gates; public distribution also needs Anthropic clarification | SDK and legal evidence |
 | D-014 | Unmanaged processes stay alive and are reported honestly | OS environment/process boundary and no-restart requirement |
 | D-015 | Codex uses resident external auth plus direct HTTP-only Responses | Official config and exact 0.146 per-attempt auth source |
 | D-016 | Codex active tool/MCP work drains before account update | Exact account-update cache/runtime invalidation source |
@@ -3366,8 +3419,10 @@ publisher and current canonical URL.
 
 These current primary sources establish that public SDKs provide structured
 host primitives but neither an auth-specific runtime setter nor stock-TUI
-embedding. The private 2.1.220 response remains prototype evidence, and the
-Anthropic product/legal release gate remains unresolved.
+embedding. The private 2.1.220 response remains exact-build evidence. It can
+qualify the current-user, current-machine implementation but does not establish
+a public compatibility promise. The Anthropic product and legal gate for
+general public distribution remains unresolved.
 
 #### OpenAI official documentation
 
@@ -3584,7 +3639,7 @@ the table above and in the reference definitions at the end of this document.
 | Address independent WSL failure | Sections 3.8 and 14.3 |
 | Include Mermaid architecture and flows | Sections 3, 5, 6, 7, 8, 9, 10, 13, 17 |
 | Provide decisions, risks, alternatives, and gates | Sections 18-21 |
-| Separate implementation from release | Status, Sections 9, 16.7, 17.2 |
+| Separate implementation, installed cutover, and public distribution | Status, Sections 9, 13.8, 16.7, 17.2 |
 
 ### 22.2 Internal consistency checks
 
@@ -3621,17 +3676,20 @@ The design is internally consistent only when all of these remain true:
 - maintenance includes selected and unselected accounts;
 - rollback never copies or restores an older credential generation;
 - unsupported versions fail closed with the session alive; and
-- setup/mixed enablement remains blocked until all release gates pass.
+- current-machine setup/mixed enablement waits for exact-build, parity,
+  security, identity, and recovery gates;
+- public setup/mixed distribution also waits for Anthropic clarification; and
+- a feature-branch target never claims the installed release already changed.
 
 ### 22.3 User review gate
 
 The approved design and separate tracked plan must pass source, link,
 structure, security, contradiction, and implementation-readiness review after
 this amendment. Implementation remains limited to the approved feature branch.
-Neither approval nor a synthetic green test authorizes setup/mixed product
-enablement, live credential mutation, provider login, controlled provider-live
-work, push, or deployment. Those actions retain their explicit release and
-authority gates.
+Exact-build current-machine enablement, installed-release cutover, shell
+installation, and controlled provider-live work occur only at their explicit
+technical and authority gates. General public distribution separately retains
+the Anthropic product and legal clarification gate.
 
 [old-design]: ./2026-07-23-interactive-global-account-selection-design.md
 [old-completion]: ../completion/2026-07-23-interactive-global-account-selection.md

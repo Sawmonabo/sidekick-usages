@@ -50,11 +50,11 @@ vendor executables and native login locations. New bare commands see the
 provider-verified selection. Supported existing sessions update on their next
 safe request; an in-flight request is never retargeted.
 
-The next-release dashboard contract is cached-first and interactive only when
-both input and output are TTYs on Linux, WSL, or macOS. Its single cursor
-reflects provider read-back, not a separate `IN USE` label. Repeated Enter and
-Esc are ignored while activation is in flight; `q` and Ctrl-C remain safe and
-responsive. See the
+The hardened feature-branch dashboard contract is cached-first and interactive
+only when both input and output are TTYs on Linux, WSL, or macOS. It is the
+canonical selection surface. Its single cursor reflects provider read-back,
+not a separate `IN USE` label. Repeated Enter and Esc are ignored while
+activation is in flight; `q` and Ctrl-C remain safe and responsive. See the
 [complete key map](../README.md#check-select-and-manage-accounts).
 
 Explicit `check`, redirected I/O, and `--no-interactive` render once without
@@ -69,6 +69,15 @@ reporting, but interactive selection and resident supervision are
 feature-disabled. Codex session switching supports ordinary TUIs using the
 shared daemon; `codex exec`, pre-daemon embedded TUIs, native Windows, and
 launch modes that bypass daemon reuse remain unsupported.
+
+Claude setup-only selection requires at least one exact-build-qualified,
+Sidekick-owned structured participant. Mixed refreshable selection proves the
+native target first, then installs its exact committed lease into integrated
+participants. Admission waits for active and background provider work to end
+naturally; it never retargets an in-flight operation. Shell forwarding is
+installed only during the qualified installed-release cutover and enrolls
+future launches from newly loaded shells. It never retrofits, restarts, or
+kills an existing unmanaged process.
 
 ## Supported account types
 
