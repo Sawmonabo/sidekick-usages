@@ -20,7 +20,6 @@ from sidekick_usages.cli.session.claude.coordination import (
 )
 from sidekick_usages.cli.session.claude.lifecycle import (
     CLAUDE_ATTACHMENT_RETRY_ERRORS,
-    CLAUDE_REATTACH_DELAYS_SECONDS,
     ClaudeProviderTerminatedError,
     ClaudeSessionGateError,
     ClaudeTerminalEventsClosedError,
@@ -32,6 +31,9 @@ from sidekick_usages.cli.session.claude.projection import (
     CLAUDE_ENGINE_EVENT_TIMEOUT_SECONDS,
     ClaudeProjectionInstaller,
     new_claude_request_id,
+)
+from sidekick_usages.cli.session.control import (
+    participant_reattach_delay,
 )
 from sidekick_usages.core.accounts.types import RequestId
 from sidekick_usages.core.selection.types import (
@@ -280,9 +282,7 @@ class ClaudeSessionRuntime:
                 current = None
                 if factory is None:
                     raise
-                delay = CLAUDE_REATTACH_DELAYS_SECONDS[
-                    min(attempt, len(CLAUDE_REATTACH_DELAYS_SECONDS) - 1)
-                ]
+                delay = participant_reattach_delay(attempt)
                 if self._closing.wait(delay):
                     self._fail(ClaudeStructuredFailure.PROCESS_UNAVAILABLE)
                 with self._condition:
@@ -904,9 +904,7 @@ class ClaudeSessionRuntime:
         attempt = 0
         reported = False
         while True:
-            delay = CLAUDE_REATTACH_DELAYS_SECONDS[
-                min(attempt, len(CLAUDE_REATTACH_DELAYS_SECONDS) - 1)
-            ]
+            delay = participant_reattach_delay(attempt)
             if self._closing.wait(delay):
                 return
             try:

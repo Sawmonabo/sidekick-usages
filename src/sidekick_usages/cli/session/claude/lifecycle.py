@@ -12,7 +12,6 @@ from sidekick_usages.providers.claude.structured.models import (
     ClaudeStructuredTerminalEvent,
 )
 
-CLAUDE_REATTACH_DELAYS_SECONDS = (0.0, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0)
 CLAUDE_ATTACHMENT_RETRY_ERRORS = (
     BrokenPipeError,
     ClaudeProtectedChannelClosedError,

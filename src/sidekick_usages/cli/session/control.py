@@ -31,6 +31,23 @@ from sidekick_usages.daemon.types.protocol import (
     EventKind,
 )
 
+PARTICIPANT_REATTACH_DELAYS_SECONDS = (
+    0.0,
+    0.25,
+    0.5,
+    1.0,
+    2.0,
+    4.0,
+    8.0,
+)
+
+
+def participant_reattach_delay(attempt: int) -> float:
+    """Return one bounded shared participant reconnect delay."""
+    return PARTICIPANT_REATTACH_DELAYS_SECONDS[
+        min(attempt, len(PARTICIPANT_REATTACH_DELAYS_SECONDS) - 1)
+    ]
+
 
 class SessionParticipantError(RuntimeError):
     """One authenticated participant failure carrying a safe code."""
