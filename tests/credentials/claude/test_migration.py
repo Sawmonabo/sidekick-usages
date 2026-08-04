@@ -230,7 +230,7 @@ def _managed_account(
     store: AccountStore,
     original: SavedAccount,
     setup_authority: ClaudeSetupTokenAuthority,
-) -> SavedAccount:
+) -> tuple[SavedAccount, ClaudeManagedLoginAuthority]:
     """Return the migrated account after proving both authorities."""
     current = store.read_saved(original.account_id)
     if current is None or not isinstance(
@@ -244,7 +244,7 @@ def _managed_account(
     ):
         raise AssertionError("Expected managed Claude subscription.")
     assert current.authority.setup_token == setup_authority
-    return current
+    return current, current.authority.subscription
 
 
 def _coordinator(
@@ -577,8 +577,7 @@ def test_interrupted_setup_association_recovers_profile_and_metrics(
         },
         profile_statuses={profile: status},
     )
-    native_profile = tmp_path / "native-claude"
-    native_sentinel = _native_sentinel(native_profile)
+    native_sentinel = _native_sentinel(tmp_path / "native-claude")
     coordinator = _coordinator(
         paths,
         store,
@@ -587,7 +586,7 @@ def test_interrupted_setup_association_recovers_profile_and_metrics(
         snapshots,
         FixedClock(),
         script,
-        native_profile,
+        native_sentinel.parent,
     )
     commit = store.migrate_stored_authority
 
@@ -624,11 +623,10 @@ def test_interrupted_setup_association_recovers_profile_and_metrics(
         original,
         setup_payload,
     )
-    protected_profile = profiles.read_owned_file(
+    assert profiles.read_owned_file(
         profile,
         CLAUDE_CREDENTIAL_FILE,
-    )
-    assert protected_profile is not None
+    ) is not None
     _assert_pending_usage(snapshots, original, usage_before)
     monkeypatch.setattr(store, "migrate_stored_authority", commit)
 
@@ -654,7 +652,11 @@ def test_interrupted_setup_association_recovers_profile_and_metrics(
             interactive=True,
         )
 
-    current = _managed_account(store, original, setup_authority)
+    current, _ = _managed_account(
+        store,
+        original,
+        setup_authority,
+    )
     assert (
         repository.read_payload(
             current.account_id,
@@ -683,6 +685,46 @@ def test_interrupted_setup_association_recovers_profile_and_metrics(
         True,
         (),
         expected_usage,
+        [profile, profile],
+        b"native-login-must-remain",
+    )
+
+    _, before_subscription = _managed_account(
+        store,
+        original,
+        setup_authority,
+    )
+    script.set_authority(
+        profile,
+        credential_payload(
+            None,
+            None,
+            token_suffix="recover-provider-ahead",
+            access_expires_at=_NEW_ACCESS_EXPIRY + timedelta(hours=2),
+        ),
+        status,
+    )
+
+    provider_ahead = coordinator.migrate_account(
+        original.account_id,
+        establish_identity=False,
+        interactive=False,
+    )
+
+    after_provider_ahead, after_subscription = _managed_account(
+        store,
+        original,
+        setup_authority,
+    )
+    assert isinstance(provider_ahead, CredentialLoginSuccess), provider_ahead
+    assert (
+        after_provider_ahead.credential_health,
+        after_subscription.generation != before_subscription.generation,
+        script.login_profiles,
+        native_sentinel.read_bytes(),
+    ) == (
+        CredentialHealth.HEALTHY,
+        True,
         [profile, profile],
         b"native-login-must-remain",
     )

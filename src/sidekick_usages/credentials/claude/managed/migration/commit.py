@@ -5,6 +5,7 @@ from dataclasses import replace
 from sidekick_usages.clock import Clock
 from sidekick_usages.core.accounts.models import (
     ClaudeAccountAuthority,
+    ClaudeManagedLoginAuthority,
     SavedAccount,
 )
 from sidekick_usages.core.accounts.types import (
@@ -181,10 +182,16 @@ class ClaudeMigrationCommitCoordinator:
                 action_required=False,
             )
         try:
-            self._store.migrate_stored_authority(
-                candidate,
-                expected=current,
-            )
+            if isinstance(
+                authority.subscription,
+                ClaudeManagedLoginAuthority,
+            ):
+                self._store.persist_state(candidate, expected=current)
+            else:
+                self._store.migrate_stored_authority(
+                    candidate,
+                    expected=current,
+                )
         except SourceChangedError:
             return self._reconcile_commit_error(
                 current,

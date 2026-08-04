@@ -660,8 +660,10 @@ class ClaudeManagedMigrationCoordinator:
         if isinstance(observed, ClaudeExchangeFailure):
             return exchange_failure(observed.kind)
         if not managed_authority_matches(account, subscription, observed):
-            return exchange_failure(
-                ClaudeExchangeFailureKind.RECONCILIATION_REQUIRED
+            return self._commits.commit(
+                account,
+                subscription.authority_id,
+                observed,
             )
         try:
             self._commits.promote_managed_identity(account)
