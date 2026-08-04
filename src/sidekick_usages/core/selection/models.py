@@ -23,6 +23,7 @@ from sidekick_usages.core.selection.operation import (
     PreparedSelection,
     SelectionAuthorityObservation,
     SelectionEpoch,
+    SelectionRecoveryDecision,
     SelectionResult,
 )
 from sidekick_usages.core.selection.types import (
@@ -55,6 +56,7 @@ __all__ = (
     "SelectedAccountState",
     "SelectionAuthorityObservation",
     "SelectionEpoch",
+    "SelectionRecoveryDecision",
     "SelectionResult",
     "activation_account_ids",
     "safe_outcome_code",

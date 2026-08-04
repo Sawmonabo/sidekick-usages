@@ -10,6 +10,7 @@ from sidekick_usages.core.accounts.models import (
     ClaudeAccountAuthority,
     ClaudeManagedLoginAuthority,
 )
+from sidekick_usages.core.accounts.types import AuthorityGeneration
 from sidekick_usages.core.selection.models import (
     AuthorityReadyProof,
     ClaudeAuthObservation,
@@ -214,6 +215,21 @@ def _execute_selection(
     return prepared, _commit_selection(scenario, prepared)
 
 
+def _open_proven_generation(
+    scenario: ClaudeActivationScenario,
+    generation: AuthorityGeneration,
+) -> AuthorityGeneration:
+    """Open finalized native access after proving saved authority."""
+    with _selection_lock(scenario).hold() as authority:
+        target = scenario.access.prevalidate(
+            scenario.target.account_id, authority
+        )
+        with scenario.access.open_proven(
+            target, generation, authority
+        ) as lease:
+            return lease.prepared.generation
+
+
 def _guarded_activation_scenario(
     root: Path,
 ) -> ClaudeActivationScenario:
@@ -295,6 +311,7 @@ def test_native_activation_retains_source_and_commits_verified_target(
         proof.provider_id,
         proof.account_id,
         proof.generation != prepared.target_generation,
+        _open_proven_generation(scenario, proof.generation),
         proof.epoch,
         proof.safe_code,
         readback.runtime_state,
@@ -304,6 +321,7 @@ def test_native_activation_retains_source_and_commits_verified_target(
         ProviderId.CLAUDE,
         scenario.target.account_id,
         True,
+        proof.generation,
         prepared.pending_epoch,
         SelectionCode.SELECTION_SUCCEEDED,
         ProviderRuntimeState.SAVED_ACTIVE,

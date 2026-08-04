@@ -50,7 +50,8 @@ _CALLBACK_OPERATION_QUEUE_SCHEMA_VERSION = 6
 _PARENT_OPERATION_QUEUE_SCHEMA_VERSION = 5
 _PREVIOUS_OPERATION_QUEUE_SCHEMA_VERSION = 4
 _LEGACY_OPERATION_QUEUE_SCHEMA_VERSION = 3
-WORKER_RESULT_SCHEMA_VERSION = 3
+WORKER_RESULT_SCHEMA_VERSION = 4
+_PREVIOUS_WORKER_RESULT_SCHEMA_VERSION = 3
 _LEGACY_WORKER_RESULT_SCHEMA_VERSION = 2
 MAX_WORKER_RESULT_BYTES = 16 * 1024
 MAX_OPERATION_QUEUE_BYTES = 8 * 1024 * 1024
@@ -325,18 +326,17 @@ def decode_worker_result(payload: bytes) -> WorkerResult:
     root = decode_state_object(payload, MAX_WORKER_RESULT_BYTES)
     version = require_integer(root.get("schema_version"))
     legacy = version == _LEGACY_WORKER_RESULT_SCHEMA_VERSION
+    previous = version == _PREVIOUS_WORKER_RESULT_SCHEMA_VERSION
     require_exact_keys(
         root,
         _LEGACY_WORKER_RESULT_KEYS if legacy else _WORKER_RESULT_KEYS,
     )
-    require_schema_version(
-        version,
-        (
-            _LEGACY_WORKER_RESULT_SCHEMA_VERSION
-            if legacy
-            else WORKER_RESULT_SCHEMA_VERSION
-        ),
-    )
+    if version not in {
+        _LEGACY_WORKER_RESULT_SCHEMA_VERSION,
+        _PREVIOUS_WORKER_RESULT_SCHEMA_VERSION,
+        WORKER_RESULT_SCHEMA_VERSION,
+    }:
+        raise InvalidSchemaError
     try:
         result = WorkerResult(
             operation_id=OperationId(require_string(root["operation_id"])),
@@ -355,13 +355,20 @@ def decode_worker_result(payload: bytes) -> WorkerResult:
             selection=(
                 None
                 if legacy or root["selection"] is None
-                else _selection(require_object(root["selection"]))
+                else _selection(
+                    require_object(root["selection"]),
+                    previous=previous,
+                )
             ),
         )
     except TypeError, ValueError:
         raise InvalidSchemaError from None
     expected = (
-        _legacy_result_payload(result) if legacy else _result_payload(result)
+        _legacy_result_payload(result)
+        if legacy
+        else _previous_result_payload(result)
+        if previous
+        else _result_payload(result)
     )
     if expected != payload:
         raise InvalidSchemaError
@@ -404,11 +411,16 @@ def _related_authority_object(
     }
 
 
-def _selection(record: JsonObject) -> SelectionWorkerMetadata:
+def _selection(
+    record: JsonObject,
+    *,
+    previous: bool = False,
+) -> SelectionWorkerMetadata:
     """Decode one safe selection-phase observation."""
     require_exact_keys(
         record,
         {
+            *(() if previous else ("authority_requires_participant",)),
             "kind",
             "observed_account_id",
             "observed_generation",
@@ -430,12 +442,20 @@ def _selection(record: JsonObject) -> SelectionWorkerMetadata:
         observed_generation=(
             None if generation is None else AuthorityGeneration(generation)
         ),
+        authority_requires_participant=(
+            None
+            if previous or record["authority_requires_participant"] is None
+            else require_boolean(record["authority_requires_participant"])
+        ),
     )
 
 
 def _selection_object(selection: SelectionWorkerMetadata) -> JsonObject:
     """Encode one safe selection-phase observation."""
     return {
+        "authority_requires_participant": (
+            selection.authority_requires_participant
+        ),
         "kind": selection.kind.value,
         "observed_account_id": (
             None
@@ -460,4 +480,15 @@ def _legacy_result_payload(result: WorkerResult) -> bytes:
     record = _result_object(result)
     record.pop("selection")
     record["schema_version"] = _LEGACY_WORKER_RESULT_SCHEMA_VERSION
+    return encode_state_object(record, MAX_WORKER_RESULT_BYTES)
+
+
+def _previous_result_payload(result: WorkerResult) -> bytes:
+    """Re-encode one v3 result with absent mode evidence exactly."""
+    record = _result_object(result)
+    selection = record["selection"]
+    if selection is not None:
+        selection = require_object(selection)
+        selection.pop("authority_requires_participant")
+    record["schema_version"] = _PREVIOUS_WORKER_RESULT_SCHEMA_VERSION
     return encode_state_object(record, MAX_WORKER_RESULT_BYTES)

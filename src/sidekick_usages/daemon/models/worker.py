@@ -44,6 +44,7 @@ class SelectionWorkerMetadata:
     pending_epoch: SelectionEpoch
     observed_account_id: SidekickAccountId | None
     observed_generation: AuthorityGeneration | None
+    authority_requires_participant: bool | None = None
 
     def __post_init__(self) -> None:
         """Require complete observations for every mutating phase."""
@@ -58,6 +59,11 @@ class SelectionWorkerMetadata:
             and self.observed_account_id is None
         ):
             raise ValueError("Selection worker phase requires authority.")
+        if self.authority_requires_participant is not None and (
+            self.provider_id is not ProviderId.CLAUDE
+            or self.kind is not OperationKind.SELECTION_READBACK
+        ):
+            raise ValueError("Selection worker authority mode is invalid.")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

@@ -83,6 +83,14 @@ class SelectionOutcome(StrEnum):
     RECOVERY_REQUIRED = "recovery_required"
 
 
+class SelectionRecoveryRelation(StrEnum):
+    """Provider-owned relation between baseline and target authority."""
+
+    BASELINE_PROVEN = "baseline_proven"
+    TARGET_PROVEN = "target_proven"
+    UNRESOLVED = "unresolved"
+
+
 class AuthorityGenerationRelation(StrEnum):
     """Selected runtime generation relative to saved authority truth."""
 

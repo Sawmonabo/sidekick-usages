@@ -144,6 +144,9 @@ def selection_worker_success(
             pending_epoch=pending_epoch,
             observed_account_id=observation.account_id,
             observed_generation=observation.generation,
+            authority_requires_participant=(
+                observation.authority_requires_participant
+            ),
         ),
     )
 

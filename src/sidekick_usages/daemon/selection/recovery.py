@@ -16,11 +16,13 @@ from sidekick_usages.core.selection.models import (
     SelectionEpoch,
     SelectionResult,
 )
+from sidekick_usages.core.selection.policy import selection_recovery_decision
 from sidekick_usages.core.selection.types import (
     OperationKind,
     SelectionCode,
     SelectionOutcome,
     SelectionPhase,
+    SelectionRecoveryRelation,
 )
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.daemon.models.scheduler import SchedulerCompletion
@@ -179,6 +181,48 @@ class SelectionRecovery:
             ):
                 self._publish_recovery_required(active)
 
+    def prove_commit(self, completion: SchedulerCompletion) -> None:
+        """Persist exact worker target proof before protected fan-out."""
+        if completion.operation_kind is not OperationKind.SELECTION_COMMIT:
+            return
+        provider_id = completion.provider_id
+        with self._provider_locks[provider_id]:
+            operation = self._journal.load(provider_id).active
+            metadata = completion.selection
+            if (
+                operation is None
+                or operation.operation_id != completion.operation_id
+                or operation.phase is not SelectionPhase.COMMITTING
+                or completion.outcome
+                not in {WorkerOutcome.SUCCEEDED, WorkerOutcome.NO_CHANGE}
+                or metadata is None
+                or metadata.operation_id != operation.operation_id
+                or metadata.provider_id is not operation.provider_id
+                or metadata.kind is not OperationKind.SELECTION_COMMIT
+                or metadata.pending_epoch != operation.pending_epoch
+                or metadata.observed_account_id
+                != operation.target_account_id
+                or metadata.observed_generation is None
+                or (
+                    operation.target_generation is not None
+                    and operation.target_generation
+                    != metadata.observed_generation
+                )
+            ):
+                raise SelectionRequestError(
+                    SelectionCode.AUTHORITY_PROOF_FAILED
+                )
+            if operation.target_generation is not None:
+                return
+            self._journal.advance_with_required_additions(
+                operation,
+                replace(
+                    operation,
+                    target_generation=metadata.observed_generation,
+                    updated_at=self._clock.now(),
+                ),
+            )
+
     def worker_released(self, completion: SchedulerCompletion) -> None:
         """Resume only after an orphan phase releases provider authority."""
         if completion.operation_kind is OperationKind.SELECTION_READBACK:
@@ -256,30 +300,54 @@ class SelectionRecovery:
         if operation.prepared_generation is None:
             return self._recovery_required(operation)
         prepared = self._prepared(operation)
-        protected_proof = self._target_proof(
-            operation,
-            operation.target_generation or operation.prepared_generation,
-        )
-        if self._participants.requires_attachment(
-            operation.provider_id
-        ) and self._participants.prepare_target(
-            operation.operation_id, protected_proof
+        baseline = self._selected.load(operation.provider_id)
+        generation = operation.target_generation
+        if (
+            generation is None
+            and observation.account_id == operation.target_account_id
         ):
+            generation = observation.generation
+        candidate = generation or operation.prepared_generation
+        binding_proven = candidate is not None and (
+            self._participants.prepare_target(
+                operation.operation_id,
+                self._target_proof(operation, candidate),
+            )
+        )
+        attachments = self._participants.attachment_registry(
+            operation.provider_id
+        )
+        decision = (
+            selection_recovery_decision(
+                operation,
+                baseline,
+                observation,
+                target_binding_proven=binding_proven,
+                baseline_observation_conclusive=True,
+            )
+            if attachments is None
+            else attachments.recovery_decision(
+                operation,
+                baseline,
+                observation,
+                target_binding_proven=binding_proven,
+            )
+        )
+        if decision.relation is SelectionRecoveryRelation.TARGET_PROVEN:
+            generation = decision.target_generation
+            if generation is None:
+                return self._recovery_required(operation)
             return self._recover_target(
                 operation,
                 prepared,
-                protected_proof,
+                self._target_proof(operation, generation),
             )
-        if self._target_proven(operation, observation):
-            if observation.generation is None:
-                return self._recovery_required(operation)
-            proof = self._target_proof(operation, observation.generation)
-            return self._recover_target(operation, prepared, proof)
-        baseline = self._selected.load(operation.provider_id)
-        if operation.phase in {
-            SelectionPhase.COMMITTING,
-            SelectionPhase.RECOVERING,
-        } and self._baseline_proven(operation, baseline, observation):
+        if decision.relation is SelectionRecoveryRelation.BASELINE_PROVEN and (
+            operation.phase in {
+                SelectionPhase.COMMITTING,
+                SelectionPhase.RECOVERING,
+            }
+        ):
             return self._recover_baseline(operation)
         return self._recovery_required(operation)
 
@@ -298,12 +366,20 @@ class SelectionRecovery:
         """Restore admission only after PREVALIDATE closed the baseline."""
         if operation.phase is SelectionPhase.PREVALIDATING:
             return
+        membership_sealed = (
+            operation.phase is SelectionPhase.COMMITTING
+            or (
+                operation.phase is SelectionPhase.RECOVERING
+                and operation.target_generation is None
+            )
+        )
         self._participants.restore_admission(
             operation.provider_id,
             operation.operation_id,
             operation.pending_epoch,
             operation.target_account_id,
             operation.required_participant_ids,
+            membership_sealed=membership_sealed,
         )
 
     def _recover_target(
@@ -334,6 +410,7 @@ class SelectionRecovery:
                     updated_at=self._clock.now(),
                 ),
             )
+        self._participants.unseal(operation.provider_id)
         if operation.phase is not SelectionPhase.AWAITING_READY:
             return self._recovery_required(operation)
         if not self._participants.target_prepared(operation.provider_id):
@@ -531,21 +608,6 @@ class SelectionRecovery:
         )
 
     @staticmethod
-    def _target_proven(
-        operation: OpenSelectionOperation,
-        observation: SelectionAuthorityObservation,
-    ) -> bool:
-        return (
-            observation.provider_id is operation.provider_id
-            and observation.account_id == operation.target_account_id
-            and observation.generation is not None
-            and (
-                operation.target_generation is None
-                or operation.target_generation == observation.generation
-            )
-        )
-
-    @staticmethod
     def _baseline_proven(
         operation: OpenSelectionOperation,
         baseline: FinalizedSelection | None,
@@ -588,6 +650,9 @@ class SelectionRecovery:
             provider_id=metadata.provider_id,
             account_id=metadata.observed_account_id,
             generation=metadata.observed_generation,
+            authority_requires_participant=(
+                metadata.authority_requires_participant
+            ),
         )
 
     @staticmethod

@@ -2,7 +2,7 @@
 
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 
 from sidekick_usages.clock import Clock
@@ -196,6 +196,7 @@ class ClaudeSelectedAccessLeaseService:
     ) -> Iterator[ClaudeAccessLease]:
         """Commit mode policy, then open the exact proved target lease."""
         self._require_current(prepared, authority)
+        committed = prepared
         if prepared.mode is ClaudeAuthorityMode.REFRESHABLE:
             selected = self._activation.activate(
                 operation_id,
@@ -203,22 +204,38 @@ class ClaudeSelectedAccessLeaseService:
                 authority,
                 expected_target_generation=prepared.generation,
             )
-            if selected.runtime_generation != prepared.generation:
+            if selected.runtime_generation is None:
                 raise ClaudeSelectedAccessError(
-                    "The committed Claude generation does not match."
+                    "The committed Claude generation is unavailable."
                 )
-        with self._open_authorized(prepared, authority) as lease:
+            committed = replace(
+                prepared,
+                generation=selected.runtime_generation,
+            )
+        with self._open_authorized(committed, authority) as lease:
             yield lease
 
     @contextmanager
     def open_proven(
         self,
         prepared: ClaudePreparedAuthority,
+        committed_generation: AuthorityGeneration,
         authority: ProviderMutationAuthority,
     ) -> Iterator[ClaudeAccessLease]:
         """Open an already-proven target without native mutation."""
         self._require_current(prepared, authority)
-        with self._open_authorized(prepared, authority) as lease:
+        if (
+            prepared.mode is ClaudeAuthorityMode.SETUP
+            and prepared.generation != committed_generation
+        ):
+            raise ClaudeSelectedAccessError(
+                "The proved Claude generation changed."
+            )
+        committed = replace(
+            prepared,
+            generation=committed_generation,
+        )
+        with self._open_authorized(committed, authority) as lease:
             yield lease
 
     def _require_current(

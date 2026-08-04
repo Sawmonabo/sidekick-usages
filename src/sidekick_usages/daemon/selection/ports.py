@@ -17,6 +17,7 @@ from sidekick_usages.core.selection.models import (
     PreparedSelection,
     SelectionAuthorityObservation,
     SelectionEpoch,
+    SelectionRecoveryDecision,
     SelectionResult,
 )
 from sidekick_usages.core.selection.types import ParticipantId
@@ -104,6 +105,16 @@ class ParticipantAttachmentRegistry(Protocol):
         finalized: FinalizedSelection,
     ) -> bool:
         """Return whether one attachment installed the finalized target."""
+
+    def recovery_decision(
+        self,
+        operation: OpenSelectionOperation,
+        baseline: FinalizedSelection | None,
+        observation: SelectionAuthorityObservation,
+        *,
+        target_binding_proven: bool,
+    ) -> SelectionRecoveryDecision:
+        """Relate provider and exact secret-free attachment evidence."""
 
 
 class SelectionAuthorityAdapter(Protocol):

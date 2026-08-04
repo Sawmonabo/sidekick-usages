@@ -14,6 +14,7 @@ from sidekick_usages.core.selection.types import (
     SelectionCode,
     SelectionOutcome,
     SelectionPhase,
+    SelectionRecoveryRelation,
 )
 from sidekick_usages.core.time import as_utc
 from sidekick_usages.core.types import ProviderId
@@ -87,11 +88,17 @@ class SelectionAuthorityObservation:
     provider_id: ProviderId
     account_id: SidekickAccountId | None
     generation: AuthorityGeneration | None
+    authority_requires_participant: bool | None = None
 
     def __post_init__(self) -> None:
         """Require observed identity and generation to remain atomic."""
         if (self.account_id is None) != (self.generation is None):
             raise ValueError("Selection authority observation is incomplete.")
+        if (
+            self.authority_requires_participant is not None
+            and self.provider_id is not ProviderId.CLAUDE
+        ):
+            raise ValueError("Selection authority mode owner is invalid.")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -103,6 +110,21 @@ class AuthorityReadyProof:
     generation: AuthorityGeneration
     epoch: SelectionEpoch
     safe_code: SelectionCode
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class SelectionRecoveryDecision:
+    """Provider-owned secret-free relation used for forward recovery."""
+
+    relation: SelectionRecoveryRelation
+    target_generation: AuthorityGeneration | None
+    safe_code: SelectionCode
+
+    def __post_init__(self) -> None:
+        """Require target generation only for target-proven decisions."""
+        target = self.relation is SelectionRecoveryRelation.TARGET_PROVEN
+        if target != (self.target_generation is not None):
+            raise ValueError("Selection recovery decision is incomplete.")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

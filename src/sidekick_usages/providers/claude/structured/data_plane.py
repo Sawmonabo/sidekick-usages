@@ -19,9 +19,20 @@ from sidekick_usages.core.accounts.types import (
 from sidekick_usages.core.selection.models import (
     AuthorityReadyProof,
     FinalizedSelection,
+    OpenSelectionOperation,
+    SelectionAuthorityObservation,
     SelectionEpoch,
+    SelectionRecoveryDecision,
 )
-from sidekick_usages.core.selection.types import OperationKind, ParticipantId
+from sidekick_usages.core.selection.policy import (
+    selection_recovery_decision,
+)
+from sidekick_usages.core.selection.types import (
+    OperationKind,
+    ParticipantId,
+    SelectionCode,
+    SelectionRecoveryRelation,
+)
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.platform.models import ProcessIdentity
 from sidekick_usages.providers.claude.structured.codec import (
@@ -32,10 +43,14 @@ from sidekick_usages.providers.claude.structured.codec import (
     decode_protected_exchange_instruction,
     decode_protected_projection,
     encode_protected_ack,
+    encode_protected_binding_query,
+    encode_protected_binding_report,
     encode_protected_exchange_instruction,
     encode_protected_install_receipt,
     encode_protected_projection,
     require_protected_ack,
+    require_protected_binding_query,
+    require_protected_binding_report,
     require_protected_install_receipt,
 )
 from sidekick_usages.providers.claude.structured.models import (
@@ -129,14 +144,7 @@ class _ClaudeParticipantChannel:
     endpoint: socket.socket
     connection_generation: int
     peer: ProcessIdentity
-    install_receipt: ClaudeStructuredInstallReceipt | None = None
-
-    @property
-    def binding(self) -> ClaudeStructuredBinding | None:
-        """Return the binding proved by the last exact install receipt."""
-        if self.install_receipt is None:
-            return None
-        return self.install_receipt.binding
+    binding: ClaudeStructuredBinding | None = None
 
 
 class ClaudeParticipantChannelTransaction:
@@ -261,6 +269,31 @@ class ClaudeParticipantChannelRegistry:
             )
         return self._participant_required(account_id)
 
+    def recovery_decision(
+        self,
+        operation: OpenSelectionOperation,
+        baseline: FinalizedSelection | None,
+        observation: SelectionAuthorityObservation,
+        *,
+        target_binding_proven: bool,
+    ) -> SelectionRecoveryDecision:
+        """Relate Claude mode, native truth, and exact host binding."""
+        classified = observation.authority_requires_participant
+        required = self.requires_participant(
+            operation.provider_id, operation.target_account_id
+        )
+        if classified is None or classified != required:
+            return SelectionRecoveryDecision(
+                relation=SelectionRecoveryRelation.UNRESOLVED,
+                target_generation=None,
+                safe_code=SelectionCode.SELECTION_RECOVERY_REQUIRED,
+            )
+        return selection_recovery_decision(
+            operation, baseline, observation,
+            target_binding_proven=target_binding_proven,
+            baseline_observation_conclusive=not classified,
+        )
+
     def stage(
         self,
         participant_id: ParticipantId,
@@ -352,19 +385,60 @@ class ClaudeParticipantChannelRegistry:
         finalized: FinalizedSelection,
     ) -> bool:
         """Return whether an exact channel acknowledged finalized authority."""
-        with self._lock:
-            current = self._channels.get(participant_id)
-            return current is not None and (
-                current.connection_generation == connection_generation
-                and current.peer == peer
-                and current.binding
-                == ClaudeStructuredBinding(
-                    operation_id=operation_id,
-                    account_id=finalized.account_id,
-                    generation=finalized.generation,
-                    epoch=finalized.epoch,
-                )
+        return self.matches_target(
+            participant_id, connection_generation, peer, operation_id,
+            AuthorityReadyProof(
+                provider_id=finalized.provider_id,
+                account_id=finalized.account_id,
+                generation=finalized.generation,
+                epoch=finalized.epoch,
+                safe_code=SelectionCode.SELECTION_SUCCEEDED,
             )
+        )
+
+    def query_binding(
+        self, participant_id: ParticipantId, connection_generation: int,
+        peer: ProcessIdentity,
+    ) -> ClaudeStructuredBinding | None:
+        """Refresh one exact channel's nonce-correlated current binding."""
+        with self._distribution_lock:
+            with self._lock:
+                channel = self._channels.get(participant_id)
+                if channel is None or (
+                    channel.connection_generation != connection_generation
+                    or channel.peer != peer
+                ):
+                    raise ClaudeProtectedChannelError(
+                        "The protected participant binding does not match."
+                    )
+            nonce = new_request_id()
+            payload = encode_protected_binding_query(
+                nonce, participant_id, connection_generation
+            )
+            frame = encode_bounded_frame(
+                payload, MAX_CLAUDE_PROTECTED_FRAME_BYTES
+            )
+            try:
+                channel.endpoint.settimeout(CLAUDE_PROTECTED_RESPONSE_SECONDS)
+                channel.endpoint.sendall(frame)
+                report = require_protected_binding_report(
+                    _receive_socket_frame(channel.endpoint),
+                    nonce, participant_id, connection_generation,
+                )
+                with self._lock:
+                    current = self._channels.get(participant_id)
+                    if current is not channel:
+                        raise ClaudeProtectedChannelError(
+                            "The participant reconnected during query."
+                        )
+                    current.binding = report
+                return report
+            except OSError, ValueError:
+                raise ClaudeProtectedChannelError(
+                    "The protected Claude binding was not reported."
+                ) from None
+            finally:
+                clear_mutable_buffer(frame)
 
     def close(self) -> None:
         """Close every endpoint owned by this supervisor registry."""
@@ -437,7 +511,7 @@ class ClaudeParticipantChannelRegistry:
                     raise ClaudeProtectedChannelError(
                         "The protected participant reconnected during install."
                     )
-                current.install_receipt = install_receipt
+                current.binding = install_receipt.binding
         except OSError, ValueError:
             raise ClaudeProtectedChannelError(
                 "The protected Claude install was not acknowledged."
@@ -575,6 +649,35 @@ class ClaudeProtectedHostChannel:
         except OSError:
             raise ClaudeProtectedChannelError(
                 "The protected host acknowledgement failed."
+            ) from None
+        finally:
+            clear_mutable_buffer(frame)
+
+    def report_current_binding(
+        self, binding: ClaudeStructuredBinding | None,
+    ) -> None:
+        """Answer one nonce-correlated supervisor binding query."""
+        if self._closed or self._pending is not None:
+            raise ClaudeProtectedChannelError(
+                "The protected host channel is not ready."
+            )
+        nonce = require_protected_binding_query(
+            _receive_socket_frame(self._endpoint),
+            self._participant_id,
+            self._connection_generation,
+        )
+        payload = encode_protected_binding_report(
+            binding, nonce, self._participant_id,
+            self._connection_generation,
+        )
+        frame = encode_bounded_frame(
+            payload, MAX_CLAUDE_PROTECTED_FRAME_BYTES
+        )
+        try:
+            self._endpoint.sendall(frame)
+        except OSError:
+            raise ClaudeProtectedChannelError(
+                "The protected host binding report failed."
             ) from None
         finally:
             clear_mutable_buffer(frame)

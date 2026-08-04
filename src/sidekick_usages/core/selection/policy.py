@@ -11,6 +11,9 @@ from sidekick_usages.core.selection.models import (
     OpenSelectionOperation,
     ProviderAuthObservation,
     SelectedAccountState,
+    SelectionAuthorityObservation,
+    SelectionEpoch,
+    SelectionRecoveryDecision,
     SelectionResult,
 )
 from sidekick_usages.core.selection.types import (
@@ -19,14 +22,16 @@ from sidekick_usages.core.selection.types import (
     OperationKind,
     OperationPriority,
     OperationState,
+    SelectionCode,
     SelectionOutcome,
     SelectionPhase,
+    SelectionRecoveryRelation,
 )
 from sidekick_usages.core.time import as_utc
 from sidekick_usages.core.types import ProviderId
 
 _PROTECTED_SELECTION_PROVIDERS: frozenset[ProviderId] = frozenset(
-    {ProviderId.CODEX}
+    {ProviderId.CLAUDE, ProviderId.CODEX}
 )
 
 _ACTIVATION_TRANSITIONS: dict[
@@ -132,6 +137,52 @@ def protected_selection_enabled(provider_id: ProviderId) -> bool:
     return provider_id in _PROTECTED_SELECTION_PROVIDERS
 
 
+def selection_recovery_decision(
+    operation: OpenSelectionOperation,
+    baseline: FinalizedSelection | None,
+    observation: SelectionAuthorityObservation,
+    *,
+    target_binding_proven: bool,
+    baseline_observation_conclusive: bool,
+) -> SelectionRecoveryDecision:
+    """Relate composite provider evidence without guessing rollback."""
+    target_generation = operation.target_generation
+    observed_target = (
+        observation.provider_id is operation.provider_id
+        and observation.account_id == operation.target_account_id
+        and observation.generation is not None
+        and (
+            target_generation is None
+            or target_generation == observation.generation
+        )
+    )
+    if observed_target:
+        target_generation = observation.generation
+    if target_binding_proven and target_generation is None:
+        target_generation = operation.prepared_generation
+    if target_generation is not None:
+        return SelectionRecoveryDecision(
+            relation=SelectionRecoveryRelation.TARGET_PROVEN,
+            target_generation=target_generation,
+            safe_code=SelectionCode.SELECTION_SUCCEEDED,
+        )
+    if baseline_observation_conclusive and _selection_baseline_proven(
+        operation,
+        baseline,
+        observation,
+    ):
+        return SelectionRecoveryDecision(
+            relation=SelectionRecoveryRelation.BASELINE_PROVEN,
+            target_generation=None,
+            safe_code=SelectionCode.SELECTION_ROLLED_BACK,
+        )
+    return SelectionRecoveryDecision(
+        relation=SelectionRecoveryRelation.UNRESOLVED,
+        target_generation=None,
+        safe_code=SelectionCode.SELECTION_RECOVERY_REQUIRED,
+    )
+
+
 def require_selection_transition(
     expected: OpenSelectionOperation,
     replacement: OpenSelectionOperation,
@@ -207,6 +258,28 @@ def selection_result_matches_finalized(
     )
 
 
+def _selection_baseline_proven(
+    operation: OpenSelectionOperation,
+    baseline: FinalizedSelection | None,
+    observation: SelectionAuthorityObservation,
+) -> bool:
+    """Return whether native evidence exactly proves the old authority."""
+    if baseline is None:
+        return (
+            operation.baseline_account_id is None
+            and operation.baseline_epoch == SelectionEpoch(0)
+            and observation.provider_id is operation.provider_id
+            and observation.account_id is None
+        )
+    return (
+        baseline.account_id == operation.baseline_account_id
+        and baseline.epoch == operation.baseline_epoch
+        and observation.provider_id is operation.provider_id
+        and observation.account_id == baseline.account_id
+        and observation.generation == baseline.generation
+    )
+
+
 def _selection_prepared_generation_transition(
     expected: OpenSelectionOperation,
     replacement: OpenSelectionOperation,
@@ -230,7 +303,11 @@ def _selection_target_generation_transition(
         return replacement.target_generation is None or (
             expected.phase
             in {SelectionPhase.COMMITTING, SelectionPhase.RECOVERING}
-            and replacement.phase is SelectionPhase.AWAITING_READY
+            and replacement.phase
+            in {
+                SelectionPhase.COMMITTING,
+                SelectionPhase.AWAITING_READY,
+            }
             and replacement.target_generation is not None
         )
     return replacement.target_generation == expected.target_generation

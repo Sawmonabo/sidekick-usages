@@ -163,6 +163,7 @@ class ClaudeActivationScenario:
     selected: SelectedStateStore
     codex_state: FinalizedSelection
     journals: ActivationJournalStore
+    access: ClaudeSelectedAccessLeaseService
     executor: ClaudeSelectionWorkerExecutor
     operation: DueOperation
     environment: Mapping[str, str]
@@ -209,6 +210,7 @@ class _ClaudeRuntimeFixture:
     selected: SelectedStateStore
     codex_state: FinalizedSelection
     journals: ActivationJournalStore
+    access: ClaudeSelectedAccessLeaseService
     executor: ClaudeSelectionWorkerExecutor
     environment: Mapping[str, str]
 
@@ -399,6 +401,7 @@ def claude_activation_scenario(
         selected=runtime.selected,
         codex_state=runtime.codex_state,
         journals=runtime.journals,
+        access=runtime.access,
         executor=runtime.executor,
         operation=operation,
         environment=runtime.environment,
@@ -751,6 +754,7 @@ def _runtime_fixture(
         selected,
         codex_state,
         journals,
+        access,
         executor,
         source_environment,
     )

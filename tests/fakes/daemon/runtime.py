@@ -99,6 +99,9 @@ class GlobalSelectionRecovery:
     def close(self) -> None:
         self.close_calls += 1
 
+    def prove_commit(self, completion: SchedulerCompletion) -> None:
+        del completion
+
     def complete_readback(self, completion: SchedulerCompletion) -> None:
         del completion
         self.orphan_calls += 1

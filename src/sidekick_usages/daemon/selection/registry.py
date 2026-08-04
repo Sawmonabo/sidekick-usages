@@ -114,11 +114,11 @@ class ParticipantRegistry:
 
     def requires_attachment(self, provider_id: ProviderId) -> bool:
         """Return whether an injected provider attachment is mandatory."""
-        return self._attachment_registry(provider_id) is not None
+        return self.attachment_registry(provider_id) is not None
 
     def requires_finalized_attachment(self, provider_id: ProviderId) -> bool:
         """Return whether baseline turns require a provider target bind."""
-        attachments = self._attachment_registry(provider_id)
+        attachments = self.attachment_registry(provider_id)
         return attachments is not None and (
             attachments.requires_finalized_binding(provider_id)
         )
@@ -128,7 +128,7 @@ class ParticipantRegistry:
     ) -> bool:
         """Return whether required integrated membership exists now."""
         with self._condition:
-            attachments = self._attachment_registry(provider_id)
+            attachments = self.attachment_registry(provider_id)
             required = attachments is not None and (
                 attachments.requires_participant(provider_id, account_id)
             )
@@ -143,7 +143,7 @@ class ParticipantRegistry:
         endpoint: socket.socket,
     ) -> ParticipantAttachmentTransaction:
         """Stage one injected attachment for the membership transaction."""
-        attachments = self._attachment_registry(manifest.provider_id)
+        attachments = self.attachment_registry(manifest.provider_id)
         if attachments is None:
             endpoint.close()
             raise ParticipantRequestError(SelectionCode.AUTHORITY_PROOF_FAILED)
@@ -385,6 +385,8 @@ class ParticipantRegistry:
         pending_epoch: SelectionEpoch,
         target_account_id: SidekickAccountId,
         required_participant_ids: tuple[ParticipantId, ...],
+        *,
+        membership_sealed: bool = False,
     ) -> ParticipantSnapshot:
         """Restore one crash-recovery gate from opaque durable IDs."""
         with self._condition:
@@ -401,12 +403,12 @@ class ParticipantRegistry:
             if current is not None:
                 require_gate_binding(current, operation_id, pending_epoch)
                 current.required = required
+                current.membership_sealed = membership_sealed
                 return self._snapshot(provider_id)
-            self._gates[provider_id] = new_gate(
-                operation_id, pending_epoch, required
-            )
+            gate = new_gate(operation_id, pending_epoch, required)
+            gate.membership_sealed = membership_sealed
+            self._gates[provider_id] = gate
             return self._snapshot(provider_id)
-
     def prepare_target(
         self, operation_id: OperationId, proof: AuthorityReadyProof
     ) -> bool:
@@ -528,7 +530,7 @@ class ParticipantRegistry:
                 raise ParticipantRequestError(
                     SelectionCode.AUTHORITY_PROOF_FAILED
                 )
-            attachments = self._attachment_registry(
+            attachments = self.attachment_registry(
                 participant.manifest.provider_id
             )
             if attachments is not None:
@@ -816,7 +818,6 @@ class ParticipantRegistry:
             gate.membership_sealed = False
             gate.sealed = False
             self._condition.notify_all()
-
     def open_admission(
         self,
         provider_id: ProviderId,
@@ -885,13 +886,13 @@ class ParticipantRegistry:
         current: ParticipantRecord | None,
     ) -> None:
         while gate := self._gates.get(manifest.provider_id):
-            if gate.sealed:
-                self._condition.wait()
-                continue
             reconnecting_required = (
                 current is not None
                 and manifest.participant_id in gate.required
             )
+            if gate.sealed and not reconnecting_required:
+                self._condition.wait()
+                continue
             if not gate.membership_sealed or reconnecting_required:
                 return
             self._condition.wait()
@@ -914,7 +915,7 @@ class ParticipantRegistry:
             participant = self._participants.get(participant_id)
             if participant is None:
                 continue
-            attachments = self._attachment_registry(
+            attachments = self.attachment_registry(
                 participant.manifest.provider_id
             )
             protected = attachments is not None
@@ -934,7 +935,7 @@ class ParticipantRegistry:
                 installed.append(participant_id)
         return tuple(installed)
 
-    def _attachment_registry(
+    def attachment_registry(
         self,
         provider_id: ProviderId,
     ) -> ParticipantAttachmentRegistry | None:
@@ -942,7 +943,6 @@ class ParticipantRegistry:
             if attachments.requires_endpoint(provider_id):
                 return attachments
         return None
-
     def _open_participants(
         self,
         participant_ids: Iterable[ParticipantId],

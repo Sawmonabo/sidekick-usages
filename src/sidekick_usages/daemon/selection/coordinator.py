@@ -570,6 +570,10 @@ class SelectionCoordinator:
         except Exception:
             yield from self._terminal_events(self._recovering(operation))
             return
+        operation = self._latest(operation)
+        if operation.target_generation not in {None, proof.generation}:
+            yield from self._terminal_events(self._recovering(operation))
+            return
         self._participants.prepare_target(operation.operation_id, proof)
         snapshot = self._participants.snapshot(provider_id)
         operation = self._persist(
@@ -582,6 +586,7 @@ class SelectionCoordinator:
                 updated_at=self._clock.now(),
             ),
         )
+        self._participants.unseal(provider_id)
         yield self._active_status(operation)
         yield from self._terminal_events(
             self._finalize_ready(operation, prepared, baseline)

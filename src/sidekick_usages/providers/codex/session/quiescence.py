@@ -17,7 +17,13 @@ from sidekick_usages.core.accounts.types import (
 from sidekick_usages.core.selection.models import (
     AuthorityReadyProof,
     FinalizedSelection,
+    OpenSelectionOperation,
+    SelectionAuthorityObservation,
     SelectionEpoch,
+    SelectionRecoveryDecision,
+)
+from sidekick_usages.core.selection.policy import (
+    selection_recovery_decision,
 )
 from sidekick_usages.core.selection.types import ParticipantId
 from sidekick_usages.core.types import ProviderId
@@ -237,6 +243,23 @@ class CodexParticipantProofSet:
         """Return false because Codex authority is process-wide."""
         del provider_id, account_id
         return False
+
+    @staticmethod
+    def recovery_decision(
+        operation: OpenSelectionOperation,
+        baseline: FinalizedSelection | None,
+        observation: SelectionAuthorityObservation,
+        *,
+        target_binding_proven: bool,
+    ) -> SelectionRecoveryDecision:
+        """Relate Codex runtime and exact participant authority proof."""
+        return selection_recovery_decision(
+            operation,
+            baseline,
+            observation,
+            target_binding_proven=target_binding_proven,
+            baseline_observation_conclusive=True,
+        )
 
     def stage(
         self,

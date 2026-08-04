@@ -882,7 +882,7 @@ def test_structured_session_updates_oauth_only_at_an_idle_turn_boundary(
     assert (
         session.process_id,
         session.conversation_id,
-        not protected_selection_enabled(ProviderId.CLAUDE)
+        protected_selection_enabled(ProviderId.CLAUDE)
         and protected_selection_enabled(ProviderId.CODEX),
     ) == (engine.process_id, conversation_id, True)
 

@@ -56,6 +56,17 @@ _PARTICIPANT_PROJECTION_KEYS = _PROJECTION_KEYS | {
 _INSTALL_RECEIPT_KEYS = _PARTICIPANT_PROJECTION_KEYS | {
     "structured_request_id"
 }
+_BINDING_QUERY_KEYS = frozenset(
+    {"kind", "nonce", "participant_id", "connection_generation"}
+)
+_BINDING_REPORT_KEYS = _BINDING_QUERY_KEYS | {
+    "operation_id",
+    "account_id",
+    "generation",
+    "epoch",
+}
+_BINDING_QUERY_KIND = "binding_query"
+_BINDING_REPORT_KIND = "binding_report"
 _WORKER_PROJECTION_KEYS = _PROJECTION_KEYS | {"child_operation_id"}
 _EXCHANGE_KEYS = frozenset(
     {
@@ -288,6 +299,114 @@ def require_protected_install_receipt(
             binding=binding,
             request_id=request_id,
         )
+    finally:
+        clear_secret_buffer(payload)
+
+
+def encode_protected_binding_query(
+    nonce: RequestId,
+    participant_id: ParticipantId,
+    connection_generation: int,
+) -> bytes:
+    """Encode one nonce-correlated current-binding query."""
+    return encode_compact_json(
+        {
+            "kind": _BINDING_QUERY_KIND,
+            "nonce": str(nonce),
+            "participant_id": str(participant_id),
+            "connection_generation": connection_generation,
+        }
+    )
+
+
+def require_protected_binding_query(
+    payload: bytearray,
+    participant_id: ParticipantId,
+    connection_generation: int,
+) -> RequestId:
+    """Require one exact current-binding query and return its nonce."""
+    try:
+        root = _decode_protected_metadata(payload)
+        if set(root) != _BINDING_QUERY_KEYS or root != {
+            "kind": _BINDING_QUERY_KIND,
+            "nonce": root.get("nonce"),
+            "participant_id": str(participant_id),
+            "connection_generation": connection_generation,
+        }:
+            _malformed_protected()
+        try:
+            return RequestId(_protected_string(root, "nonce"))
+        except ValueError:
+            _malformed_protected()
+    finally:
+        clear_secret_buffer(payload)
+
+
+def encode_protected_binding_report(
+    binding: ClaudeStructuredBinding | None,
+    nonce: RequestId,
+    participant_id: ParticipantId,
+    connection_generation: int,
+) -> bytes:
+    """Encode one secret-free exact current-binding report."""
+    return encode_compact_json(
+        {
+            "kind": _BINDING_REPORT_KIND,
+            "nonce": str(nonce),
+            "participant_id": str(participant_id),
+            "connection_generation": connection_generation,
+            "operation_id": (
+                None if binding is None else str(binding.operation_id)
+            ),
+            "account_id": None if binding is None else str(binding.account_id),
+            "generation": None if binding is None else str(binding.generation),
+            "epoch": None if binding is None else binding.epoch.value,
+        }
+    )
+
+
+def require_protected_binding_report(
+    payload: bytearray,
+    nonce: RequestId,
+    participant_id: ParticipantId,
+    connection_generation: int,
+) -> ClaudeStructuredBinding | None:
+    """Require one exact correlated current-binding report."""
+    try:
+        root = _decode_protected_metadata(payload)
+        expected = {
+            "kind": _BINDING_REPORT_KIND,
+            "nonce": str(nonce),
+            "participant_id": str(participant_id),
+            "connection_generation": connection_generation,
+        }
+        if set(root) != _BINDING_REPORT_KEYS or any(
+            root.get(name) != value for name, value in expected.items()
+        ):
+            _malformed_protected()
+        values = tuple(
+            root.get(name)
+            for name in ("operation_id", "account_id", "generation", "epoch")
+        )
+        if all(value is None for value in values):
+            return None
+        if any(value is None for value in values):
+            _malformed_protected()
+        try:
+            return ClaudeStructuredBinding(
+                operation_id=OperationId(
+                    _protected_string(root, "operation_id")
+                ),
+                account_id=SidekickAccountId(
+                    _protected_string(root, "account_id")
+                ),
+                generation=AuthorityGeneration(
+                    _protected_string(root, "generation")
+                ),
+                epoch=SelectionEpoch(_protected_integer(root, "epoch")),
+            )
+        except ValueError:
+            _malformed_protected()
     finally:
         clear_secret_buffer(payload)
 

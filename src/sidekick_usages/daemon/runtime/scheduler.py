@@ -96,6 +96,14 @@ class DurableScheduler:
                         operation.operation_id,
                         expected_state=operation.state,
                     )
+                    continue
+                result = self._safe_result(operation)
+                if result is None:
+                    continue
+                completion = self._selection_completion(operation, result)
+                self._events.completed(completion)
+                self._discard_selection_result(operation)
+                recovered.append(completion)
                 continue
             if operation.state is not OperationState.RUNNING:
                 continue
@@ -304,6 +312,8 @@ class DurableScheduler:
                     finished_at=now,
                     failure_code="worker_result_missing",
                 )
+        if operation.kind.is_selection_worker:
+            return self._selection_completion(operation, result)
         return self._apply_result(operation, result, now)
 
     def _finalize_exit(
@@ -322,11 +332,13 @@ class DurableScheduler:
                 "scheduler_result_failed",
             )
             return None
+        self._events.completed(completion)
+        if worker_exit.operation.kind.is_selection_worker:
+            self._discard_selection_result(worker_exit.operation)
         self._workers.complete_exchange(
             worker_exit.operation.operation_id,
             completion.outcome,
         )
-        self._events.completed(completion)
         return completion
 
     def _safe_result(
@@ -350,17 +362,7 @@ class DurableScheduler:
         result: WorkerResult,
         now: datetime,
     ) -> SchedulerCompletion:
-        if operation.kind.is_selection_worker:
-            try:
-                self._queue.remove(
-                    operation.operation_id,
-                    expected_state=OperationState.RUNNING,
-                )
-            except ManagedStateConflictError:
-                if self._queue.find(operation.operation_id) is not None:
-                    raise
-            state: OperationState | None = None
-        elif operation.kind is OperationKind.CODEX_CALLBACK:
+        if operation.kind is OperationKind.CODEX_CALLBACK:
             self._queue.remove(
                 operation.operation_id,
                 expected_state=OperationState.RUNNING,
@@ -436,6 +438,35 @@ class DurableScheduler:
                 else None
             ),
         )
+
+    def _selection_completion(
+        self,
+        operation: DueOperation,
+        result: WorkerResult,
+    ) -> SchedulerCompletion:
+        """Build one completion while retaining its recovery evidence."""
+        return SchedulerCompletion(
+            provider_id=operation.provider_id,
+            operation_id=operation.required_selection_operation_id,
+            operation_kind=operation.kind,
+            state=None,
+            outcome=result.outcome,
+            failure_code=result.failure_code,
+            selection=result.selection,
+            worker_operation_id=operation.operation_id,
+        )
+
+    def _discard_selection_result(self, operation: DueOperation) -> None:
+        """Remove worker evidence only after its journal callback returns."""
+        try:
+            self._queue.remove(
+                operation.operation_id,
+                expected_state=OperationState.RUNNING,
+            )
+        except ManagedStateConflictError:
+            if self._queue.find(operation.operation_id) is not None:
+                raise
+        self._results.delete(operation.operation_id)
 
     def _discard_stale_activations(
         self,

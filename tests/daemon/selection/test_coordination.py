@@ -129,6 +129,8 @@ def _completion(
             operation_id=operation_id, provider_id=PROVIDER_ID, kind=kind,
             pending_epoch=epoch, observed_account_id=account_id,
             observed_generation=generation,
+            authority_requires_participant=True
+            if kind is OperationKind.SELECTION_READBACK else None,
         ),
         worker_operation_id=worker_operation_id,
     )
@@ -587,8 +589,12 @@ def _assert_journey_result(
         )
         current_notice = next(degraded)
         assert (current_notice.kind, current_notice.code) == (
-            ParticipantNoticeKind.STATUS,
-            SelectionCode.SELECTION_RECOVERY_REQUIRED,
+            ParticipantNoticeKind.PREPARE
+            if active.target_generation is None
+            else ParticipantNoticeKind.STATUS,
+            None if active.target_generation is None else (
+                SelectionCode.SELECTION_RECOVERY_REQUIRED
+            ),
         )
         degraded.close()
     expected_epoch = SelectionEpoch(8 if opens_target else 7)
@@ -643,8 +649,7 @@ def test_setup_requires_a_participant_before_commit(tmp_path: Path) -> None:
         REPLAY_OPERATION_ID, PROVIDER_ID, TARGET_ACCOUNT_ID
     )
     assert result.outcome is SelectionOutcome.READY
-    selected = native.selected.load(PROVIDER_ID)
-    assert selected is not None
+    assert (selected := native.selected.load(PROVIDER_ID)) is not None
     assert selected.epoch == SelectionEpoch(8)
 
 
@@ -663,13 +668,16 @@ def _arm_postcommit_loss(
         assert active is not None
         assert active.phase is SelectionPhase.RECOVERING
         baseline = _baseline_selection()
-        paths = make_application_paths(tmp_path)
-        queue = OperationQueueStore(paths.durable_operations)
-        workers = SelectionWorkerGateway(queue, FixedClock(), lambda: None)
-        registry = journey.registry
-        recovery = SelectionRecovery(
-            journey.selected, operations, registry, workers, FixedClock()
+        queue = OperationQueueStore(
+            make_application_paths(tmp_path).durable_operations
         )
+        workers = SelectionWorkerGateway(queue, FixedClock(), lambda: None)
+        channels = ClaudeParticipantChannelRegistry(lambda _: True)
+        restarted = ParticipantRegistry(journey.selected, attachments=channels)
+        recovery = SelectionRecovery(
+            journey.selected, operations, restarted, workers, FixedClock()
+        )
+        assert recovery.restore(PROVIDER_ID)
         recovery.complete_readback(
             _completion(
                 OPERATION_ID, OperationKind.SELECTION_READBACK,
@@ -679,9 +687,9 @@ def _arm_postcommit_loss(
         active = operations.load(PROVIDER_ID).active
         assert active is not None
         assert active.phase is SelectionPhase.RECOVERING
-        assert active.target_generation == TARGET_GENERATION
+        assert active.target_generation is None
         assert journey.selected.load(PROVIDER_ID) == baseline
-        registry.disconnect(PARTICIPANT_C, 1)
+        journey.registry.disconnect(PARTICIPANT_C, 1)
     if loss_state == "dead_after_commit":
         operations.block_complete_once = True
         operations.crash_after_complete_once = True
@@ -760,11 +768,7 @@ def test_three_participants_switch_without_interrupting_turns(
     results: list[SelectionResult] = []
     selector = Thread(
         target=lambda: results.append(
-            coordinator.select(
-                OPERATION_ID,
-                PROVIDER_ID,
-                TARGET_ACCOUNT_ID,
-            )
+            coordinator.select(OPERATION_ID, PROVIDER_ID, TARGET_ACCOUNT_ID)
         ),
         daemon=True,
     )
@@ -775,9 +779,7 @@ def test_three_participants_switch_without_interrupting_turns(
         replay = Thread(
             target=lambda: results.append(
                 coordinator.select(
-                    REPLAY_OPERATION_ID,
-                    PROVIDER_ID,
-                    TARGET_ACCOUNT_ID,
+                    REPLAY_OPERATION_ID, PROVIDER_ID, TARGET_ACCOUNT_ID
                 )
             ),
             daemon=True,
@@ -793,7 +795,6 @@ def test_three_participants_switch_without_interrupting_turns(
         operations.preparing.wait(1),
         adapter.committed.is_set(),
     ) == (True, False)
-
     queued = registry.begin_turn(TurnBeginRequest(PARTICIPANT_B, 1, TURN_B))
     late = _register_late(journey)
     assert queued.state is TurnAdmissionState.QUEUED
@@ -839,7 +840,6 @@ def test_three_participants_switch_without_interrupting_turns(
         replay.join(timeout=2)
         assert not replay.is_alive()
         assert results == [results[0], results[0]]
-
     assert not selector.is_alive()
     _assert_journey_result(
         journey,

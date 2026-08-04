@@ -295,8 +295,8 @@ class ClaudeSelectionWorkerExecutor:
                     generation=generation,
                 )
             else:
-                observation = self._selection_observation(
-                    self.readback_selection(active, authority)
+                observation = self.recovery_readback_selection(
+                    active, authority
                 )
         except ClaudeActivationError as error:
             return claude_selection_failure(
@@ -455,16 +455,20 @@ class ClaudeSelectionWorkerExecutor:
                 target,
                 authority,
             ) as access:
-                self._project(
-                    ClaudeStructuredBinding(
-                        operation_id=prepared.operation_id,
-                        account_id=prepared.target_account_id,
-                        generation=prepared.target_generation,
-                        epoch=prepared.pending_epoch,
-                    ),
-                    access,
+                committed_generation = access.prepared.generation
+                binding = ClaudeStructuredBinding(
+                    operation_id=prepared.operation_id,
+                    account_id=prepared.target_account_id,
+                    generation=committed_generation,
+                    epoch=prepared.pending_epoch,
                 )
-            return self._proof(prepared, prepared.target_generation)
+                if self._projection is not None:
+                    self._project(binding, access)
+                elif target.mode is ClaudeAuthorityMode.SETUP:
+                    raise ClaudeSelectedAccessError(
+                        "The protected Claude projection is unavailable."
+                    )
+            return self._proof(prepared, committed_generation)
         selected = self._activation.activate(
             prepared.operation_id,
             prepared.target_account_id,
@@ -497,8 +501,36 @@ class ClaudeSelectionWorkerExecutor:
             )
         )
         return self._native_reconciliation.observe_selection(
-            account_ids,
-            authority,
+            account_ids, authority,
+        )
+
+    def recovery_readback_selection(
+        self,
+        operation: OpenSelectionOperation,
+        authority: ProviderMutationAuthority,
+    ) -> SelectionAuthorityObservation:
+        """Reclassify the target before returning native recovery truth."""
+        self._require_readback_operation(operation)
+        expected_generation = operation.prepared_generation
+        access = self._access
+        if access is None or expected_generation is None:
+            raise ClaudeSelectedAccessError(
+                "The selected Claude recovery target is unavailable."
+            )
+        target = access.prevalidate(operation.target_account_id, authority)
+        if target.generation != expected_generation:
+            raise ClaudeSelectedAccessError(
+                "The selected Claude recovery target changed."
+            )
+        selected = self.readback_selection(operation, authority)
+        observed = self._selection_observation(selected)
+        return SelectionAuthorityObservation(
+            provider_id=observed.provider_id,
+            account_id=observed.account_id,
+            generation=observed.generation,
+            authority_requires_participant=(
+                target.mode is ClaudeAuthorityMode.SETUP
+            ),
         )
 
     def bind_selection(
@@ -529,11 +561,11 @@ class ClaudeSelectionWorkerExecutor:
                 "The protected Claude bind is unavailable."
             )
         target = access.prevalidate(binding.account_id, authority)
-        if target.generation != binding.generation:
-            raise ClaudeSelectedAccessError(
-                "The protected Claude bind generation changed."
-            )
-        with access.open_proven(target, authority) as lease:
+        with access.open_proven(
+            target,
+            binding.generation,
+            authority,
+        ) as lease:
             self._project(binding, lease)
 
     def _project(

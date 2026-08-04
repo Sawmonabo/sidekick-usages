@@ -47,6 +47,9 @@ _RECOVERY_READBACK_PHASES = frozenset(
 class SelectionWorkerRecovery(Protocol):
     """Consume orphan readback completions through durable recovery."""
 
+    def prove_commit(self, completion: SchedulerCompletion) -> None:
+        """Persist one safe worker proof before protected fan-out."""
+
     def complete_readback(self, completion: SchedulerCompletion) -> None:
         """Apply one safe completed readback to the active journal."""
 
@@ -671,6 +674,7 @@ class SelectionSchedulerSink:
             self._downstream.completed(completion)
             return
         try:
+            self._recovery.prove_commit(completion)
             self._gateway.complete_exchange(completion)
         except SelectionRequestError:
             failed = _failed_completion(completion)
