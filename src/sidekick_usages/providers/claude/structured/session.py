@@ -114,6 +114,10 @@ class ClaudeStructuredSession:
         if self._pending != binding:
             self._authority_mismatch()
 
+    def discard_uninstalled_target(self) -> None:
+        """Discard target metadata when no provider install was proven."""
+        self._pending = None
+
     def begin_turn(
         self,
         turn_id: TurnId,

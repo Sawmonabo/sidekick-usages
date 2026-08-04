@@ -75,10 +75,13 @@ class ClaudeSessionEngineFake(ClaudeStructuredEngineFake):
         responses: tuple[StructuredResponseCase, ...],
         interactive_events: tuple[bytes, ...],
         journey_events: list[str],
+        *,
+        fail_control_once: bool = False,
     ) -> None:
         super().__init__(responses, SESSION_OAUTH)
         self._interactive_events = list(interactive_events)
         self._journey_events = journey_events
+        self._fail_control_once = fail_control_once
         self.interactive_frames: list[JsonObject] = []
 
     def exchange(
@@ -144,6 +147,7 @@ class ClaudeSessionEngineFake(ClaudeStructuredEngineFake):
             label = labels.get(request_id)
             if label is None:
                 raise AssertionError("Unexpected Claude control response.")
+            self._fail_control_if_requested()
             if request_id == "question-1":
                 payload = response.get("response")
                 if not isinstance(payload, dict):
@@ -157,6 +161,13 @@ class ClaudeSessionEngineFake(ClaudeStructuredEngineFake):
             if isinstance(payload, dict) and "updatedPermissions" in payload:
                 raise AssertionError("Permission suggestions were implicit.")
             self._journey_events.append(label)
+
+    def _fail_control_if_requested(self) -> None:
+        if not self._fail_control_once:
+            return
+        self._fail_control_once = False
+        self._journey_events.append("control_response_failed")
+        raise ClaudeStructuredError(ClaudeStructuredFailure.PROTOCOL_TIMEOUT)
 
     def receive_event(self, timeout_seconds: float) -> bytes:
         """Return available events or one typed polling boundary."""
@@ -192,6 +203,7 @@ class ClaudeSessionControlFake:
         self._receipt: Thread | None = None
         self._prepare_applied = Event()
         self._status_applied = Event()
+        self._selection_started = False
         self._target_open = False
         self._initial = _binding(_OPERATION_A, _ACCOUNT_A, SESSION_OAUTH[0], 1)
         self._target = _binding(_OPERATION_B, _ACCOUNT_B, SESSION_OAUTH[1], 2)
@@ -238,36 +250,36 @@ class ClaudeSessionControlFake:
         if not self._status_applied.wait(timeout=2):
             raise AssertionError("Claude refusal was not applied.")
 
-    def start_selection(self) -> None:
+    def start_selection(self, *, expect_receipt: bool = True) -> None:
         """Project the target only after PREPARE."""
+        self._selection_started = True
         endpoint = self._require_endpoint()
         _receive(endpoint)
         self._notices.put(_notice(ParticipantNoticeKind.PREPARE, 2))
         if not self._prepare_applied.wait(timeout=2):
             raise AssertionError("Claude preparation was not applied.")
         _send(endpoint, self._target, SESSION_OAUTH[1], _NONCE_B)
-        self._receipt = Thread(target=self._finish_install, daemon=True)
-        self._receipt.start()
+        if expect_receipt:
+            self._receipt = Thread(target=self._finish_install, daemon=True)
+            self._receipt.start()
 
     def begin(self, turn_id: TurnId) -> TurnAdmission:
         """Queue until target installation and OPEN are complete."""
         if turn_id != SESSION_TURN:
             raise AssertionError("Unexpected Claude turn.")
+        binding = self._target if self._selection_started else self._initial
+        admitted = not self._selection_started or self._target_open
         return TurnAdmission(
             participant_id=SESSION_PARTICIPANT,
             turn_id=turn_id,
             state=(
                 TurnAdmissionState.ADMITTED
-                if self._target_open
+                if admitted
                 else TurnAdmissionState.QUEUED
             ),
-            epoch=self._target.epoch if self._target_open else None,
-            account_id=(
-                self._target.account_id if self._target_open else None
-            ),
-            generation=(
-                self._target.generation if self._target_open else None
-            ),
+            epoch=binding.epoch if admitted else None,
+            account_id=binding.account_id if admitted else None,
+            generation=binding.generation if admitted else None,
         )
 
     def ready(self, proof: ParticipantReadyProof) -> None:

@@ -240,6 +240,10 @@ class ClaudeStructuredEngineFake:
         del timeout_seconds
         return 0
 
+    def dispose_unenrolled(self) -> None:
+        """Record disposal before participant enrollment."""
+        self.input_closed = True
+
     def __repr__(self) -> str:
         """Hide every scripted request detail."""
         return "<ClaudeStructuredEngineFake redacted>"

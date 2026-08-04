@@ -2,6 +2,8 @@
 
 import socket
 
+import pytest
+
 from sidekick_usages.cli.session.claude.host import ClaudeCliSession
 from sidekick_usages.cli.session.claude.runtime import (
     ClaudeSessionGateError,
@@ -15,6 +17,7 @@ from sidekick_usages.core.selection.types import SelectionCode
 from sidekick_usages.providers.claude.structured.models import (
     ClaudeStructuredDialogRequest,
     ClaudeStructuredElicitationRequest,
+    ClaudeStructuredError,
     ClaudeStructuredPermissionDecision,
     ClaudeStructuredPermissionRequest,
     ClaudeStructuredQuestionAnswer,
@@ -88,9 +91,12 @@ class _JourneyTerminal(ClaudeTerminal):
                 self._events.append("permission_pending")
                 self._cancelled = control
                 return
-            session.respond_permission(
-                control, self.request_permission(control)
-            )
+            decision = self.request_permission(control)
+            try:
+                session.respond_permission(control, decision)
+            except ClaudeStructuredError:
+                self._events.append("control_response_retry")
+                session.respond_permission(control, decision)
         elif isinstance(control, ClaudeStructuredQuestionRequest):
             session.respond_question(control, self.request_question(control))
         elif isinstance(control, ClaudeStructuredElicitationRequest):
@@ -151,6 +157,17 @@ class _JourneyTerminal(ClaudeTerminal):
         self._events.append(f"status:{code.value}")
 
 
+class _FailingTerminal(ClaudeTerminal):
+    def __init__(self, events: list[str]) -> None:
+        self._events = events
+
+    def run(self, session: ClaudeTerminalSession) -> None:
+        """Fail one terminal owner without touching its live session."""
+        session.stop_terminal_events()
+        self._events.append("terminal_failure")
+        raise RuntimeError("synthetic terminal failure")
+
+
 def test_claude_session_keeps_one_engine_across_a_queued_switch() -> None:
     """Keep PID and conversation through refusal, switch, and interrupt."""
     events: list[str] = []
@@ -158,6 +175,7 @@ def test_claude_session_keeps_one_engine_across_a_queued_switch() -> None:
         (StructuredResponseCase.SUCCESS,) * 4,
         _stream_events(),
         events,
+        fail_control_once=True,
     )
     control = ClaudeSessionControlFake(events)
     host, supervisor = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -171,8 +189,9 @@ def test_claude_session_keeps_one_engine_across_a_queued_switch() -> None:
         request_id_factory=iter(SESSION_REQUESTS).__next__,
     )
     terminal = _JourneyTerminal(control, events)
+    terminals = iter((_FailingTerminal(events), terminal))
 
-    status = ClaudeCliSession(runtime, terminal).run(())
+    status = ClaudeCliSession(runtime, terminals.__next__).run(())
 
     assert (
         status,
@@ -194,16 +213,23 @@ def test_claude_session_keeps_one_engine_across_a_queued_switch() -> None:
     assert events == [
         f"install:{SESSION_REQUESTS[0]}",
         "initialize",
+        "terminal_failure",
         f"status:{SelectionCode.SELECTION_RECOVERY_REQUIRED.value}",
         f"install:{SESSION_REQUESTS[2]}",
         "receipt",
         "ready",
         "adoption",
         "prompt",
+        (
+            "presentation:Sidekick recovered the terminal; Claude remained "
+            "active."
+        ),
         "presentation:A Claude hook is running.",
         "permission_pending",
         "cancel:cancel-1",
         "permission",
+        "control_response_failed",
+        "control_response_retry",
         "permission_response",
         "question",
         "question_response",
@@ -219,6 +245,49 @@ def test_claude_session_keeps_one_engine_across_a_queued_switch() -> None:
         "close_input",
         "wait",
     ]
+
+
+def test_claude_session_gates_an_active_postcommit_projection() -> None:
+    """Keep the old engine alive when projection races active work."""
+    events: list[str] = []
+    engine = ClaudeSessionEngineFake(
+        (StructuredResponseCase.SUCCESS,) * 2,
+        (),
+        events,
+    )
+    control = ClaudeSessionControlFake(events)
+    host, supervisor = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+    runtime = ClaudeSessionRuntime(
+        engine,
+        control,
+        host,
+        supervisor,
+        participant_id=SESSION_PARTICIPANT,
+        turn_id_factory=lambda: SESSION_TURN,
+        request_id_factory=iter(SESSION_REQUESTS).__next__,
+    )
+
+    runtime.open()
+    turn_id = runtime.start_turn("keep this turn alive")
+    control.start_selection(expect_receipt=False)
+    degraded = runtime.receive_event()
+
+    with pytest.raises(ClaudeSessionGateError) as failure:
+        runtime.start_turn("must remain gated")
+    assert (
+        degraded.status,
+        failure.value.code,
+        engine.user_turn_count,
+        engine.input_closed,
+    ) == (
+        "Sidekick: selection_recovery_required",
+        SelectionCode.SELECTION_RECOVERY_REQUIRED,
+        1,
+        False,
+    )
+    runtime.end_turn(turn_id)
+    assert runtime.finish_engine() == 0
+    runtime.close()
 
 
 def _stream_events() -> tuple[bytes, ...]:

@@ -1,6 +1,11 @@
 """Public ownership of one qualified coordinated Claude session."""
 
-from sidekick_usages.cli.session.claude.runtime import ClaudeSessionRuntime
+from collections.abc import Callable
+
+from sidekick_usages.cli.session.claude.runtime import (
+    ClaudeProviderTerminatedError,
+    ClaudeSessionRuntime,
+)
 from sidekick_usages.cli.session.claude.terminal import ClaudeTerminal
 from sidekick_usages.core.selection.types import TurnId
 from sidekick_usages.providers.claude.structured.models import (
@@ -20,45 +25,33 @@ class ClaudeCliSession:
     def __init__(
         self,
         runtime: ClaudeSessionRuntime,
-        terminal: ClaudeTerminal,
+        terminal_factory: Callable[[], ClaudeTerminal],
     ) -> None:
         self._runtime = runtime
-        self._terminal = terminal
+        self._terminal_factory = terminal_factory
 
     def run(self, arguments: tuple[str, ...]) -> int:
         """Run one application and return the engine's natural status."""
         del arguments
-        failure: BaseException | None = None
-        status = 0
-        finished = False
+        opened = False
         try:
             self._runtime.open()
-            self._terminal.run(self)
-            status = self._runtime.finish_engine()
-            finished = True
-        except BaseException as error:
-            failure = error
-            if not finished:
+            opened = True
+            while True:
                 try:
-                    status = self._runtime.finish_engine()
-                    finished = True
-                except BaseException as finish_error:
-                    failure = BaseExceptionGroup(
-                        "Claude session and engine finish both failed.",
-                        [error, finish_error],
-                    )
-        try:
+                    self._terminal_factory().run(self)
+                    break
+                except ClaudeProviderTerminatedError:
+                    return self._runtime.finish_engine()
+                except BaseException:
+                    self._runtime.report_terminal_failure()
+            return self._runtime.finish_engine()
+        except BaseException:
+            if not opened:
+                self._runtime.dispose_unenrolled_engine()
+            raise
+        finally:
             self._runtime.close()
-        except BaseException as close_error:
-            if failure is None:
-                raise
-            failure = BaseExceptionGroup(
-                "Claude session and cleanup both failed.",
-                [failure, close_error],
-            )
-        if failure is not None:
-            raise failure
-        return status
 
     def start_turn(self, prompt: str) -> TurnId:
         """Queue, admit, and transmit one real provider turn."""

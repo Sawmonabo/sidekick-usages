@@ -126,6 +126,8 @@ class ClaudeTerminalApplication:
             | ClaudeStructuredQuestionRequest,
         ] = {}
         self._control_order: deque[str] = deque()
+        self._control_retry: _TerminalAction | None = None
+        self._control_response_in_flight = False
         self._question_answers: list[ClaudeStructuredQuestionAnswer] = []
         self._question_index = 0
         self._accounts: tuple[SavedAccount, ...] = ()
@@ -259,13 +261,15 @@ class ClaudeTerminalApplication:
         if not isinstance(control, ClaudeStructuredPermissionRequest):
             self._fail_local("Permission state is invalid.")
             return
+        if self._control_retry is not None:
+            self._queue_control_response(self._control_retry)
+            return
         decision = (
             ClaudeStructuredPermissionDecision.ALLOW
             if value.casefold() in {"y", "yes"}
             else ClaudeStructuredPermissionDecision.DENY
         )
-        self._clear_control()
-        self._control_actions.put(
+        self._queue_control_response(
             lambda request=control, answer=decision: (
                 self._require_session().respond_permission(request, answer)
             )
@@ -275,6 +279,9 @@ class ClaudeTerminalApplication:
         control = self._control
         if not isinstance(control, ClaudeStructuredQuestionRequest):
             self._fail_local("Question state is invalid.")
+            return
+        if self._control_retry is not None:
+            self._queue_control_response(self._control_retry)
             return
         question = control.questions[self._question_index]
         selected = self._selected_options(question, value)
@@ -293,8 +300,7 @@ class ClaudeTerminalApplication:
             self._show_question(control.questions[self._question_index])
             return
         answers = tuple(self._question_answers)
-        self._clear_control()
-        self._control_actions.put(
+        self._queue_control_response(
             lambda request=control, values=answers: (
                 self._require_session().respond_question(request, values)
             )
@@ -333,8 +339,7 @@ class ClaudeTerminalApplication:
     def _interrupt(self, _event: KeyPressEvent) -> None:
         control = self._control
         if isinstance(control, ClaudeStructuredQuestionRequest):
-            self._clear_control()
-            self._control_actions.put(
+            self._queue_control_response(
                 lambda request=control.permission: (
                     self._require_session().respond_permission(
                         request,
@@ -344,8 +349,7 @@ class ClaudeTerminalApplication:
             )
             return
         if isinstance(control, ClaudeStructuredPermissionRequest):
-            self._clear_control()
-            self._control_actions.put(
+            self._queue_control_response(
                 lambda request=control: (
                     self._require_session().respond_permission(
                         request,
@@ -439,9 +443,9 @@ class ClaudeTerminalApplication:
                 return
             try:
                 action()
-            except BaseException as error:
-                self._exit(error)
-                return
+            except BaseException:
+                self._append("Sidekick action failed; Claude remains active.")
+                self._set_status("Retry the action or continue the session.")
 
     def _consume_events(self) -> None:
         while not self._closing.is_set():
@@ -565,6 +569,8 @@ class ClaudeTerminalApplication:
             self._control = None
             self._question_answers.clear()
             self._question_index = 0
+            self._control_retry = None
+            self._control_response_in_flight = False
             self._mode = _TerminalMode.PROMPT
             self._status = "Claude is responding."
         if request_id is not None:
@@ -638,19 +644,43 @@ class ClaudeTerminalApplication:
 
     def _deny_control(self) -> None:
         control = self._control
-        self._clear_control()
         if isinstance(control, ClaudeStructuredQuestionRequest):
             request = control.permission
         elif isinstance(control, ClaudeStructuredPermissionRequest):
             request = control
         else:
             return
-        self._control_actions.put(
+        self._queue_control_response(
             lambda denied=request: self._require_session().respond_permission(
                 denied,
                 ClaudeStructuredPermissionDecision.DENY,
             )
         )
+
+    def _queue_control_response(self, action: _TerminalAction) -> None:
+        with self._lock:
+            if self._control_response_in_flight:
+                return
+            self._control_retry = action
+            self._control_response_in_flight = True
+            self._status = "Sending the correlated Claude response..."
+        self._control_actions.put(
+            lambda response=action: self._send_control_response(response)
+        )
+        self._application.invalidate()
+
+    def _send_control_response(self, action: _TerminalAction) -> None:
+        try:
+            action()
+        except BaseException:
+            with self._lock:
+                self._control_response_in_flight = False
+                self._status = (
+                    "Claude response was not confirmed. Press Enter to retry."
+                )
+            self._application.invalidate()
+            return
+        self._clear_control()
 
     def _enqueue_control(
         self,

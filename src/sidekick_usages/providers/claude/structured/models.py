@@ -261,6 +261,9 @@ class ClaudeStructuredEngine(Protocol):
     def wait(self, timeout_seconds: float) -> int:
         """Return the official child process's ordinary exit status."""
 
+    def dispose_unenrolled(self) -> None:
+        """Dispose one child whose ownership never reached a live session."""
+
 
 class ClaudeStructuredProtectedFrame(Protocol):
     """Single-use mutable OAuth projection received on a protected channel."""

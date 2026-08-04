@@ -70,7 +70,6 @@ from sidekick_usages.providers.codex.session.errors import CodexRelayError
 
 _SIDEKICK_COMMAND = "sidekick-usages"
 _PRIVATE_DIRECTORY_MODE = 0o700
-_CLAUDE_NATURAL_EXIT_SECONDS = 5.0
 
 
 class CodexSessionRunner(Protocol):
@@ -211,23 +210,22 @@ class _ClaudeSessionRunner:
         except BaseException as error:
             failures: list[BaseException] = [error]
             try:
-                engine.close_input()
-            except BaseException as close_error:
-                failures.append(close_error)
-            try:
-                engine.wait(_CLAUDE_NATURAL_EXIT_SECONDS)
-            except BaseException as wait_error:
-                failures.append(wait_error)
+                engine.dispose_unenrolled()
+            except BaseException as dispose_error:
+                failures.append(dispose_error)
             if len(failures) > 1:
                 raise BaseExceptionGroup(
-                    "Claude composition and natural cleanup failed.",
+                    "Claude composition and disposal both failed.",
                     failures,
                 ) from None
             raise
         commands = ClaudeSavedAccountCommands(
             compose_use_context(paths=self._paths)
         )
-        return ClaudeCliSession(runtime, ClaudeTerminalApplication(commands))
+        return ClaudeCliSession(
+            runtime,
+            lambda: ClaudeTerminalApplication(commands),
+        )
 
     def _native_profile(self) -> ClaudeNativeProfile:
         home = self._environment.get("HOME")

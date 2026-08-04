@@ -30,6 +30,7 @@ from sidekick_usages.providers.claude.models import (
 )
 from sidekick_usages.providers.claude.process import (
     MAX_CLAUDE_CONTROL_FRAME_BYTES,
+    dispose_piped_claude_command,
     launch_piped_claude_command,
 )
 from sidekick_usages.providers.claude.structured.codec import (
@@ -164,6 +165,8 @@ def qualify_claude_structured_capability(
         failed = True
         exit_status = -1
     if failed or exit_status != 0:
+        if exit_status == -1:
+            engine.dispose_unenrolled()
         _unsupported()
     return ClaudeStructuredCapability(
         executable=executable,
@@ -298,8 +301,12 @@ class ClaudeStructuredProcess:
             environment=environment,
             working_directory=working_directory,
         )
-        verify_claude_executable(executable)
-        return cls(process)
+        try:
+            verify_claude_executable(executable)
+            return cls(process)
+        except BaseException:
+            dispose_piped_claude_command(process)
+            raise
 
     def exchange(
         self,
@@ -389,6 +396,12 @@ class ClaudeStructuredProcess:
         self._stderr_reader.join(_PROBE_TIMEOUT_SECONDS)
         self._stderr.close()
         return status
+
+    def dispose_unenrolled(self) -> None:
+        """Dispose this child only before participant enrollment."""
+        dispose_piped_claude_command(self._process)
+        self._selector.close()
+        self._stderr_reader.join(_PROBE_TIMEOUT_SECONDS)
 
     def _send(self, request: bytearray, deadline: float) -> None:
         selector = selectors.DefaultSelector()
@@ -576,6 +589,10 @@ def _open_probe_engine(
         environment=environment,
         working_directory=working_directory,
     )
-    verify_executable(network_isolator)
-    verify_claude_executable(executable)
-    return ClaudeStructuredProcess(process)
+    try:
+        verify_executable(network_isolator)
+        verify_claude_executable(executable)
+        return ClaudeStructuredProcess(process)
+    except BaseException:
+        dispose_piped_claude_command(process)
+        raise

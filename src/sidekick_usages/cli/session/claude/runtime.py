@@ -104,6 +104,10 @@ class ClaudeTerminalEventsClosedError(RuntimeError):
     """Stop only the terminal-facing event consumer at ordinary exit."""
 
 
+class ClaudeProviderTerminatedError(RuntimeError):
+    """Report the official engine's natural termination to its host."""
+
+
 class ClaudeParticipantControl(Protocol):
     """Participant operations consumed by one Claude runtime."""
 
@@ -220,8 +224,12 @@ class ClaudeSessionRuntime:
         self._open_revision = 0
         self._gate_code: SelectionCode | None = None
         self._failure: BaseException | None = None
+        self._control_available = True
         self._opened = False
+        self._enrolled = False
         self._finished = False
+        self._provider_terminated = False
+        self._terminal_recovering = False
 
     @classmethod
     def create(
@@ -323,10 +331,17 @@ class ClaudeSessionRuntime:
                 self._fail(ClaudeStructuredFailure.PROTOCOL_EOF)
             self._apply_notice(first)
             self._start_threads(notices)
+            self._enrolled = True
         except BaseException:
             channel.close()
             self._channel = None
             raise
+
+    def dispose_unenrolled_engine(self) -> None:
+        """Dispose the child only before participant enrollment finishes."""
+        if self._enrolled:
+            raise RuntimeError("An enrolled Claude engine cannot be disposed.")
+        self._engine.dispose_unenrolled()
 
     def _bootstrap(
         self,
@@ -378,7 +393,12 @@ class ClaudeSessionRuntime:
                 generation=binding.generation,
                 epoch=binding.epoch,
             )
-            self._control.adopted(proof)
+            if self._control_is_available():
+                try:
+                    self._control.adopted(proof)
+                except BaseException:
+                    self._control_lost()
+                    self._raise_gate()
             with self._engine_lock:
                 self._engine.send_interactive(
                     frame,
@@ -409,14 +429,38 @@ class ClaudeSessionRuntime:
 
     def receive_event(self) -> ClaudeStructuredTerminalEvent:
         """Return the next continuously observed provider event."""
-        event = self._events.get()
-        if isinstance(event, BaseException):
-            raise event
-        return event
+        while True:
+            event = self._events.get()
+            with self._condition:
+                recovering = self._terminal_recovering
+                if not isinstance(event, ClaudeTerminalEventsClosedError):
+                    self._terminal_recovering = False
+            if (
+                isinstance(event, ClaudeTerminalEventsClosedError)
+                and recovering
+            ):
+                continue
+            if isinstance(event, BaseException):
+                raise event
+            return event
 
     def stop_terminal_events(self) -> None:
         """Release the terminal consumer without stopping provider reads."""
         self._events.put(ClaudeTerminalEventsClosedError())
+
+    def report_terminal_failure(self) -> None:
+        """Keep the engine live while a failed terminal owner is recreated."""
+        with self._condition:
+            self._terminal_recovering = True
+        self._events.put(
+            ClaudeStructuredTerminalEvent(
+                conversation_id=None,
+                text=(),
+                status=(
+                    "Sidekick recovered the terminal; Claude remained active."
+                ),
+            )
+        )
 
     def respond_permission(
         self,
@@ -499,7 +543,11 @@ class ClaudeSessionRuntime:
         """Close one naturally terminal turn in both local owners."""
         with self._session_lock:
             self._require_session().end_turn(turn_id)
-        self._control.end(turn_id)
+        if self._control_is_available():
+            try:
+                self._control.end(turn_id)
+            except BaseException:
+                self._control_lost()
 
     def finish_engine(self) -> int:
         """Close engine input and await only its ordinary exit."""
@@ -507,7 +555,8 @@ class ClaudeSessionRuntime:
             raise RuntimeError("Claude engine is already finished.")
         self._finished = True
         with self._engine_lock:
-            self._engine.close_input()
+            if not self._provider_terminated:
+                self._engine.close_input()
             return self._engine.wait(_ENGINE_EXIT_TIMEOUT_SECONDS)
 
     def close(self) -> None:
@@ -575,18 +624,23 @@ class ClaudeSessionRuntime:
         try:
             while not self._closing.is_set():
                 frame = channel.receive()
-                with self._engine_lock, self._session_lock:
-                    session = self._require_session()
-                    try:
+                try:
+                    with self._engine_lock, self._session_lock:
+                        session = self._require_session()
                         session.prepare_target(frame.protected_binding)
                         receipt = session.update_oauth(frame)
-                    except BaseException:
-                        frame.close_protected_frame()
-                        raise
+                except BaseException:
+                    frame.close_protected_frame()
+                    with self._session_lock:
+                        self._require_session().discard_uninstalled_target()
+                    channel.close()
+                    self._channel = None
+                    self._control_lost()
+                    return
                 channel.acknowledge(receipt)
-        except BaseException as error:
+        except BaseException:
             if not self._closing.is_set():
-                self._record_failure(error)
+                self._control_lost()
 
     def _consume_events(self) -> None:
         try:
@@ -605,6 +659,13 @@ class ClaudeSessionRuntime:
                         ClaudeStructuredFailure.PROCESS_EXITED,
                         ClaudeStructuredFailure.PROTOCOL_EOF,
                     }:
+                        return
+                    if error.code in {
+                        ClaudeStructuredFailure.PROCESS_EXITED,
+                        ClaudeStructuredFailure.PROTOCOL_EOF,
+                    }:
+                        self._provider_terminated = True
+                        self._events.put(ClaudeProviderTerminatedError())
                         return
                     raise
                 self._events.put(event)
@@ -679,10 +740,10 @@ class ClaudeSessionRuntime:
             for notice in notices:
                 self._apply_notice(notice)
             if not self._closing.is_set():
-                self._fail(ClaudeStructuredFailure.PROTOCOL_EOF)
-        except BaseException as error:
+                self._control_lost()
+        except BaseException:
             if not self._closing.is_set():
-                self._record_failure(error)
+                self._control_lost()
 
     def _apply_notice(self, notice: ParticipantNotice) -> None:
         if (
@@ -735,7 +796,11 @@ class ClaudeSessionRuntime:
                 self._raise_failure()
                 self._raise_gate()
                 revision = self._open_revision
-            admission = self._control.begin(turn_id)
+            try:
+                admission = self._control.begin(turn_id)
+            except BaseException:
+                self._control_lost()
+                continue
             if admission.state is TurnAdmissionState.ADMITTED:
                 return admission
             with self._condition:
@@ -781,6 +846,23 @@ class ClaudeSessionRuntime:
             if self._failure is None:
                 self._failure = error
             self._condition.notify_all()
+
+    def _control_lost(self) -> None:
+        with self._condition:
+            self._control_available = False
+            self._gate_code = SelectionCode.SELECTION_RECOVERY_REQUIRED
+            self._condition.notify_all()
+        self._events.put(
+            ClaudeStructuredTerminalEvent(
+                conversation_id=None,
+                text=(),
+                status="Sidekick: selection_recovery_required",
+            )
+        )
+
+    def _control_is_available(self) -> bool:
+        with self._condition:
+            return self._control_available
 
     def _raise_failure(self) -> None:
         if self._failure is not None:

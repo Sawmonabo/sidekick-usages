@@ -47,6 +47,21 @@ def launch_piped_claude_command(
         ) from None
 
 
+def dispose_piped_claude_command(
+    process: subprocess.Popen[bytes],
+) -> None:
+    """Close, terminate, and reap one child not transferred to a session."""
+    stdin = process.stdin
+    if stdin is not None:
+        with suppress(OSError):
+            stdin.close()
+    _terminate_and_reap(process)
+    for stream in (process.stdout, process.stderr):
+        if stream is not None:
+            with suppress(OSError):
+                stream.close()
+
+
 def run_bounded_claude_command(
     argv: tuple[str, ...],
     *,
