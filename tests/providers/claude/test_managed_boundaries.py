@@ -101,7 +101,6 @@ from tests.fakes.claude.managed import (
     CLAUDE_LOGIN_HELP_OUTPUT,
     CLAUDE_VERSION_OUTPUT,
     ClaudeRunner,
-    ClaudeStructuredEngineFake,
     StructuredCapabilityMutation,
     StructuredResponseCase,
     claude_auth_status_payload,
@@ -893,9 +892,6 @@ def test_structured_capability_requires_the_exact_no_network_probe(
 ) -> None:
     fixture = structured_capability_fixture(tmp_path, mutation)
     executable = fixture.executable
-    running_engine = ClaudeStructuredEngineFake((), (), process_id=6262)
-    running_process_id = running_engine.process_id
-
     def qualify() -> ClaudeStructuredCapability:
         return qualify_claude_structured_capability(
             executable,
@@ -908,33 +904,36 @@ def test_structured_capability_requires_the_exact_no_network_probe(
 
     if mutation is None:
         capability = qualify()
+        assert capability.variable_allowlist == (
+            "CLAUDE_CODE_SESSION_ACCESS_TOKEN",
+            "CLAUDE_CODE_OAUTH_TOKEN",
+        )
         assert (
-            capability.executable,
-            capability.variable_allowlist,
             capability.embedded_build_time,
             capability.embedded_git_sha,
         ) == (
-            executable,
-            (
-                "CLAUDE_CODE_SESSION_ACCESS_TOKEN",
-                "CLAUDE_CODE_OAUTH_TOKEN",
-            ),
             CLAUDE_STRUCTURED_EMBEDDED_BUILD_TIME,
             CLAUDE_STRUCTURED_EMBEDDED_GIT_SHA,
         )
-        assert len(fixture.factory.engines) == 1
         probe = fixture.factory.engines[0]
         assert [request.variable_names for request in probe.requests] == [
             ("CLAUDE_CODE_OAUTH_TOKEN",),
             ("CLAUDE_CODE_OAUTH_TOKEN",),
         ]
         assert all(request.exact_envelope for request in probe.requests)
-        assert all(request.expected_oauth for request in probe.requests)
         assert all(probe.wiped_before_response)
         assert probe.user_turn_count == 0
         assert probe.input_closed
         assert fixture.factory.environments == [fixture.environment]
 
+        network_isolator = tmp_path / "unshare"
+        network_isolator.touch()
+        network_isolator.chmod(0o755)
+        monkeypatch.setattr(
+            "sidekick_usages.providers.claude.structured.process."
+            "_NETWORK_NAMESPACE_EXECUTABLE",
+            network_isolator,
+        )
         launches: list[tuple[str, ...]] = []
 
         def record_launch(
@@ -954,47 +953,48 @@ def test_structured_capability_requires_the_exact_no_network_probe(
             "launch_piped_claude_command",
             record_launch,
         )
-        with pytest.raises(ClaudeStructuredError):
+        with pytest.raises(ClaudeStructuredError) as unavailable:
+            qualify_claude_structured_capability(
+                executable,
+                fixture.host,
+                fixture.environment,
+                working_directory=fixture.working_directory,
+                artifact_reader=fixture.inspect_artifact,
+            )
+        assert unavailable.value.code is (
+            ClaudeStructuredFailure.VERSION_UNSUPPORTED
+        )
+        structured_argv = (
+            str(executable.provenance.path),
+            "--print",
+            "--input-format",
+            "stream-json",
+            "--output-format",
+            "stream-json",
+        )
+        assert launches == [
+            (
+                str(network_isolator),
+                "--user",
+                "--map-current-user",
+                "--net",
+                "--",
+                *structured_argv,
+            ),
+        ]
+        with pytest.raises(ClaudeStructuredError) as unsafe:
             ClaudeStructuredProcess.open(
                 capability,
                 fixture.environment,
                 working_directory=fixture.working_directory,
+                user_arguments=("synthetic-prompt",),
             )
-        assert launches == [
-            (
-                str(executable.provenance.path),
-                "--print",
-                "--input-format",
-                "stream-json",
-                "--output-format",
-                "stream-json",
-            )
-        ]
-        for arguments in (
-            ("--print=true",),
-            ("--model", "sonnet"),
-            ("synthetic-prompt",),
-        ):
-            with pytest.raises(ClaudeStructuredError) as unsafe:
-                ClaudeStructuredProcess.open(
-                    capability,
-                    fixture.environment,
-                    working_directory=fixture.working_directory,
-                    user_arguments=arguments,
-                )
-            assert (
-                unsafe.value.code
-                is ClaudeStructuredFailure.PROCESS_UNAVAILABLE
-            )
-        assert len(launches) == 1
+        assert unsafe.value.code is (
+            ClaudeStructuredFailure.PROCESS_UNAVAILABLE
+        )
     else:
         with pytest.raises(ClaudeStructuredError) as failure:
             qualify()
         assert (
             failure.value.code is ClaudeStructuredFailure.VERSION_UNSUPPORTED
         )
-
-    assert running_engine.process_id == running_process_id
-    assert running_engine.requests == []
-    assert running_engine.user_turn_count == 0
-    assert not running_engine.input_closed

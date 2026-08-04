@@ -11,6 +11,11 @@ from typing import NoReturn
 from uuid import uuid4
 
 from sidekick_usages.core.accounts.types import RequestId
+from sidekick_usages.platform.errors import ExecutableQualificationError
+from sidekick_usages.platform.executable import (
+    qualify_executable,
+    verify_executable,
+)
 from sidekick_usages.platform.types import HostPlatform
 from sidekick_usages.providers.claude.errors import ClaudeProcessError
 from sidekick_usages.providers.claude.managed.errors import ClaudeManagedError
@@ -66,6 +71,13 @@ _CLAUDE_STRUCTURED_ARTIFACT_MARKERS = (
     *(variable.encode() for variable in _CLAUDE_STRUCTURED_VARIABLE_ALLOWLIST),
 )
 _PROBE_TIMEOUT_SECONDS = 5.0
+_NETWORK_NAMESPACE_EXECUTABLE = Path("/usr/bin/unshare")
+_NETWORK_NAMESPACE_ARGUMENTS = (
+    "--user",
+    "--map-current-user",
+    "--net",
+    "--",
+)
 
 type ClaudeStructuredArtifactReader = Callable[
     [ClaudeExecutable, tuple[bytes, ...]],
@@ -121,7 +133,12 @@ def qualify_claude_structured_capability(
             environment,
             working_directory=working_directory,
         )
-    except ClaudeManagedError, ClaudeProcessError, ClaudeStructuredError:
+    except (
+        ClaudeManagedError,
+        ClaudeProcessError,
+        ClaudeStructuredError,
+        ExecutableQualificationError,
+    ):
         _unsupported()
     failed = False
     try:
@@ -507,9 +524,21 @@ def _open_probe_engine(
     working_directory: Path,
     user_arguments: tuple[str, ...] = (),
 ) -> ClaudeStructuredEngine:
-    return ClaudeStructuredProcess._open_executable(
-        executable,
-        environment,
+    verify_claude_executable(executable)
+    _require_safe_user_arguments(user_arguments)
+    network_isolator = qualify_executable(_NETWORK_NAMESPACE_EXECUTABLE)
+    verify_executable(network_isolator)
+    process = launch_piped_claude_command(
+        (
+            str(network_isolator.path),
+            *_NETWORK_NAMESPACE_ARGUMENTS,
+            str(executable.provenance.path),
+            *_STRUCTURED_ARGUMENTS,
+            *user_arguments,
+        ),
+        environment=environment,
         working_directory=working_directory,
-        user_arguments=user_arguments,
     )
+    verify_executable(network_isolator)
+    verify_claude_executable(executable)
+    return ClaudeStructuredProcess(process)
