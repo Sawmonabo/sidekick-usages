@@ -65,6 +65,11 @@ _OPERATION_A = OperationId("44444444-4444-4444-8444-444444444444")
 _OPERATION_B = OperationId("55555555-5555-4555-8555-555555555555")
 _NONCE_A = RequestId("66666666-6666-4666-8666-666666666666")
 _NONCE_B = RequestId("77777777-7777-4777-8777-777777777777")
+_CONTROL_RESPONSE_SUBTYPES = {
+    "dialog-1": "error",
+    "hook-callback-1": "error",
+    "mcp-message-1": "error",
+}
 
 
 class ClaudeSessionEngineFake(ClaudeStructuredEngineFake):
@@ -143,10 +148,19 @@ class ClaudeSessionEngineFake(ClaudeStructuredEngineFake):
                 "question-1": "question_response",
                 "elicitation-1": "elicitation_response",
                 "dialog-1": "dialog_response",
+                "hook-callback-1": "hook_callback_response",
+                "mcp-message-1": "mcp_message_response",
             }
             label = labels.get(request_id)
             if label is None:
                 raise AssertionError("Unexpected Claude control response.")
+            expected_subtype = _CONTROL_RESPONSE_SUBTYPES.get(
+                request_id,
+                "success",
+            )
+            assert response.get("subtype") == expected_subtype, (
+                "Unsupported control did not fail closed."
+            )
             self._fail_control_if_requested()
             if request_id == "question-1":
                 payload = response.get("response")

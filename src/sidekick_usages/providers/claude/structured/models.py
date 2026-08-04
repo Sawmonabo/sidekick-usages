@@ -23,6 +23,8 @@ type ClaudeStructuredControlRequest = (
     | ClaudeStructuredQuestionRequest
     | ClaudeStructuredDialogRequest
     | ClaudeStructuredElicitationRequest
+    | ClaudeStructuredHookCallbackRequest
+    | ClaudeStructuredMcpMessageRequest
 )
 
 
@@ -139,6 +141,23 @@ class ClaudeStructuredDialogRequest:
     dialog_kind: str
     payload: bytes = field(repr=False)
     tool_use_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ClaudeStructuredHookCallbackRequest:
+    """One undeclared provider hook callback refused by the host."""
+
+    request_id: str
+    callback_id: str
+    tool_use_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ClaudeStructuredMcpMessageRequest:
+    """One message for an SDK MCP server the host did not declare."""
+
+    request_id: str
+    server_name: str
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

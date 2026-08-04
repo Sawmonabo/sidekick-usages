@@ -29,6 +29,8 @@ from sidekick_usages.providers.claude.structured.models import (
     ClaudeStructuredControlRequest,
     ClaudeStructuredDialogRequest,
     ClaudeStructuredElicitationRequest,
+    ClaudeStructuredHookCallbackRequest,
+    ClaudeStructuredMcpMessageRequest,
     ClaudeStructuredPermissionDecision,
     ClaudeStructuredPermissionRequest,
     ClaudeStructuredQuestion,
@@ -77,6 +79,15 @@ class ClaudeTerminalSession(Protocol):
 
     def refuse_dialog(self, request: ClaudeStructuredDialogRequest) -> None:
         """Refuse one undeclared private dialog kind."""
+
+    def refuse_unsupported_control(
+        self,
+        request: (
+            ClaudeStructuredHookCallbackRequest
+            | ClaudeStructuredMcpMessageRequest
+        ),
+    ) -> None:
+        """Refuse one undeclared hook or SDK MCP capability."""
 
     def interrupt(self) -> None:
         """Interrupt only the current retained-engine response."""
@@ -480,6 +491,26 @@ class ClaudeTerminalApplication:
             self._control_actions.put(
                 lambda request=control: self._require_session().refuse_dialog(
                     request
+                )
+            )
+        elif isinstance(
+            control,
+            ClaudeStructuredHookCallbackRequest
+            | ClaudeStructuredMcpMessageRequest,
+        ):
+            message = (
+                "Sidekick cannot run an undeclared Claude hook."
+                if isinstance(control, ClaudeStructuredHookCallbackRequest)
+                else (
+                    "Sidekick cannot route an undeclared SDK MCP server."
+                )
+            )
+            self._append(message)
+            self._control_actions.put(
+                lambda request=control: (
+                    self._require_session().refuse_unsupported_control(
+                        request
+                    )
                 )
             )
         if event.cancelled_request_id is not None:

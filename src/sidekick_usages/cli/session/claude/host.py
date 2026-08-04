@@ -11,6 +11,8 @@ from sidekick_usages.core.selection.types import TurnId
 from sidekick_usages.providers.claude.structured.models import (
     ClaudeStructuredDialogRequest,
     ClaudeStructuredElicitationRequest,
+    ClaudeStructuredHookCallbackRequest,
+    ClaudeStructuredMcpMessageRequest,
     ClaudeStructuredPermissionDecision,
     ClaudeStructuredPermissionRequest,
     ClaudeStructuredQuestionAnswer,
@@ -91,6 +93,16 @@ class ClaudeCliSession:
     def refuse_dialog(self, request: ClaudeStructuredDialogRequest) -> None:
         """Refuse one undeclared private dialog kind."""
         self._runtime.refuse_dialog(request)
+
+    def refuse_unsupported_control(
+        self,
+        request: (
+            ClaudeStructuredHookCallbackRequest
+            | ClaudeStructuredMcpMessageRequest
+        ),
+    ) -> None:
+        """Refuse one undeclared hook or SDK MCP capability."""
+        self._runtime.refuse_unsupported_control(request)
 
     def interrupt(self) -> None:
         """Interrupt only the current retained-engine response."""

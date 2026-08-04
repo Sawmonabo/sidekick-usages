@@ -18,6 +18,8 @@ from sidekick_usages.providers.claude.structured.models import (
     ClaudeStructuredDialogRequest,
     ClaudeStructuredElicitationRequest,
     ClaudeStructuredError,
+    ClaudeStructuredHookCallbackRequest,
+    ClaudeStructuredMcpMessageRequest,
     ClaudeStructuredPermissionDecision,
     ClaudeStructuredPermissionRequest,
     ClaudeStructuredQuestionAnswer,
@@ -103,6 +105,20 @@ class _JourneyTerminal(ClaudeTerminal):
             session.decline_elicitation(control)
         elif isinstance(control, ClaudeStructuredDialogRequest):
             session.refuse_dialog(control)
+        elif isinstance(
+            control,
+            ClaudeStructuredHookCallbackRequest
+            | ClaudeStructuredMcpMessageRequest,
+        ):
+            message = (
+                "Sidekick cannot run an undeclared Claude hook."
+                if isinstance(control, ClaudeStructuredHookCallbackRequest)
+                else (
+                    "Sidekick cannot route an undeclared SDK MCP server."
+                )
+            )
+            self._events.append(f"presentation:{message}")
+            session.refuse_unsupported_control(control)
 
     def read_prompt(self) -> str | None:
         self._prompt += 1
@@ -235,6 +251,10 @@ def test_claude_session_keeps_one_engine_across_a_queued_switch() -> None:
         "question_response",
         "elicitation_response",
         "dialog_response",
+        "presentation:Sidekick cannot run an undeclared Claude hook.",
+        "hook_callback_response",
+        "presentation:Sidekick cannot route an undeclared SDK MCP server.",
+        "mcp_message_response",
         "presentation:Claude entered plan mode.",
         "presentation:Claude is thinking.",
         "presentation:Bash has been running for 2s.",
@@ -356,6 +376,19 @@ def _stream_events() -> tuple[bytes, ...]:
             b'{"type":"control_request","request_id":"dialog-1",'
             b'"request":{"subtype":"request_user_dialog",'
             b'"dialog_kind":"private","payload":{}}}'
+        ),
+        (
+            b'{"type":"control_request","request_id":"hook-callback-1",'
+            b'"request":{"subtype":"hook_callback",'
+            b'"callback_id":"callback-1","input":{},'
+            b'"tool_use_id":"tool-1"}}'
+        ),
+        (
+            b'{"type":"control_request","request_id":"mcp-message-1",'
+            b'"request":{"subtype":"mcp_message",'
+            b'"server_name":"sdk-server","message":'
+            b'{"jsonrpc":"2.0","id":"message-1",'
+            b'"method":"tools/list"}}}'
         ),
         (
             b'{"type":"system","subtype":"status","status":null,'

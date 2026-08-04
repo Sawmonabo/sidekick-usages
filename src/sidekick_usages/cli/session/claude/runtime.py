@@ -48,7 +48,9 @@ from sidekick_usages.providers.claude.structured.models import (
     ClaudeStructuredEngine,
     ClaudeStructuredError,
     ClaudeStructuredFailure,
+    ClaudeStructuredHookCallbackRequest,
     ClaudeStructuredInstallReceipt,
+    ClaudeStructuredMcpMessageRequest,
     ClaudeStructuredPermissionDecision,
     ClaudeStructuredPermissionRequest,
     ClaudeStructuredProtectedFrame,
@@ -67,6 +69,7 @@ from sidekick_usages.providers.claude.structured.stream import (
     encode_claude_interrupt,
     encode_claude_permission_response,
     encode_claude_question_response,
+    encode_claude_unsupported_control,
     encode_claude_user_prompt,
 )
 
@@ -501,6 +504,19 @@ class ClaudeSessionRuntime:
             encode_claude_dialog_unsupported(request),
         )
 
+    def refuse_unsupported_control(
+        self,
+        request: (
+            ClaudeStructuredHookCallbackRequest
+            | ClaudeStructuredMcpMessageRequest
+        ),
+    ) -> None:
+        """Return a correlated error for one undeclared host capability."""
+        self._respond_control(
+            request.request_id,
+            encode_claude_unsupported_control(request),
+        )
+
     def _respond_control(self, request_id: str, frame: bytearray) -> None:
         try:
             with self._engine_lock, self._session_lock:
@@ -730,6 +746,8 @@ class ClaudeSessionRuntime:
             return control.request_id, ClaudeStructuredActivityKind.PERMISSION
         if isinstance(control, ClaudeStructuredDialogRequest):
             return control.request_id, ClaudeStructuredActivityKind.DIALOG
+        if isinstance(control, ClaudeStructuredHookCallbackRequest):
+            return control.request_id, ClaudeStructuredActivityKind.HOOK
         return control.request_id, ClaudeStructuredActivityKind.MCP
 
     def _consume_notices(

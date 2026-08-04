@@ -23,6 +23,8 @@ from sidekick_usages.providers.claude.structured.models import (
     ClaudeStructuredElicitationRequest,
     ClaudeStructuredError,
     ClaudeStructuredFailure,
+    ClaudeStructuredHookCallbackRequest,
+    ClaudeStructuredMcpMessageRequest,
     ClaudeStructuredPermissionDecision,
     ClaudeStructuredPermissionRequest,
     ClaudeStructuredQuestion,
@@ -197,16 +199,25 @@ def encode_claude_dialog_unsupported(
     request: ClaudeStructuredDialogRequest,
 ) -> bytearray:
     """Return one typed error for an undeclared private dialog kind."""
-    return _encode_line(
-        {
-            "type": "control_response",
-            "response": {
-                "subtype": "error",
-                "request_id": request.request_id,
-                "error": "Unsupported dialog kind.",
-            },
-        }
+    return _encode_control_error(
+        request.request_id,
+        "Unsupported dialog kind.",
     )
+
+
+def encode_claude_unsupported_control(
+    request: (
+        ClaudeStructuredHookCallbackRequest
+        | ClaudeStructuredMcpMessageRequest
+    ),
+) -> bytearray:
+    """Refuse one capability the host did not declare at initialization."""
+    error = (
+        "Unsupported hook callback."
+        if isinstance(request, ClaudeStructuredHookCallbackRequest)
+        else "Unsupported SDK MCP server message."
+    )
+    return _encode_control_error(request.request_id, error)
 
 
 def decode_claude_terminal_event(
@@ -402,7 +413,39 @@ def _control_request(root: JsonObject) -> ClaudeStructuredControlRequest:
         return _dialog(root, request)
     if subtype == "elicitation":
         return _elicitation(root, request)
+    if subtype == "hook_callback":
+        return _hook_callback(root, request)
+    if subtype == "mcp_message":
+        return _mcp_message(root, request)
     return _malformed()
+
+
+def _hook_callback(
+    root: JsonObject,
+    request: JsonObject,
+) -> ClaudeStructuredHookCallbackRequest:
+    required = {"subtype", "callback_id", "input"}
+    if set(request) - {"tool_use_id"} != required:
+        _malformed()
+    _object(request, "input")
+    return ClaudeStructuredHookCallbackRequest(
+        request_id=_bounded_text(root, "request_id"),
+        callback_id=_bounded_text(request, "callback_id"),
+        tool_use_id=_optional_text(request, "tool_use_id"),
+    )
+
+
+def _mcp_message(
+    root: JsonObject,
+    request: JsonObject,
+) -> ClaudeStructuredMcpMessageRequest:
+    if set(request) != {"subtype", "server_name", "message"}:
+        _malformed()
+    _object(request, "message")
+    return ClaudeStructuredMcpMessageRequest(
+        request_id=_bounded_text(root, "request_id"),
+        server_name=_bounded_text(request, "server_name"),
+    )
 
 
 def _permission(
@@ -905,6 +948,19 @@ def _encode_control_response(
                 "subtype": "success",
                 "request_id": request_id,
                 "response": response,
+            },
+        }
+    )
+
+
+def _encode_control_error(request_id: str, error: str) -> bytearray:
+    return _encode_line(
+        {
+            "type": "control_response",
+            "response": {
+                "subtype": "error",
+                "request_id": request_id,
+                "error": error,
             },
         }
     )
