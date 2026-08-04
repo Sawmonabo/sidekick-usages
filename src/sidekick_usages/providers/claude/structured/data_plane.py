@@ -385,10 +385,13 @@ class ClaudeParticipantChannelRegistry:
         with self._distribution_lock:
             with self._lock:
                 channels = tuple(self._channels.items())
-            if self.requires_participant(
-                ProviderId.CLAUDE,
-                binding.account_id,
-            ) and not channels:
+            if (
+                self.requires_participant(
+                    ProviderId.CLAUDE,
+                    binding.account_id,
+                )
+                and not channels
+            ):
                 raise ClaudeProtectedChannelError(
                     "The protected Claude participant is unavailable."
                 )
@@ -552,11 +555,7 @@ class ClaudeProtectedHostChannel:
     ) -> None:
         """Acknowledge one successfully installed exact binding."""
         pending = self._pending
-        if (
-            self._closed
-            or pending is None
-            or pending[0] != receipt.binding
-        ):
+        if self._closed or pending is None or pending[0] != receipt.binding:
             raise ClaudeProtectedChannelError(
                 "The protected host acknowledgement does not match."
             )

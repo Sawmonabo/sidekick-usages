@@ -5,10 +5,11 @@ import selectors
 import subprocess
 import time
 from collections.abc import Callable, Mapping
+from itertools import pairwise
 from pathlib import Path
 from threading import Thread
 from typing import NoReturn
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from sidekick_usages.core.accounts.types import RequestId
 from sidekick_usages.platform.errors import ExecutableQualificationError
@@ -23,7 +24,10 @@ from sidekick_usages.providers.claude.managed.executable import (
     inspect_claude_executable_artifact,
     verify_claude_executable,
 )
-from sidekick_usages.providers.claude.models import ClaudeExecutable
+from sidekick_usages.providers.claude.models import (
+    ClaudeExecutable,
+    ClaudeVersion,
+)
 from sidekick_usages.providers.claude.process import (
     MAX_CLAUDE_CONTROL_FRAME_BYTES,
     launch_piped_claude_command,
@@ -45,22 +49,30 @@ from sidekick_usages.providers.claude.structured.models import (
 )
 
 _READ_CHUNK_BYTES = 8192
-_STRUCTURED_ARGUMENTS = (
+CLAUDE_STRUCTURED_ARGUMENTS = (
     "--print",
+    "--verbose",
     "--input-format",
     "stream-json",
     "--output-format",
     "stream-json",
+    "--include-partial-messages",
+    "--include-hook-events",
+    "--permission-prompt-tool",
+    "stdio",
 )
-_STRUCTURED_USER_ARGUMENT_ALLOWLIST = frozenset({()})
-CLAUDE_STRUCTURED_ARTIFACT_SIZE = 275_012_592
+_CONTINUE_ARGUMENTS = frozenset({("-c",), ("--continue",)})
+_RESUME_OPTIONS = frozenset({"-r", "--resume"})
+_AUTH_ARGUMENTS = frozenset({"/login", "/logout", "login", "logout"})
+_RESUME_FORK_ARGUMENT_COUNT = 3
+CLAUDE_STRUCTURED_VERSION = ClaudeVersion(2, 1, 221)
+CLAUDE_STRUCTURED_ARTIFACT_SIZE = 288_705_544
 CLAUDE_STRUCTURED_ARTIFACT_SHA256 = (
-    "674f61f20ff306f3100cf9200e4c36c4b70278b5bef2884549819b942a89c863"
+    "60db8e88d42c24b5199c92cfd56ec88370c510c3789c6f364af748354f087ada"
 )
-CLAUDE_STRUCTURED_EMBEDDED_BUILD_TIME = "2026-07-24T22:17:45Z"
-CLAUDE_STRUCTURED_EMBEDDED_GIT_SHA = "4073f59596e272f39393db4f96abc5f4b10eff21"
+CLAUDE_STRUCTURED_EMBEDDED_BUILD_TIME = "2026-08-03T03:19:26Z"
+CLAUDE_STRUCTURED_EMBEDDED_GIT_SHA = "6efaf12e8b43dc7dbe50e0955c76dc4174a15876"
 CLAUDE_STRUCTURED_PROBE_CANARY = "sidekick-invalid-oauth-capability-canary"
-_CLAUDE_STRUCTURED_VERSION = (2, 1, 220)
 _CLAUDE_STRUCTURED_VARIABLE_ALLOWLIST = (
     "CLAUDE_CODE_SESSION_ACCESS_TOKEN",
     "CLAUDE_CODE_OAUTH_TOKEN",
@@ -104,12 +116,7 @@ def qualify_claude_structured_capability(
     """Prove the exact artifact and no-network private control behavior."""
     if (
         host not in {HostPlatform.LINUX, HostPlatform.WSL}
-        or (
-            executable.version.major,
-            executable.version.minor,
-            executable.version.patch,
-        )
-        != _CLAUDE_STRUCTURED_VERSION
+        or executable.version != CLAUDE_STRUCTURED_VERSION
         or executable.provenance.size != CLAUDE_STRUCTURED_ARTIFACT_SIZE
     ):
         _unsupported()
@@ -283,7 +290,7 @@ class ClaudeStructuredProcess:
         process = launch_piped_claude_command(
             (
                 str(executable.provenance.path),
-                *_STRUCTURED_ARGUMENTS,
+                *CLAUDE_STRUCTURED_ARGUMENTS,
                 *user_arguments,
             ),
             environment=environment,
@@ -511,10 +518,38 @@ class ClaudeStructuredProcess:
 
 
 def _require_safe_user_arguments(arguments: tuple[str, ...]) -> None:
-    if arguments not in _STRUCTURED_USER_ARGUMENT_ALLOWLIST:
+    if not claude_structured_arguments_supported(arguments):
         raise ClaudeStructuredError(
             ClaudeStructuredFailure.PROCESS_UNAVAILABLE
         )
+
+
+def claude_structured_arguments_supported(arguments: tuple[str, ...]) -> bool:
+    """Return whether exact continuation arguments preserve integration."""
+    if not arguments or arguments in _CONTINUE_ARGUMENTS:
+        return True
+    if len(arguments) not in {2, 3} or arguments[0] not in _RESUME_OPTIONS:
+        return False
+    if (
+        len(arguments) == _RESUME_FORK_ARGUMENT_COUNT
+        and arguments[2] != "--fork-session"
+    ):
+        return False
+    try:
+        return str(UUID(arguments[1])) == arguments[1].casefold()
+    except ValueError:
+        return False
+
+
+def claude_arguments_mutate_auth(arguments: tuple[str, ...]) -> bool:
+    """Return whether argv attempts to bypass coordinated Claude auth."""
+    normalized = tuple(argument.casefold() for argument in arguments)
+    if any(argument in _AUTH_ARGUMENTS for argument in normalized):
+        return True
+    return any(
+        left == "auth" and right in {"login", "logout"}
+        for left, right in pairwise(normalized)
+    )
 
 
 def _open_probe_engine(
@@ -533,7 +568,7 @@ def _open_probe_engine(
             str(network_isolator.path),
             *_NETWORK_NAMESPACE_ARGUMENTS,
             str(executable.provenance.path),
-            *_STRUCTURED_ARGUMENTS,
+            *CLAUDE_STRUCTURED_ARGUMENTS,
             *user_arguments,
         ),
         environment=environment,

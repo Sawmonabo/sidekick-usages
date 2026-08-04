@@ -131,15 +131,24 @@ class ClaudeStructuredSession:
 
     def observe_event(self, event: ClaudeStructuredStreamEvent) -> None:
         """Derive one idle-gate transition from a strict stream event."""
-        self._require_activity_id(event.activity_id)
-        if self._conversation_id is None:
-            self._conversation_id = event.conversation_id
-        elif self._conversation_id != event.conversation_id:
-            raise ClaudeStructuredError(
-                ClaudeStructuredFailure.CONVERSATION_MISMATCH
-            )
-        activity = (event.activity_kind, event.activity_id)
-        if event.activity_state is ClaudeStructuredActivityState.STARTED:
+        if event.conversation_id is not None:
+            self.observe_conversation(event.conversation_id)
+        self.observe_activity(
+            event.activity_kind,
+            event.activity_id,
+            event.activity_state,
+        )
+
+    def observe_activity(
+        self,
+        kind: ClaudeStructuredActivityKind,
+        activity_id: str,
+        state: ClaudeStructuredActivityState,
+    ) -> None:
+        """Track one provider activity without requiring a stream identity."""
+        self._require_activity_id(activity_id)
+        activity = (kind, activity_id)
+        if state is ClaudeStructuredActivityState.STARTED:
             if activity in self._activities:
                 self._activity_invalid()
             self._activities.add(activity)
@@ -147,6 +156,18 @@ class ClaudeStructuredSession:
         if activity not in self._activities:
             self._activity_invalid()
         self._activities.remove(activity)
+
+    def observe_conversation(
+        self,
+        conversation_id: ClaudeStructuredConversationId,
+    ) -> None:
+        """Bind every provider stream frame to one stable conversation."""
+        if self._conversation_id is None:
+            self._conversation_id = conversation_id
+        elif self._conversation_id != conversation_id:
+            raise ClaudeStructuredError(
+                ClaudeStructuredFailure.CONVERSATION_MISMATCH
+            )
 
     def update_oauth(
         self,

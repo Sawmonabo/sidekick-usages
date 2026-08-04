@@ -91,6 +91,7 @@ from sidekick_usages.providers.claude.structured.models import (
     ClaudeStructuredStreamEvent,
 )
 from sidekick_usages.providers.claude.structured.process import (
+    CLAUDE_STRUCTURED_ARGUMENTS,
     CLAUDE_STRUCTURED_EMBEDDED_BUILD_TIME,
     CLAUDE_STRUCTURED_EMBEDDED_GIT_SHA,
     ClaudeStructuredProcess,
@@ -820,7 +821,8 @@ def test_structured_session_updates_oauth_only_at_an_idle_turn_boundary(
     for kind in ClaudeStructuredActivityKind:
         session.observe_event(
             ClaudeStructuredStreamEvent(
-                conversation_id=conversation_id, activity_kind=kind,
+                conversation_id=conversation_id,
+                activity_kind=kind,
                 activity_id=kind.value,
                 activity_state=ClaudeStructuredActivityState.STARTED,
             )
@@ -830,7 +832,8 @@ def test_structured_session_updates_oauth_only_at_an_idle_turn_boundary(
             session.update_oauth(rejected)
         session.observe_event(
             ClaudeStructuredStreamEvent(
-                conversation_id=conversation_id, activity_kind=kind,
+                conversation_id=conversation_id,
+                activity_kind=kind,
                 activity_id=kind.value,
                 activity_state=ClaudeStructuredActivityState.FINISHED,
             )
@@ -892,6 +895,7 @@ def test_structured_capability_requires_the_exact_no_network_probe(
 ) -> None:
     fixture = structured_capability_fixture(tmp_path, mutation)
     executable = fixture.executable
+
     def qualify() -> ClaudeStructuredCapability:
         return qualify_claude_structured_capability(
             executable,
@@ -966,11 +970,7 @@ def test_structured_capability_requires_the_exact_no_network_probe(
         )
         structured_argv = (
             str(executable.provenance.path),
-            "--print",
-            "--input-format",
-            "stream-json",
-            "--output-format",
-            "stream-json",
+            *CLAUDE_STRUCTURED_ARGUMENTS,
         )
         assert launches == [
             (
@@ -980,7 +980,7 @@ def test_structured_capability_requires_the_exact_no_network_probe(
                 "--net",
                 "--",
                 *structured_argv,
-            ),
+            )
         ]
         with pytest.raises(ClaudeStructuredError) as unsafe:
             ClaudeStructuredProcess.open(

@@ -5,11 +5,14 @@ import socket
 import stat
 from collections.abc import Iterator, Mapping
 from pathlib import Path
-from threading import Event, RLock, Thread
+from threading import Event, Thread
 from uuid import uuid4
 
+from sidekick_usages.cli.session.control import (
+    ParticipantControl,
+    SessionParticipantError,
+)
 from sidekick_usages.cli.session.launcher import ProviderSessionLauncher
-from sidekick_usages.core.selection.models import safe_outcome_code
 from sidekick_usages.core.selection.types import (
     ParticipantId,
     SelectionCode,
@@ -20,12 +23,6 @@ from sidekick_usages.daemon.control.client import (
     ControlClient,
 )
 from sidekick_usages.daemon.control.protocol import FramedTransport
-from sidekick_usages.daemon.models.protocol import (
-    AcceptedPayload,
-    CompletedPayload,
-    ControlEvent,
-    FailedPayload,
-)
 from sidekick_usages.daemon.selection.models import (
     ParticipantAdoptionProof,
     ParticipantClientKind,
@@ -33,13 +30,7 @@ from sidekick_usages.daemon.selection.models import (
     ParticipantNotice,
     ParticipantNoticeKind,
     ParticipantReadyProof,
-    ParticipantRegistration,
-    TurnAdmission,
     TurnAdmissionState,
-)
-from sidekick_usages.daemon.types.protocol import (
-    CompletionOutcome,
-    EventKind,
 )
 from sidekick_usages.providers.codex.app_server.capabilities import (
     probe_codex_capabilities,
@@ -64,83 +55,50 @@ _PRIVATE_DIRECTORY_MODE = 0o700
 
 
 class _CodexParticipantControl:
-    """Adapt one authenticated control connection to relay operations."""
+    """Map provider-neutral control to Codex relay operations."""
 
-    def __init__(
-        self,
-        client: ControlClient,
-        participant_id: ParticipantId,
-        connection_generation: int,
-    ) -> None:
-        self._client = client
-        self._participant_id = participant_id
-        self._connection_generation = connection_generation
-        self._lock = RLock()
+    def __init__(self, control: ParticipantControl) -> None:
+        self._control = control
 
-    def register(
-        self,
-        protected_endpoint: socket.socket,
-    ) -> ParticipantRegistration:
+    def register(self, protected_endpoint: socket.socket) -> None:
         """Register the exact CLI process as one Codex participant."""
-        manifest = ParticipantManifest(
-            participant_id=self._participant_id,
-            provider_id=ProviderId.CODEX,
-            client_kind=ParticipantClientKind.CODEX_CLI,
-            capability_version=1,
-            connection_generation=self._connection_generation,
-        )
-        payload = self._payload(
-            self._client.register_participant(
-                manifest,
-                protected_endpoint=protected_endpoint,
-            ),
-            EventKind.PARTICIPANT_REGISTERED,
-        )
-        if (
-            not isinstance(payload, ParticipantRegistration)
-            or payload.participant_id != self._participant_id
-            or payload.provider_id is not ProviderId.CODEX
-            or payload.connection_generation != self._connection_generation
-        ):
-            raise CodexRelayError(SelectionCode.AUTHORITY_PROOF_FAILED)
-        return payload
+        try:
+            self._control.register(protected_endpoint)
+        except SessionParticipantError as error:
+            raise CodexRelayError(error.code) from None
+
+    def notices(self) -> Iterator[ParticipantNotice]:
+        """Yield exact decoded Codex notices."""
+        try:
+            yield from self._control.notices()
+        except SessionParticipantError as error:
+            raise CodexRelayError(error.code) from None
 
     def begin(self, turn_id: TurnId) -> CodexRelayAdmission:
         """Translate one exact supervisor turn admission."""
-        with self._lock:
-            payload = self._payload(
-                self._client.begin_turn(
-                    self._participant_id,
-                    self._connection_generation,
-                    turn_id,
-                ),
-                EventKind.TURN_ADMISSION,
-            )
-        if (
-            not isinstance(payload, TurnAdmission)
-            or payload.participant_id != self._participant_id
-            or payload.turn_id != turn_id
-        ):
-            raise CodexRelayError(SelectionCode.AUTHORITY_PROOF_FAILED)
-        if payload.state is TurnAdmissionState.QUEUED:
+        try:
+            admission = self._control.begin(turn_id)
+        except SessionParticipantError as error:
+            raise CodexRelayError(error.code) from None
+        if admission.state is TurnAdmissionState.QUEUED:
             return CodexRelayAdmission(
                 turn_id=turn_id,
                 state=CodexRelayAdmissionState.QUEUED,
                 authority=None,
             )
         if (
-            payload.epoch is None
-            or payload.account_id is None
-            or payload.generation is None
+            admission.epoch is None
+            or admission.account_id is None
+            or admission.generation is None
         ):
             raise CodexRelayError(SelectionCode.AUTHORITY_PROOF_FAILED)
         return CodexRelayAdmission(
             turn_id=turn_id,
             state=CodexRelayAdmissionState.ADMITTED,
             authority=CodexRelayAuthority(
-                account_id=payload.account_id,
-                generation=payload.generation,
-                epoch=payload.epoch,
+                account_id=admission.account_id,
+                generation=admission.generation,
+                epoch=admission.epoch,
             ),
         )
 
@@ -151,13 +109,10 @@ class _CodexParticipantControl:
 
     def end(self, turn_id: TurnId) -> None:
         """Close one naturally terminal exact turn lease."""
-        with self._lock:
-            events = self._client.end_turn(
-                self._participant_id,
-                self._connection_generation,
-                turn_id,
-            )
-            self._completed(events)
+        try:
+            self._control.end(turn_id)
+        except SessionParticipantError as error:
+            raise CodexRelayError(error.code) from None
 
     def ready(self, target: CodexRelayAuthority) -> None:
         """Acknowledge one target only after provider-local readiness."""
@@ -166,14 +121,10 @@ class _CodexParticipantControl:
             generation=target.generation,
             epoch=target.epoch,
         )
-        with self._lock:
-            self._completed(
-                self._client.participant_ready(
-                    self._participant_id,
-                    self._connection_generation,
-                    proof,
-                )
-            )
+        try:
+            self._control.ready(proof)
+        except SessionParticipantError as error:
+            raise CodexRelayError(error.code) from None
 
     def adopted(
         self,
@@ -187,55 +138,14 @@ class _CodexParticipantControl:
             generation=target.generation,
             epoch=target.epoch,
         )
-        with self._lock:
-            self._completed(
-                self._client.participant_adopted(
-                    self._participant_id,
-                    self._connection_generation,
-                    proof,
-                )
-            )
-
-    def _completed(self, events: Iterator[ControlEvent]) -> None:
-        payload = self._payload(events, EventKind.COMPLETED)
-        if (
-            not isinstance(payload, CompletedPayload)
-            or payload.operation_id is not None
-            or payload.outcome is not CompletionOutcome.SUCCEEDED
-        ):
-            raise CodexRelayError(SelectionCode.AUTHORITY_PROOF_FAILED)
-
-    @staticmethod
-    def _payload(
-        events: Iterator[ControlEvent],
-        expected_kind: EventKind,
-    ) -> object:
         try:
-            event = next(events)
-        except StopIteration:
-            raise CodexRelayError(
-                SelectionCode.SELECTION_RECOVERY_REQUIRED
-            ) from None
-        if event.kind is EventKind.FAILED:
-            payload = event.payload
-            if isinstance(payload, FailedPayload):
-                code = safe_outcome_code(payload.code)
-                try:
-                    selection_code = (
-                        SelectionCode.SELECTION_RECOVERY_REQUIRED
-                        if code is None
-                        else SelectionCode(code)
-                    )
-                except ValueError:
-                    selection_code = SelectionCode.SELECTION_RECOVERY_REQUIRED
-                raise CodexRelayError(selection_code)
-        if event.kind is not expected_kind:
-            raise CodexRelayError(SelectionCode.SELECTION_RECOVERY_REQUIRED)
-        try:
-            next(events)
-        except StopIteration:
-            return event.payload
-        raise CodexRelayError(SelectionCode.SELECTION_RECOVERY_REQUIRED)
+            self._control.adopted(proof)
+        except SessionParticipantError as error:
+            raise CodexRelayError(error.code) from None
+
+    def close(self) -> None:
+        """Close both supervisor connections."""
+        self._control.close()
 
 
 class CodexSessionRuntime:
@@ -260,8 +170,7 @@ class CodexSessionRuntime:
         self._closing = Event()
         self._relay: CodexAdmissionRelay | None = None
         self._readiness_session: CodexDaemonSession | None = None
-        self._control_client: ControlClient | None = None
-        self._subscription_client: ControlClient | None = None
+        self._participant: _CodexParticipantControl | None = None
         self._proof_channel: CodexParticipantProofChannel | None = None
         self._notice_thread: Thread | None = None
         self._opened_once = False
@@ -305,6 +214,7 @@ class CodexSessionRuntime:
         readiness_session = CodexDaemonSession.open(self._manager, authority)
         control_client: ControlClient | None = None
         subscription_client: ControlClient | None = None
+        participant: _CodexParticipantControl | None = None
         relay: CodexAdmissionRelay | None = None
         proof_channel: CodexParticipantProofChannel | None = None
         supervisor_endpoint: socket.socket | None = None
@@ -320,10 +230,9 @@ class CodexSessionRuntime:
             subscription_client = ControlClient.connect(
                 self._supervisor_socket
             )
-            participant = _CodexParticipantControl(
+            participant = self._compose_participant(
                 control_client,
-                self._participant_id,
-                self._connection_generation,
+                subscription_client,
             )
             relay = CodexAdmissionRelay.open(
                 self._socket_path,
@@ -339,27 +248,18 @@ class CodexSessionRuntime:
             )
             participant.register(supervisor_endpoint)
             supervisor_endpoint = None
-            notices = subscription_client.subscribe_participant(
-                self._participant_id,
-                self._connection_generation,
-            )
-            self._require_subscription_acceptance(notices)
-            try:
-                initial_event = next(notices)
-            except StopIteration:
-                raise CodexRelayError(
-                    SelectionCode.SELECTION_RECOVERY_REQUIRED
-                ) from None
-            self._apply_notice(
+            notices = self._open_notices(
+                participant,
                 relay,
                 proof_channel,
-                self._require_notice(initial_event),
             )
             self._relay = relay
             self._readiness_session = readiness_session
-            self._control_client = control_client
-            self._subscription_client = subscription_client
+            self._participant = participant
             self._proof_channel = proof_channel
+            control_client = None
+            subscription_client = None
+            participant = None
             thread = Thread(
                 target=self._consume_notices,
                 args=(notices,),
@@ -375,10 +275,13 @@ class CodexSessionRuntime:
                 proof_channel.close()
             if relay is not None:
                 relay.close()
-            if subscription_client is not None:
-                subscription_client.close()
-            if control_client is not None:
-                control_client.close()
+            if participant is not None:
+                participant.close()
+            else:
+                if subscription_client is not None:
+                    subscription_client.close()
+                if control_client is not None:
+                    control_client.close()
             readiness_session.close()
             raise
 
@@ -387,10 +290,9 @@ class CodexSessionRuntime:
         self._closing.set()
         failures: list[BaseException] = []
         resources = (
-            self._subscription_client,
+            self._participant,
             self._proof_channel,
             self._relay,
-            self._control_client,
             self._readiness_session,
         )
         for resource in resources:
@@ -405,8 +307,7 @@ class CodexSessionRuntime:
             thread.join(timeout=_NOTICE_THREAD_JOIN_SECONDS)
         self._relay = None
         self._readiness_session = None
-        self._control_client = None
-        self._subscription_client = None
+        self._participant = None
         self._proof_channel = None
         self._notice_thread = None
         if thread is not None and thread.is_alive():
@@ -421,18 +322,17 @@ class CodexSessionRuntime:
                 failures,
             )
 
-    def _consume_notices(self, notices: Iterator[ControlEvent]) -> None:
+    def _consume_notices(
+        self,
+        notices: Iterator[ParticipantNotice],
+    ) -> None:
         relay = self._relay
         proof_channel = self._proof_channel
         if relay is None or proof_channel is None:
             return
         try:
-            for event in notices:
-                self._apply_notice(
-                    relay,
-                    proof_channel,
-                    self._require_notice(event),
-                )
+            for notice in notices:
+                self._apply_notice(relay, proof_channel, notice)
             if not self._closing.is_set():
                 relay.refuse_admission(
                     SelectionCode.SELECTION_RECOVERY_REQUIRED
@@ -503,34 +403,37 @@ class CodexSessionRuntime:
         ):
             raise CodexRelayError(SelectionCode.PARTICIPANT_UNREACHABLE)
 
-    def _require_notice(self, event: ControlEvent) -> ParticipantNotice:
-        notice = event.payload
-        if (
-            event.kind is not EventKind.PARTICIPANT_NOTICE
-            or not isinstance(notice, ParticipantNotice)
-            or notice.participant_id != self._participant_id
-            or notice.provider_id is not ProviderId.CODEX
-        ):
-            raise CodexRelayError(SelectionCode.AUTHORITY_PROOF_FAILED)
-        return notice
+    def _compose_participant(
+        self,
+        action: ControlClient,
+        subscription: ControlClient,
+    ) -> _CodexParticipantControl:
+        manifest = ParticipantManifest(
+            participant_id=self._participant_id,
+            provider_id=ProviderId.CODEX,
+            client_kind=ParticipantClientKind.CODEX_CLI,
+            capability_version=1,
+            connection_generation=self._connection_generation,
+        )
+        return _CodexParticipantControl(
+            ParticipantControl(action, subscription, manifest)
+        )
 
-    @staticmethod
-    def _require_subscription_acceptance(
-        notices: Iterator[ControlEvent],
-    ) -> None:
+    def _open_notices(
+        self,
+        participant: _CodexParticipantControl,
+        relay: CodexAdmissionRelay,
+        proof_channel: CodexParticipantProofChannel,
+    ) -> Iterator[ParticipantNotice]:
+        notices = participant.notices()
         try:
-            accepted = next(notices)
+            initial = next(notices)
         except StopIteration:
             raise CodexRelayError(
                 SelectionCode.SELECTION_RECOVERY_REQUIRED
             ) from None
-        if (
-            accepted.kind is not EventKind.ACCEPTED
-            or not isinstance(accepted.payload, AcceptedPayload)
-            or accepted.payload.operation_id is not None
-        ):
-            raise CodexRelayError(SelectionCode.SELECTION_RECOVERY_REQUIRED)
-
+        self._apply_notice(relay, proof_channel, initial)
+        return notices
 
 class CodexCliSession:
     """Launch one stock Codex TUI through one retained participant relay."""

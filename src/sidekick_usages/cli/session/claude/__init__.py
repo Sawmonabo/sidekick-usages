@@ -1,0 +1,1 @@
+"""Coordinated Claude session ownership."""

@@ -17,8 +17,10 @@ _DASHBOARD_APPLICATION_FILE = (
     "src/sidekick_usages/cli/dashboard/application.py"
 )
 _DASHBOARD_INPUT_FILE = "src/sidekick_usages/cli/dashboard/input.py"
+_CLAUDE_TERMINAL_FILE = "src/sidekick_usages/cli/session/claude/terminal.py"
 _PROMPT_TOOLKIT_FILES = frozenset(
     {
+        _CLAUDE_TERMINAL_FILE,
         _DASHBOARD_APPLICATION_FILE,
         _DASHBOARD_INPUT_FILE,
     }

@@ -1,7 +1,7 @@
 """Strict secret-free models for structured Claude control."""
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from typing import Protocol
@@ -17,6 +17,13 @@ from sidekick_usages.core.selection.models import SelectionEpoch
 from sidekick_usages.core.selection.types import TurnId
 from sidekick_usages.platform.types import HostPlatform
 from sidekick_usages.providers.claude.models import ClaudeExecutable
+
+type ClaudeStructuredControlRequest = (
+    ClaudeStructuredPermissionRequest
+    | ClaudeStructuredQuestionRequest
+    | ClaudeStructuredDialogRequest
+    | ClaudeStructuredElicitationRequest
+)
 
 
 class ClaudeStructuredFailure(StrEnum):
@@ -68,14 +75,118 @@ class ClaudeStructuredConversationId(CanonicalUuid):
     _name = "Claude structured conversation ID"
 
 
+class ClaudeStructuredPermissionDecision(StrEnum):
+    """One explicit local answer to a provider permission request."""
+
+    ALLOW = "allow"
+    DENY = "deny"
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ClaudeStructuredQuestionOption:
+    """One exact option exposed by ``AskUserQuestion``."""
+
+    label: str
+    description: str
+    preview: str | None = None
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ClaudeStructuredQuestion:
+    """One validated question exposed through the permission channel."""
+
+    question: str
+    header: str
+    options: tuple[ClaudeStructuredQuestionOption, ...]
+    multi_select: bool
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ClaudeStructuredPermissionRequest:
+    """One correlated provider request requiring terminal consent."""
+
+    request_id: str
+    tool_name: str
+    tool_use_id: str
+    tool_input: bytes = field(repr=False)
+    permission_suggestions: tuple[bytes, ...] = field(
+        default=(),
+        repr=False,
+    )
+    agent_id: str | None = None
+    blocked_path: str | None = None
+    decision_reason: str | None = None
+    description: str | None = None
+    display_name: str | None = None
+    title: str | None = None
+    requires_user_interaction: bool | None = None
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ClaudeStructuredQuestionRequest:
+    """One correlated and validated ``AskUserQuestion`` request."""
+
+    permission: ClaudeStructuredPermissionRequest
+    questions: tuple[ClaudeStructuredQuestion, ...]
+    afk_timeout_ms: int | None = None
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ClaudeStructuredDialogRequest:
+    """One unexpected private dialog envelope declared unsupported."""
+
+    request_id: str
+    dialog_kind: str
+    payload: bytes = field(repr=False)
+    tool_use_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ClaudeStructuredElicitationRequest:
+    """One MCP elicitation request that Sidekick safely declines."""
+
+    request_id: str
+    mcp_server_name: str
+    message: str
+    mode: str
+    url: str
+    elicitation_id: str
+    requested_schema: bytes = field(repr=False)
+    title: str
+    display_name: str
+    description: str
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ClaudeStructuredQuestionAnswer:
+    """One validated answer returned to ``AskUserQuestion``."""
+
+    question: str
+    answer: str
+    preview: str | None = None
+    notes: str | None = None
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ClaudeStructuredStreamEvent:
     """One strict provider activity transition for a conversation."""
 
-    conversation_id: ClaudeStructuredConversationId
+    conversation_id: ClaudeStructuredConversationId | None
     activity_kind: ClaudeStructuredActivityKind
     activity_id: str
     activity_state: ClaudeStructuredActivityState
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ClaudeStructuredTerminalEvent:
+    """One provider-decoded event safe for terminal presentation."""
+
+    conversation_id: ClaudeStructuredConversationId | None
+    text: tuple[str, ...]
+    activities: tuple[ClaudeStructuredStreamEvent, ...] = ()
+    control: ClaudeStructuredControlRequest | None = None
+    cancelled_request_id: str | None = None
+    turn_complete: bool = False
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

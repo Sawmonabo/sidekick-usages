@@ -74,6 +74,7 @@ from sidekick_usages.providers.claude.structured.process import (
     CLAUDE_STRUCTURED_ARTIFACT_SHA256,
     CLAUDE_STRUCTURED_ARTIFACT_SIZE,
     CLAUDE_STRUCTURED_PROBE_CANARY,
+    CLAUDE_STRUCTURED_VERSION,
     ClaudeStructuredProcess,
 )
 from sidekick_usages.providers.claude.structured.session import (
@@ -410,9 +411,9 @@ def structured_capability_fixture(
 ) -> StructuredCapabilityFixture:
     """Create one exact or independently mismatched capability boundary."""
     version = (
-        ClaudeVersion(2, 1, 221)
+        ClaudeVersion(2, 1, 220)
         if mutation is StructuredCapabilityMutation.VERSION
-        else MINIMUM_CLAUDE_VERSION
+        else CLAUDE_STRUCTURED_VERSION
     )
     size = (
         1

@@ -1,0 +1,258 @@
+"""Load-bearing public journey for one coordinated Claude session."""
+
+import socket
+
+from sidekick_usages.cli.session.claude.host import ClaudeCliSession
+from sidekick_usages.cli.session.claude.runtime import (
+    ClaudeSessionGateError,
+    ClaudeSessionRuntime,
+)
+from sidekick_usages.cli.session.claude.terminal import (
+    ClaudeTerminal,
+    ClaudeTerminalSession,
+)
+from sidekick_usages.core.selection.types import SelectionCode
+from sidekick_usages.providers.claude.structured.models import (
+    ClaudeStructuredDialogRequest,
+    ClaudeStructuredElicitationRequest,
+    ClaudeStructuredPermissionDecision,
+    ClaudeStructuredPermissionRequest,
+    ClaudeStructuredQuestionAnswer,
+    ClaudeStructuredQuestionRequest,
+    ClaudeStructuredTerminalEvent,
+)
+from tests.fakes.claude.managed import StructuredResponseCase
+from tests.fakes.claude.session import (
+    SESSION_PARTICIPANT,
+    SESSION_REQUESTS,
+    SESSION_TURN,
+    ClaudeSessionControlFake,
+    ClaudeSessionEngineFake,
+)
+
+_CONVERSATION = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+_SELECTION_PROMPT_INDEX = 2
+
+
+class _JourneyTerminal(ClaudeTerminal):
+    def __init__(
+        self,
+        control: ClaudeSessionControlFake,
+        events: list[str],
+    ) -> None:
+        self._control = control
+        self._events = events
+        self._prompt = 0
+        self._interrupted = False
+        self.rendered: list[str] = []
+
+    def run(self, session: ClaudeTerminalSession) -> None:
+        """Drive one compact retained-engine parity journey."""
+        self._control.refuse_once()
+        try:
+            session.start_turn("refused prompt")
+        except ClaudeSessionGateError as error:
+            self.render_status(error.code)
+        self._control.start_selection()
+        turn_id = session.start_turn("queued prompt")
+        while True:
+            event = session.receive_event()
+            try:
+                self.render(event)
+            except KeyboardInterrupt:
+                session.interrupt()
+            self._respond(session, event)
+            if event.cancelled_request_id is not None:
+                self._events.append(f"cancel:{event.cancelled_request_id}")
+            if event.turn_complete:
+                session.end_turn(turn_id)
+                return
+
+    def _respond(
+        self,
+        session: ClaudeTerminalSession,
+        event: ClaudeStructuredTerminalEvent,
+    ) -> None:
+        control = event.control
+        if isinstance(control, ClaudeStructuredPermissionRequest):
+            if control.request_id == "cancel-1":
+                self._events.append("permission_pending")
+                return
+            session.respond_permission(
+                control, self.request_permission(control)
+            )
+        elif isinstance(control, ClaudeStructuredQuestionRequest):
+            session.respond_question(control, self.request_question(control))
+        elif isinstance(control, ClaudeStructuredElicitationRequest):
+            session.decline_elicitation(control)
+        elif isinstance(control, ClaudeStructuredDialogRequest):
+            session.refuse_dialog(control)
+
+    def read_prompt(self) -> str | None:
+        self._prompt += 1
+        if self._prompt == 1:
+            self._control.refuse_once()
+            return "refused prompt"
+        if self._prompt == _SELECTION_PROMPT_INDEX:
+            self._control.start_selection()
+            return "queued prompt"
+        return None
+
+    def render(self, event: ClaudeStructuredTerminalEvent) -> None:
+        self.rendered.extend(event.text)
+        if event.text and not self._interrupted:
+            self._interrupted = True
+            raise KeyboardInterrupt
+
+    def request_permission(
+        self,
+        request: ClaudeStructuredPermissionRequest,
+    ) -> ClaudeStructuredPermissionDecision:
+        if request.tool_name != "Bash":
+            raise AssertionError("Unexpected permission request.")
+        self._events.append("permission")
+        return ClaudeStructuredPermissionDecision.DENY
+
+    def request_question(
+        self,
+        request: ClaudeStructuredQuestionRequest,
+    ) -> tuple[ClaudeStructuredQuestionAnswer, ...]:
+        if request.questions[0].question != "Choose a mode":
+            raise AssertionError("Unexpected Claude question request.")
+        self._events.append("question")
+        return (
+            ClaudeStructuredQuestionAnswer(
+                question="Choose a mode",
+                answer="Safe",
+                preview="readonly",
+            ),
+        )
+
+    def render_status(self, code: SelectionCode) -> None:
+        self._events.append(f"status:{code.value}")
+
+
+def test_claude_session_keeps_one_engine_across_a_queued_switch() -> None:
+    """Keep PID and conversation through refusal, switch, and interrupt."""
+    events: list[str] = []
+    engine = ClaudeSessionEngineFake(
+        (StructuredResponseCase.SUCCESS,) * 4,
+        _stream_events(),
+        events,
+    )
+    control = ClaudeSessionControlFake(events)
+    host, supervisor = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+    runtime = ClaudeSessionRuntime(
+        engine,
+        control,
+        host,
+        supervisor,
+        participant_id=SESSION_PARTICIPANT,
+        turn_id_factory=lambda: SESSION_TURN,
+        request_id_factory=iter(SESSION_REQUESTS).__next__,
+    )
+    terminal = _JourneyTerminal(control, events)
+
+    status = ClaudeCliSession(runtime, terminal).run(())
+
+    assert (
+        status,
+        engine.process_id == runtime.process_id,
+        str(runtime.conversation_id),
+        terminal.rendered,
+        engine.user_turn_count,
+    ) == (0, True, _CONVERSATION, ["continued"], 1)
+    assert events == [
+        f"install:{SESSION_REQUESTS[0]}",
+        "initialize",
+        f"status:{SelectionCode.SELECTION_RECOVERY_REQUIRED.value}",
+        f"install:{SESSION_REQUESTS[2]}",
+        "receipt",
+        "ready",
+        "adoption",
+        "prompt",
+        "permission_pending",
+        "cancel:cancel-1",
+        "permission",
+        "permission_response",
+        "question",
+        "question_response",
+        "elicitation_response",
+        "dialog_response",
+        "interrupt",
+        "end",
+        "close_input",
+        "wait",
+    ]
+
+
+def _stream_events() -> tuple[bytes, ...]:
+    session = _CONVERSATION.encode()
+    return (
+        b'{"type":"system","subtype":"init","session_id":"' + session + b'"}',
+        (
+            b'{"type":"system","subtype":"task_started",'
+            b'"session_id":"'
+            + session
+            + b'","task_id":"agent-1","task_type":"local_agent"}'
+        ),
+        (
+            b'{"type":"system","subtype":"hook_started",'
+            b'"session_id":"' + session + b'","hook_id":"hook-1"}'
+        ),
+        (b'{"type":"system","subtype":"hook_progress","hook_id":"hook-1"}'),
+        (b'{"type":"system","subtype":"hook_response","hook_id":"hook-1"}'),
+        (
+            b'{"type":"system","subtype":"task_updated",'
+            b'"task_id":"agent-1","patch":{"status":"completed"}}'
+        ),
+        (
+            b'{"type":"control_request","request_id":"cancel-1",'
+            b'"request":{"subtype":"can_use_tool","tool_name":"Bash",'
+            b'"tool_use_id":"tool-cancel","input":{"command":"sleep"}}}'
+        ),
+        b'{"type":"control_cancel_request","request_id":"cancel-1"}',
+        (
+            b'{"type":"control_request","request_id":"permission-1",'
+            b'"request":{"subtype":"can_use_tool","tool_name":"Bash",'
+            b'"tool_use_id":"tool-1","input":{"command":"true"},'
+            b'"requires_user_interaction":true}}'
+        ),
+        (
+            b'{"type":"control_request","request_id":"question-1",'
+            b'"request":{"subtype":"can_use_tool",'
+            b'"tool_name":"AskUserQuestion","tool_use_id":"tool-2",'
+            b'"input":{"questions":[{"question":"Choose a mode",'
+            b'"header":"Mode","options":[{"label":"Safe",'
+            b'"description":"Read only","preview":"readonly"},'
+            b'{"label":"Fast","description":"Write enabled"}],'
+            b'"multiSelect":false}]}}}'
+        ),
+        (
+            b'{"type":"control_request","request_id":"elicitation-1",'
+            b'"request":{"subtype":"elicitation",'
+            b'"mcp_server_name":"server","message":"Approve?",'
+            b'"mode":"form","url":"https://example.test",'
+            b'"elicitation_id":"elicit-1","requested_schema":{},'
+            b'"title":"Approval","display_name":"Server",'
+            b'"description":"Provider request"}}'
+        ),
+        (
+            b'{"type":"control_request","request_id":"dialog-1",'
+            b'"request":{"subtype":"request_user_dialog",'
+            b'"dialog_kind":"private","payload":{}}}'
+        ),
+        (
+            b'{"type":"stream_event","session_id":"'
+            + session
+            + b'","event":{"type":"content_block_delta",'
+            b'"delta":{"type":"text_delta","text":"continued"}}}'
+        ),
+        b'{"type":"assistant","session_id":"'
+        + session
+        + b'","message":{"role":"assistant","content":'
+        b'[{"type":"text","text":"continued"}]}}',
+        b'{"type":"result","subtype":"success","session_id":"'
+        + session
+        + b'","is_error":false}',
+    )

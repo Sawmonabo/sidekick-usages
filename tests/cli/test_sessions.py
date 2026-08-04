@@ -57,6 +57,7 @@ from sidekick_usages.persistence.supervisor import selection
 from sidekick_usages.persistence.supervisor.service import ServiceStateStore
 from sidekick_usages.platform.executable import qualify_executable
 from sidekick_usages.platform.models import ExecutableProvenance
+from sidekick_usages.providers.claude.structured import process
 from sidekick_usages.providers.codex.app_server import executable
 from sidekick_usages.providers.codex.session import quiescence
 from tests.fakes.codex.app_server.daemon import FakeCodexDaemon
@@ -156,6 +157,20 @@ def test_launcher_freezes_process_contract_and_rejects_unsafe_override(
         launcher.plan(ProviderId.CLAUDE, ())
 
     assert recursion.value.code is SessionLaunchFailure.RECURSIVE_EXECUTABLE
+
+
+def test_claude_arguments_preserve_continuation_and_close_auth_bypass() -> (
+    None
+):
+    """Continuation stays integrated while auth mutation fails closed."""
+    conversation = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    assert all(
+        process.claude_structured_arguments_supported(arguments)
+        for arguments in ((), ("-c",), ("--resume", conversation))
+    )
+    assert not process.claude_structured_arguments_supported(("--resume",))
+    assert process.claude_arguments_mutate_auth(("/login",))
+    assert process.claude_arguments_mutate_auth(("auth", "logout"))
 
 
 def test_launcher_executes_exact_descriptor_from_requested_directory(
@@ -614,21 +629,6 @@ def test_public_shell_dry_run_reports_exact_targets_without_writing(
     assert "stable bounded reads" in output
     assert not (home / ".bashrc").exists()
     assert not integration.parent.exists()
-
-
-def test_claude_session_command_refuses_unavailable_capability() -> None:
-    """Provider entrypoints must not fall through to unmanaged processes."""
-    result = CliRunner().invoke(
-        create_app(),
-        ["session", "claude", "--", "prompt with spaces"],
-        terminal_width=160,
-    )
-
-    assert result.exit_code == ExitCode.MANUAL_ACTION
-    output = click.unstyle(result.output)
-    assert "claude session integration is not available" in output
-    assert "provider process was not" in output
-    assert "started." in output
 
 
 def _stopped_restore_patch() -> pytest.MonkeyPatch:

@@ -440,6 +440,15 @@ def decode_oauth_update_success(
     consumed_request_ids: frozenset[RequestId],
 ) -> None:
     """Require one exact, fresh, correlated success response."""
+    decode_control_success(payload, request_id, consumed_request_ids)
+
+
+def decode_control_success(
+    payload: bytes,
+    request_id: RequestId,
+    consumed_request_ids: frozenset[RequestId] = frozenset(),
+) -> None:
+    """Require one exact, fresh, correlated control success."""
     subtype, correlated = _decode_control_response(payload)
     if (
         subtype != "success"
