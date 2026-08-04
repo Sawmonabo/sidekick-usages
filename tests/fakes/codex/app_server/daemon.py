@@ -1,6 +1,5 @@
 """Real Unix-WebSocket fake for the official shared Codex daemon."""
 
-import json
 import os
 import sys
 from contextlib import suppress
@@ -10,7 +9,6 @@ from types import TracebackType
 from typing import Self
 
 from websockets.exceptions import ConnectionClosed
-from websockets.sync.client import ClientConnection, unix_connect
 from websockets.sync.server import (
     Server,
     ServerConnection,
@@ -25,7 +23,11 @@ from sidekick_usages.providers.codex.broker.responder import (
 )
 from sidekick_usages.serialization.json import JsonObject, decode_json_object
 from tests.fakes.codex.app_server.models import FakeCodexRefreshResponse
-from tests.fakes.codex.app_server.session import FakeCodexSession
+from tests.fakes.codex.app_server.session import (
+    FakeCodexSession,
+    FakeCodexTuiObserver,
+    send_fake_codex_message,
+)
 from tests.fakes.codex.auth import codex_token_account_id, managed_auth
 
 _CLIENT_TIMEOUT_SECONDS = 5.0
@@ -36,7 +38,6 @@ _EXTERNAL_REFRESH_ERROR_MESSAGE = "external auth refresh unavailable"
 _EXTERNAL_REFRESH_METHOD = "account/chatgptAuthTokens/refresh"
 _CONTROL_DIRECTORY_NAME = "app-server-control"
 _CONTROL_SOCKET_NAME = "app-server-control.sock"
-_DAEMON_WEBSOCKET_URI = "ws://localhost/rpc"
 _EMITTED_AT_MILLISECONDS = 1_750_000_000_000
 
 
@@ -54,6 +55,7 @@ class FakeCodexDaemon:
         supports_websockets: bool | None = None,
         user_config: JsonObject | None = None,
         project_config: JsonObject | None = None,
+        mcp_server_names: tuple[str, ...] = (),
     ) -> None:
         self._codex_home = codex_home
         self._version = app_server_version
@@ -65,6 +67,7 @@ class FakeCodexDaemon:
             supports_websockets=supports_websockets,
             user_config=user_config,
             project_config=project_config,
+            mcp_server_names=mcp_server_names,
         )
         self._lock = RLock()
         self._server: Server | None = None
@@ -73,6 +76,7 @@ class FakeCodexDaemon:
         self._connections: set[ServerConnection] = set()
         self._initialized: set[ServerConnection] = set()
         self._client_names: dict[ServerConnection, str] = {}
+        self._loaded_threads: dict[ServerConnection, set[str]] = {}
         self._relay_start_request_ids: list[int] = []
         self._installed_account_ids: list[str] = []
         self._external_logins: list[tuple[str, str]] = []
@@ -91,6 +95,9 @@ class FakeCodexDaemon:
         self._resume_install = Event()
         self._install_resumed = Event()
         self._failures: list[BaseException] = []
+        self._mcp_reload_count = 0
+        self._suppress_next_mcp_reload_status = False
+        self._mutation_events: list[str] = []
 
     @property
     def socket_path(self) -> Path:
@@ -123,17 +130,42 @@ class FakeCodexDaemon:
         name: str,
         status: str,
     ) -> None:
-        """Broadcast one official-shaped MCP startup status."""
-        self._broadcast(
-            {
-                "method": "mcpServer/startupStatus/updated",
-                "params": {
-                    "threadId": thread_id,
-                    "name": name,
-                    "status": status,
-                },
-            }
-        )
+        """Send one lifecycle event only to loaded-thread subscribers."""
+        with self._lock:
+            subscribers = tuple(
+                connection
+                for connection, thread_ids in self._loaded_threads.items()
+                if thread_id in thread_ids
+            )
+        notification: JsonObject = {
+            "emittedAtMs": _EMITTED_AT_MILLISECONDS,
+            "method": "mcpServer/startupStatus/updated",
+            "params": {
+                "threadId": thread_id,
+                "name": name,
+                "status": status,
+            },
+        }
+        for connection in subscribers:
+            send_fake_codex_message(connection, notification)
+
+    def emit_mcp_statuses(
+        self,
+        observer: FakeCodexTuiObserver,
+        thread_ids: tuple[str, ...],
+        statuses: tuple[str, ...],
+    ) -> None:
+        """Send and receive exact subscriber-scoped lifecycle events."""
+        for status in statuses:
+            for thread_id in thread_ids:
+                self.emit_mcp_status(thread_id, "synthetic", status)
+                for _message_index in range(16):
+                    if observer.receive().get("method") == (
+                        "mcpServer/startupStatus/updated"
+                    ):
+                        break
+                else:
+                    raise AssertionError("Fake Codex MCP event was not seen.")
 
     @property
     def model_auth_read_count(self) -> int:
@@ -144,6 +176,35 @@ class FakeCodexDaemon:
     @property
     def mcp_status_thread_ids(self) -> tuple[str, ...]:
         return self._session.mcp_status_thread_ids
+
+    @property
+    def mcp_reload_count(self) -> int:
+        """Return correlated resident MCP reload requests."""
+        with self._lock:
+            return self._mcp_reload_count
+
+    @property
+    def resident_connection_ids(self) -> tuple[int, ...]:
+        """Return exact initialized resident broker connection identities."""
+        with self._lock:
+            return tuple(
+                sorted(
+                    id(connection)
+                    for connection, name in self._client_names.items()
+                    if name == "sidekick_usages"
+                )
+            )
+
+    @property
+    def mutation_events(self) -> tuple[str, ...]:
+        """Return reload and auth-mutation requests in received order."""
+        with self._lock:
+            return tuple(self._mutation_events)
+
+    def suppress_next_mcp_reload_status(self) -> None:
+        """Suppress one reload's lifecycle notifications."""
+        with self._lock:
+            self._suppress_next_mcp_reload_status = True
 
     @property
     def config_read_count(self) -> int:
@@ -274,7 +335,7 @@ class FakeCodexDaemon:
             },
         }
         for recipient in recipients:
-            _send(recipient, message)
+            send_fake_codex_message(recipient, message)
         if not event.wait(_REFRESH_RESPONSE_TIMEOUT_SECONDS):
             raise AssertionError("Fake Codex refresh received no response.")
         with self._lock:
@@ -374,6 +435,7 @@ class FakeCodexDaemon:
             self._connections.clear()
             self._initialized.clear()
             self._client_names.clear()
+            self._loaded_threads.clear()
         with suppress(FileNotFoundError):
             self.socket_path.unlink()
 
@@ -397,6 +459,7 @@ class FakeCodexDaemon:
                 self._connections.discard(connection)
                 self._initialized.discard(connection)
                 self._client_names.pop(connection, None)
+                self._loaded_threads.pop(connection, None)
 
     def _dispatch(
         self,
@@ -479,8 +542,12 @@ class FakeCodexDaemon:
             raise AssertionError("Codex fake relay thread is invalid.")
         with self._lock:
             self._relay_start_request_ids.append(request_id)
+            self._loaded_threads.setdefault(connection, set()).add(thread_id)
         if realtime:
-            _send(connection, {"id": request_id, "result": {}})
+            send_fake_codex_message(
+                connection,
+                {"id": request_id, "result": {}},
+            )
             methods = ("thread/realtime/started", "thread/realtime/closed")
             turn = None
         else:
@@ -489,7 +556,7 @@ class FakeCodexDaemon:
                 "id": request_id,
                 "result": {"turn": turn},
             }
-            _send(connection, response)
+            send_fake_codex_message(connection, response)
             methods = ("turn/started", "turn/completed")
         for method in methods:
             if turn is None:
@@ -498,14 +565,14 @@ class FakeCodexDaemon:
                     "method": method,
                     "params": {"threadId": thread_id},
                 }
-                _send(connection, notification)
+                send_fake_codex_message(connection, notification)
             else:
                 turn_notification: JsonObject = {
                     "emittedAtMs": _EMITTED_AT_MILLISECONDS,
                     "method": method,
                     "params": {"threadId": thread_id, "turn": turn},
                 }
-                _send(connection, turn_notification)
+                send_fake_codex_message(connection, turn_notification)
 
     def _resume_relay_thread(
         self,
@@ -518,7 +585,9 @@ class FakeCodexDaemon:
         )
         if not isinstance(thread_id, str) or not thread_id:
             raise AssertionError("Codex fake resumed thread is invalid.")
-        _send(
+        with self._lock:
+            self._loaded_threads.setdefault(connection, set()).add(thread_id)
+        send_fake_codex_message(
             connection,
             {
                 "id": _request_id(request),
@@ -542,7 +611,7 @@ class FakeCodexDaemon:
             params = request.get("params")
             if not isinstance(params, dict):
                 raise AssertionError("Fake Codex MCP status read is invalid.")
-            _send(
+            send_fake_codex_message(
                 connection,
                 {
                     "id": _request_id(request),
@@ -550,7 +619,29 @@ class FakeCodexDaemon:
                 },
             )
             return True
+        if method == "config/mcpServer/reload":
+            self._reload_mcp_servers(connection, request)
+            return True
         return False
+
+    def _reload_mcp_servers(
+        self,
+        connection: ServerConnection,
+        request: JsonObject,
+    ) -> None:
+        if "params" in request:
+            raise AssertionError("Fake Codex MCP reload params were present.")
+        with self._lock:
+            self._mcp_reload_count += 1
+            self._mutation_events.append("reload")
+            suppress_status = self._suppress_next_mcp_reload_status
+            self._suppress_next_mcp_reload_status = False
+        send_fake_codex_message(
+            connection,
+            {"id": _request_id(request), "result": {}},
+        )
+        if not suppress_status:
+            self._emit_mcp_lifecycle("ready")
 
     def _read_config(
         self,
@@ -560,7 +651,7 @@ class FakeCodexDaemon:
         if request.get("params") != {"includeLayers": True}:
             raise AssertionError("Codex fake config read is invalid.")
         result = self._session.read_config()
-        _send(
+        send_fake_codex_message(
             connection,
             {
                 "id": _request_id(request),
@@ -578,7 +669,7 @@ class FakeCodexDaemon:
                 "Codex fake model-capability read is invalid."
             )
         result = self._session.read_model_capabilities()
-        _send(
+        send_fake_codex_message(
             connection,
             {
                 "id": _request_id(request),
@@ -613,7 +704,7 @@ class FakeCodexDaemon:
                 self._originator = name
             originator = self._originator
             self._client_names[connection] = name
-        _send(
+        send_fake_codex_message(
             connection,
             {
                 "id": request_id,
@@ -714,7 +805,7 @@ class FakeCodexDaemon:
         ):
             raise AssertionError("Codex fake projection is inconsistent.")
         self._record_external_auth(account_id, access_token)
-        _send(
+        send_fake_codex_message(
             connection,
             {
                 "id": _request_id(request),
@@ -761,6 +852,31 @@ class FakeCodexDaemon:
             self._active_account_id = account_id
             self._active_access_token = access_token
             self._installed_account_ids.append(account_id)
+            self._mutation_events.append("install")
+        self._emit_mcp_lifecycle("ready")
+
+    def _emit_mcp_lifecycle(self, status: str) -> None:
+        with self._lock:
+            routes = tuple(
+                (connection, tuple(sorted(thread_ids)))
+                for connection, thread_ids in self._loaded_threads.items()
+            )
+            names = self._session.mcp_server_names
+        for connection, thread_ids in routes:
+            for thread_id in thread_ids:
+                for name in names:
+                    send_fake_codex_message(
+                        connection,
+                        {
+                            "emittedAtMs": _EMITTED_AT_MILLISECONDS,
+                            "method": "mcpServer/startupStatus/updated",
+                            "params": {
+                                "threadId": thread_id,
+                                "name": name,
+                                "status": status,
+                            },
+                        },
+                    )
 
     def _read_account(
         self,
@@ -783,7 +899,7 @@ class FakeCodexDaemon:
                 "type": "chatgpt",
             }
         )
-        _send(
+        send_fake_codex_message(
             connection,
             {
                 "id": _request_id(request),
@@ -815,7 +931,7 @@ class FakeCodexDaemon:
                 if not auth_path.is_file()
                 else _auth_access_token(auth_path.read_bytes())
             )
-        _send(
+        send_fake_codex_message(
             connection,
             {
                 "id": _request_id(request),
@@ -840,138 +956,7 @@ class FakeCodexDaemon:
         with self._lock:
             recipients = tuple(self._initialized)
         for recipient in recipients:
-            _send(recipient, message)
-
-
-class FakeCodexTuiObserver:
-    """One initialized fake TUI observing shared account updates."""
-
-    def __init__(self, socket_path: Path) -> None:
-        self._socket_path = socket_path
-        self._connection: ClientConnection | None = None
-
-    def open(self) -> None:
-        """Connect and initialize this observer."""
-        connection = unix_connect(
-            str(self._socket_path),
-            uri=_DAEMON_WEBSOCKET_URI,
-            compression=None,
-            proxy=None,
-            open_timeout=_CLIENT_TIMEOUT_SECONDS,
-            close_timeout=1.0,
-        )
-        self._connection = connection
-        _send(
-            connection,
-            {
-                "id": 1,
-                "method": "initialize",
-                "params": {
-                    "capabilities": {"experimentalApi": True},
-                    "clientInfo": {
-                        "name": "codex-tui",
-                        "title": "Codex TUI",
-                        "version": "0.145.0",
-                    },
-                },
-            },
-        )
-        response = _receive(connection)
-        if response.get("id") != 1 or not isinstance(
-            response.get("result"),
-            dict,
-        ):
-            raise AssertionError("Fake Codex observer failed to initialize.")
-        _send(connection, {"method": "initialized"})
-
-    def wait_for_account_update(self) -> None:
-        """Wait for one external-auth account update."""
-        connection = self._connection
-        if connection is None:
-            raise AssertionError("Fake Codex observer is not open.")
-        for _message_index in range(4):
-            message = _receive(connection)
-            if message.get("method") == "account/updated" and message.get(
-                "params"
-            ) == {
-                "authMode": "chatgptAuthTokens",
-                "planType": "pro",
-            }:
-                return
-        raise AssertionError("Fake Codex observer saw no account update.")
-
-    def send_request(
-        self,
-        request_id: int,
-        method: str,
-        params: JsonObject,
-    ) -> None:
-        """Send one official-shaped request through the active connection."""
-        connection = self._connection
-        if connection is None:
-            raise AssertionError("Fake Codex observer is not open.")
-        _send(
-            connection,
-            {"id": request_id, "method": method, "params": params},
-        )
-
-    def receive(self) -> JsonObject:
-        """Receive one complete fake TUI frame."""
-        connection = self._connection
-        if connection is None:
-            raise AssertionError("Fake Codex observer is not open.")
-        return _receive(connection)
-
-    def receive_optional(self, timeout_seconds: float) -> JsonObject | None:
-        """Return a frame when available within one bounded wait."""
-        connection = self._connection
-        if connection is None:
-            raise AssertionError("Fake Codex observer is not open.")
-        try:
-            return _receive(connection, timeout_seconds=timeout_seconds)
-        except TimeoutError:
-            return None
-
-    def wait_closed(self) -> None:
-        """Require the relay to close this observer connection."""
-        connection = self._connection
-        if connection is None:
-            raise AssertionError("Fake Codex observer is not open.")
-        try:
-            connection.recv(timeout=_CLIENT_TIMEOUT_SECONDS)
-        except ConnectionClosed:
-            return
-        raise AssertionError("Fake Codex observer remained open.")
-
-    def close(self) -> None:
-        """Close this observer."""
-        connection = self._connection
-        self._connection = None
-        if connection is not None:
-            connection.close()
-
-
-def _send(
-    connection: ServerConnection | ClientConnection,
-    message: JsonObject,
-) -> None:
-    connection.send(json.dumps(message))
-
-
-def _receive(
-    connection: ClientConnection,
-    *,
-    timeout_seconds: float = _CLIENT_TIMEOUT_SECONDS,
-) -> JsonObject:
-    message = connection.recv(timeout=timeout_seconds)
-    if not isinstance(message, str):
-        raise AssertionError("Fake Codex observer received binary data.")
-    try:
-        return decode_json_object(message.encode())
-    except InvalidPayloadError:
-        raise AssertionError(
-            "Fake Codex observer received invalid JSON."
-        ) from None
+            send_fake_codex_message(recipient, message)
 
 
 def _request_id(request: JsonObject) -> int:

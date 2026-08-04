@@ -29,6 +29,9 @@ from sidekick_usages.providers.codex.app_server.errors import (
 from sidekick_usages.providers.codex.app_server.jsonrpc.types import (
     JsonRpcMessage,
 )
+from sidekick_usages.providers.codex.app_server.methods import (
+    CONFIG_MCP_SERVER_RELOAD_METHOD,
+)
 from sidekick_usages.providers.codex.app_server.models import CodexExecutable
 from sidekick_usages.providers.codex.auth.generation import (
     codex_generation_order,
@@ -362,6 +365,25 @@ class CodexSharedRuntime:
         self._receipt = receipt
         self._projection_auth_generation = projection_auth_generation
         return receipt
+
+    def reload_mcp_servers(self) -> None:
+        """Reload MCP servers without replacing the resident session."""
+        session = self._session
+        authority = self._authority
+        if session is None or session.closed or authority is None:
+            raise CodexBrokerError(CodexBrokerFailure.RUNTIME_CHANGED)
+        try:
+            result = session.request(CONFIG_MCP_SERVER_RELOAD_METHOD)
+        except CodexAppServerError as error:
+            self._drop_session()
+            raise codex_broker_error(error) from None
+        if result:
+            self._drop_session()
+            raise CodexBrokerError(CodexBrokerFailure.PROTOCOL_FAILED)
+        if session is not self._session or session.closed:
+            self._drop_session()
+            raise CodexBrokerError(CodexBrokerFailure.RUNTIME_CHANGED)
+        self._revalidate_authority(authority)
 
     def receive(
         self,

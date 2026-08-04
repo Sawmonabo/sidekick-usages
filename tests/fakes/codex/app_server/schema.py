@@ -221,6 +221,7 @@ def write_codex_schema(root: Path, *, external_auth: bool) -> None:
             {"data": {"type": "array"}},
             required=("data",),
         ),
+        "v2/McpServerRefreshResponse.json": _object_schema({}),
         "v2/McpServerStatusUpdatedNotification.json": _object_schema(
             {
                 "name": {"type": "string"},
@@ -236,6 +237,7 @@ def write_codex_schema(root: Path, *, external_auth: bool) -> None:
             "account/logout",
             "account/read",
             "config/read",
+            "config/mcpServer/reload",
             "modelProvider/capabilities/read",
             "turn/start",
             "thread/realtime/start",

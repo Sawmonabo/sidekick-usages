@@ -105,6 +105,7 @@ _SESSION_SCHEMA_MANIFEST = (
     "v2/ThreadRealtimeClosedNotification.json",
     "v2/ListMcpServerStatusParams.json",
     "v2/ListMcpServerStatusResponse.json",
+    "v2/McpServerRefreshResponse.json",
     "v2/McpServerStatusUpdatedNotification.json",
 )
 _ROUTING_REQUEST_ID = 7
@@ -249,17 +250,6 @@ def _receive_method(tui: FakeCodexTuiObserver, method: str) -> None:
     raise AssertionError("Fake Codex TUI saw no provider terminal event.")
 
 
-def _emit_mcp_status(
-    daemon: FakeCodexDaemon,
-    tui: FakeCodexTuiObserver,
-    thread_ids: tuple[str, ...],
-    status: str,
-) -> None:
-    for thread_id in thread_ids:
-        daemon.emit_mcp_status(thread_id, "synthetic", status)
-        _receive_method(tui, "mcpServer/startupStatus/updated")
-
-
 def _serve_selection(
     channel: CodexParticipantProofChannel,
     relay: CodexAdmissionRelay,
@@ -281,7 +271,7 @@ def _prove_nonempty_mcp_readback(
 ) -> None:
     relay.open_epoch(_TARGET_AUTHORITY.epoch)
     threads = relay.loaded_threads_snapshot.thread_ids
-    _emit_mcp_status(daemon, tui, threads, "ready")
+    daemon.emit_mcp_statuses(tui, threads, ("starting", "ready"))
     readback_start = len(control.mcp_thread_ids)
     operation_id = OperationId("88888888-8888-4888-8888-888888888888")
     proof_thread = _serve_selection(channel, relay)
@@ -322,7 +312,6 @@ def _resume_thread(
 
 
 def _prove_relay_routing_codec(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Prove only relay-owned identifiers and raw bytes are observed."""
     raw_turn = (
         b'{"id":7,"method":"turn/start","params":'
         b'{"input":[{"text":"provider-content"}],'
@@ -360,7 +349,6 @@ def _prove_relay_baseline(
     control: _RelayControl,
     daemon: FakeCodexDaemon,
 ) -> None:
-    """Prove natural terminals, bounded FIFO, and baseline reopen."""
     tui.send_request(
         10,
         "turn/start",
@@ -396,9 +384,9 @@ def _prove_participant_quiescence(
     control: _RelayControl,
     daemon: FakeCodexDaemon,
 ) -> None:
-    """Prove failed proof release, MCP refresh, OPEN, and adoption."""
     failed_operation_id = OperationId("77777777-7777-4777-8777-777777777777")
     operation_id = OperationId("66666666-6666-4666-8666-666666666666")
+    epoch = _TARGET_AUTHORITY.epoch
     supervisor_endpoint, participant_endpoint = socket.socketpair()
     proofs = CodexParticipantProofSet(FramedTransport)
     proofs.stage(
@@ -414,22 +402,31 @@ def _prove_participant_quiescence(
     control.close_gate()
     control.mcp_names = ("synthetic",)
     failed_threads = relay.loaded_threads_snapshot.thread_ids
-    _emit_mcp_status(daemon, tui, failed_threads, "ready")
     failed_worker = _serve_selection(channel, relay)
-    proofs.prepare(failed_operation_id, _TARGET_AUTHORITY.epoch)
-    _emit_mcp_status(daemon, tui, failed_threads, "ready")
+    proofs.prepare(failed_operation_id, epoch)
+    daemon.emit_mcp_statuses(
+        tui,
+        failed_threads,
+        ("starting", "ready"),
+    )
     daemon.emit_mcp_status("thread-changed", "synthetic", "ready")
-    _receive_method(tui, "mcpServer/startupStatus/updated")
+    assert tui.receive_optional(0.1) is None
+    control.mcp_names = ("changed",)
     with pytest.raises(CodexParticipantProofError):
-        proofs.complete(failed_operation_id, _TARGET_AUTHORITY)
-    proofs.abort(failed_operation_id, _TARGET_AUTHORITY.epoch)
+        proofs.confirm_baseline(failed_operation_id, epoch)
+    proofs.abort(failed_operation_id, epoch)
     failed_worker.join(timeout=_RELAY_WAIT_SECONDS)
+    control.mcp_names = ("synthetic",)
     _resume_thread(tui, 79, "thread-after-failed-proof")
     sealed_threads = relay.loaded_threads_snapshot.thread_ids
-    _emit_mcp_status(daemon, tui, sealed_threads, "ready")
     proof_worker = _serve_selection(channel, relay)
-    proofs.prepare(operation_id, _TARGET_AUTHORITY.epoch)
-    _emit_mcp_status(daemon, tui, sealed_threads, "failed")
+    proofs.prepare(operation_id, epoch)
+    daemon.emit_mcp_statuses(
+        tui,
+        sealed_threads,
+        ("starting", "failed"),
+    )
+    proofs.confirm_baseline(operation_id, epoch)
     completion = Thread(
         target=proofs.complete,
         args=(operation_id, _TARGET_AUTHORITY),
@@ -437,14 +434,13 @@ def _prove_participant_quiescence(
     completion.start()
     completion.join(timeout=0.1)
     assert completion.is_alive()
-    _emit_mcp_status(daemon, tui, sealed_threads, "ready")
+    daemon.emit_mcp_statuses(tui, sealed_threads, ("ready",))
     resumed = Thread(
         target=_resume_thread,
         args=(tui, 80, "thread-after-proof"),
     )
     resumed.start()
     resumed.join(timeout=0.1)
-    assert resumed.is_alive()
     completion.join(timeout=_RELAY_WAIT_SECONDS)
     proof_worker.join(timeout=_RELAY_WAIT_SECONDS)
     resumed.join(timeout=0.1)
@@ -471,7 +467,6 @@ def _prove_participant_quiescence(
 
 
 def _prove_versioned_relay_journey(short_socket_root: Path) -> None:
-    """Prove the complete provider-local relay state boundary."""
     daemon_home = short_socket_root / "relay-daemon"
     relay_root = short_socket_root / "relay"
     daemon_home.mkdir(mode=0o700)

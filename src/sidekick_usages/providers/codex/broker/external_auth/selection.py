@@ -528,6 +528,7 @@ class CodexSelectionBroker:
         self._instruction: CodexSelectionInstruction | None = None
         self._exchange: CodexWorkerExchange | None = None
         self._readback_projection: ProviderAuthObservation | None = None
+        self._refusal_pending = False
 
     def set_authority(self, authority: CodexDaemonAuthority | None) -> None:
         """Publish the current immutable resident socket qualification."""
@@ -609,6 +610,7 @@ class CodexSelectionBroker:
             [CodexSharedRuntime, CodexProjectionReceipt],
             None,
         ],
+        before_install: Callable[[], None],
     ) -> None:
         """Serve one worker response under its exact socket binding."""
         self._require_runtime(runtime, instruction)
@@ -629,27 +631,21 @@ class CodexSelectionBroker:
                 generation=projection.generation,
                 epoch=reply.binding.pending_epoch,
             )
-            try:
-                self._participant_proofs.prepare(
-                    reply.binding.operation_id,
-                    reply.binding.pending_epoch,
-                )
-            except CodexParticipantProofError:
-                raise CodexBrokerError(
-                    CodexBrokerFailure.PROTOCOL_UNSUPPORTED
-                ) from None
+            self._participant_proofs.prepare(
+                reply.binding.operation_id,
+                reply.binding.pending_epoch,
+            )
             proof_pending = True
             try:
                 self._require_runtime(runtime, instruction)
                 with projection:
-                    runtime.prepare(
-                        projection.account_id,
-                        projection.provider_identity,
-                        projection.generation,
-                    )
-                    runtime.require_authority(
-                        instruction.socket_device,
-                        instruction.socket_inode,
+                    self._prepare_install(
+                        runtime,
+                        instruction,
+                        projection,
+                        reply.binding.operation_id,
+                        reply.binding.pending_epoch,
+                        before_install,
                     )
                     receipt = runtime.install(
                         projection,
@@ -730,6 +726,17 @@ class CodexSelectionBroker:
         """Serve or await one pending selection worker response."""
         pending = self.pending()
         if pending is None:
+            with self._lock:
+                refusal_pending = self._refusal_pending
+            if not refusal_pending:
+                return False
+            try:
+                self._runtime_state.current()
+            except RuntimeError:
+                wait(wait_seconds)
+                return True
+            with self._lock:
+                self._refusal_pending = False
             return False
         instruction, exchange = pending
         try:
@@ -743,18 +750,23 @@ class CodexSelectionBroker:
             wait(wait_seconds)
             return True
         completed = False
-        if instruction.kind is OperationKind.SELECTION_COMMIT:
-            set_ready(False)
+        refused_before_mutation = False
         try:
-            self.serve(
-                runtime,
-                instruction,
-                exchange,
-                record_projection,
-            )
-            completed = True
+            try:
+                self.serve(
+                    runtime,
+                    instruction,
+                    exchange,
+                    record_projection,
+                    lambda: set_ready(False),
+                )
+                completed = True
+            except CodexParticipantProofError:
+                refused_before_mutation = True
+                with self._lock:
+                    self._refusal_pending = True
         finally:
-            if not completed:
+            if not completed and not refused_before_mutation:
                 self.set_authority(None)
             self.finish(
                 instruction.worker_operation_id,
@@ -818,6 +830,29 @@ class CodexSelectionBroker:
             or authority.control_socket.inode != instruction.socket_inode
         ):
             raise CodexBrokerError(CodexBrokerFailure.RUNTIME_CHANGED)
+
+    def _prepare_install(
+        self,
+        runtime: CodexSharedRuntime,
+        instruction: CodexSelectionInstruction,
+        projection: CodexProjection,
+        operation_id: OperationId,
+        epoch: SelectionEpoch,
+        before_install: Callable[[], None],
+    ) -> None:
+        """Baseline-confirm before invalidating the prior projection."""
+        runtime.require_authority(
+            instruction.socket_device,
+            instruction.socket_inode,
+        )
+        runtime.reload_mcp_servers()
+        self._participant_proofs.confirm_baseline(operation_id, epoch)
+        before_install()
+        runtime.prepare(
+            projection.account_id,
+            projection.provider_identity,
+            projection.generation,
+        )
 
     def _readback(
         self,

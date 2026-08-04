@@ -527,7 +527,7 @@ class CodexDaemonSession:
     def request(
         self,
         method: str,
-        params: JsonObject,
+        params: JsonObject | None = None,
         *,
         timeout_seconds: float = DEFAULT_JSON_RPC_TIMEOUT_SECONDS,
     ) -> JsonObject:

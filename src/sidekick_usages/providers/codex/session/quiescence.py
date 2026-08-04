@@ -36,7 +36,7 @@ from sidekick_usages.serialization.json import (
     encode_compact_json,
 )
 
-_PROTOCOL_VERSION = 2
+_PROTOCOL_VERSION = 3
 _PROOF_TIMEOUT_SECONDS = 8.0
 _MAX_PARTICIPANTS = 16
 _CHALLENGE_KEYS = frozenset(
@@ -66,7 +66,9 @@ class CodexParticipantProofError(RuntimeError):
 class _ProofPhase(StrEnum):
     """Closed participant proof phases around external-auth mutation."""
 
-    PRECOMMIT = "precommit"
+    FREEZE_DRAIN = "freeze_drain"
+    INVENTORY_ARM = "inventory_arm"
+    BASELINE = "baseline"
     POSTCOMMIT = "postcommit"
     ABORT = "abort"
 
@@ -91,17 +93,23 @@ class _Receipt:
 class CodexQuiescenceRelay(Protocol):
     """Return secret-free quiescence from one participant-local relay."""
 
+    def freeze_quiescence(self) -> tuple[int, int, bool]:
+        """Freeze and snapshot the participant without provider reads."""
+
     def arm_quiescence(
         self,
         refresh_required: bool,
     ) -> tuple[int, int, bool]:
-        """Arm and prove the precommit participant barrier."""
+        """Inventory the already-frozen participant barrier."""
 
     def confirm_quiescence(
         self,
         refresh_required: bool,
     ) -> tuple[int, int, bool]:
         """Reprove under the retained participant barrier."""
+
+    def confirm_baseline(self) -> tuple[int, int, bool]:
+        """Require fresh pre-mutation lifecycle for the armed inventory."""
 
     def release_quiescence(self) -> tuple[int, int, bool]:
         """Release the barrier without another provider read."""
@@ -359,13 +367,24 @@ class CodexParticipantProofSet:
                     set(),
                 )
                 self._pending = pending
-            self._exchange(
+            frozen = self._exchange(
                 channels,
                 operation_id,
                 epoch,
-                _ProofPhase.PRECOMMIT,
+                _ProofPhase.FREEZE_DRAIN,
                 pending,
             )
+            armed = self._exchange(
+                channels,
+                operation_id,
+                epoch,
+                _ProofPhase.INVENTORY_ARM,
+                pending,
+            )
+            if armed != frozen:
+                raise CodexParticipantProofError(
+                    "Codex participant state changed during selection."
+                )
         except BaseException:
             self._abort(operation_id, epoch)
             self._distribution.release()
@@ -413,6 +432,34 @@ class CodexParticipantProofSet:
             if completed:
                 self._distribution.release()
 
+    def confirm_baseline(
+        self,
+        operation_id: OperationId,
+        epoch: SelectionEpoch,
+    ) -> None:
+        """Confirm every armed participant after one resident reload."""
+        with self._lock:
+            pending = self._pending
+        if pending is None or (
+            pending.operation_id != operation_id
+            or pending.epoch != epoch
+            or not pending.refresh_required
+        ):
+            raise CodexParticipantProofError(
+                "The Codex participant proof is not pending."
+            )
+        receipts = self._exchange(
+            pending.channels,
+            operation_id,
+            epoch,
+            _ProofPhase.BASELINE,
+            pending,
+        )
+        if receipts != pending.receipts:
+            raise CodexParticipantProofError(
+                "Codex participant state changed during selection."
+            )
+
     def abort(
         self,
         operation_id: OperationId,
@@ -453,13 +500,24 @@ class CodexParticipantProofSet:
                     set(),
                 )
                 self._pending = pending
-            self._exchange(
+            frozen = self._exchange(
                 channels,
                 operation_id,
                 target.epoch,
-                _ProofPhase.PRECOMMIT,
+                _ProofPhase.FREEZE_DRAIN,
                 pending,
             )
+            armed = self._exchange(
+                channels,
+                operation_id,
+                target.epoch,
+                _ProofPhase.INVENTORY_ARM,
+                pending,
+            )
+            if armed != frozen:
+                raise CodexParticipantProofError(
+                    "Codex participant state changed during selection."
+                )
             receipts = self._exchange(
                 channels,
                 operation_id,
@@ -562,7 +620,7 @@ class CodexParticipantProofSet:
             channel.endpoint.settimeout(_PROOF_TIMEOUT_SECONDS)
             try:
                 channel.transport.send_payload(_encode_challenge(challenge))
-                if phase is _ProofPhase.PRECOMMIT:
+                if phase is _ProofPhase.FREEZE_DRAIN:
                     pending.awaiting_terminal.add(participant_id)
                 receipt = _decode_receipt(channel.transport.receive_payload())
             except OSError, ValueError:
@@ -576,7 +634,7 @@ class CodexParticipantProofSet:
                 receipt.loaded_thread_count,
             )
             receipts[participant_id] = correlation
-            if phase is _ProofPhase.PRECOMMIT:
+            if phase is _ProofPhase.INVENTORY_ARM:
                 pending.receipts[participant_id] = correlation
             if receipt.challenge != challenge or not receipt.quiescent:
                 raise CodexParticipantProofError(
@@ -689,7 +747,7 @@ class CodexParticipantProofChannel:
         relay: CodexQuiescenceRelay,
         epoch: SelectionEpoch,
     ) -> None:
-        """Serve precommit and terminal proof phases for one selection."""
+        """Serve freeze, inventory, and terminal phases for one selection."""
         armed = False
         try:
             first = _decode_challenge(self._transport.receive_payload())
@@ -697,14 +755,48 @@ class CodexParticipantProofChannel:
                 first,
                 first.operation_id,
                 epoch,
-                {_ProofPhase.PRECOMMIT},
+                {_ProofPhase.FREEZE_DRAIN},
             )
             self._respond(
                 first,
-                relay.arm_quiescence(first.refresh_required),
+                relay.freeze_quiescence(),
             )
             armed = True
+            inventory = _decode_challenge(
+                self._transport.receive_payload()
+            )
+            self._require_challenge(
+                inventory,
+                first.operation_id,
+                epoch,
+                {_ProofPhase.INVENTORY_ARM, _ProofPhase.ABORT},
+            )
+            if self._release_if_abort(inventory, first, relay):
+                armed = False
+                return
+            if inventory.refresh_required is not first.refresh_required:
+                raise CodexParticipantProofError(
+                    "The Codex participant challenge does not match."
+                )
+            self._respond(
+                inventory,
+                relay.arm_quiescence(inventory.refresh_required),
+            )
             terminal = _decode_challenge(self._transport.receive_payload())
+            if first.refresh_required:
+                self._require_challenge(
+                    terminal,
+                    first.operation_id,
+                    epoch,
+                    {_ProofPhase.BASELINE, _ProofPhase.ABORT},
+                )
+                if self._release_if_abort(terminal, first, relay):
+                    armed = False
+                    return
+                self._respond(terminal, relay.confirm_baseline())
+                terminal = _decode_challenge(
+                    self._transport.receive_payload()
+                )
             self._require_challenge(
                 terminal,
                 first.operation_id,
@@ -747,6 +839,21 @@ class CodexParticipantProofChannel:
         self._transport.send_payload(
             _encode_receipt(_Receipt(challenge, revision, count, quiescent))
         )
+
+    def _release_if_abort(
+        self,
+        challenge: _Challenge,
+        first: _Challenge,
+        relay: CodexQuiescenceRelay,
+    ) -> bool:
+        if challenge.phase is not _ProofPhase.ABORT:
+            return False
+        if challenge.refresh_required is not first.refresh_required:
+            raise CodexParticipantProofError(
+                "The Codex participant challenge does not match."
+            )
+        self._respond(challenge, relay.release_quiescence())
+        return True
 
     @staticmethod
     def _require_challenge(

@@ -1,6 +1,7 @@
 """Real resident supervisor harness around synthetic Codex boundaries."""
 
 import os
+import socket
 import time
 from collections.abc import Callable, Mapping
 from contextlib import suppress
@@ -22,6 +23,7 @@ from sidekick_usages.core.selection.models import (
 )
 from sidekick_usages.core.selection.types import (
     OperationKind,
+    ParticipantId,
     SelectionPhase,
 )
 from sidekick_usages.core.types import ProviderId
@@ -81,6 +83,7 @@ from sidekick_usages.persistence.supervisor.selection import (
     SelectionOperationStore,
 )
 from sidekick_usages.persistence.supervisor.service import ServiceStateStore
+from sidekick_usages.platform.models import ProcessIdentity
 from sidekick_usages.providers.codex.app_server.models import CodexExecutable
 from sidekick_usages.providers.codex.broker.errors import CodexBrokerError
 from sidekick_usages.providers.codex.broker.external_auth.refresh import (
@@ -96,6 +99,11 @@ from sidekick_usages.providers.codex.broker.service import CodexSharedRuntime
 _READINESS_TIMEOUT_SECONDS = 10.0
 _SUPERVISOR_JOIN_SECONDS = 10.0
 _WAIT_INTERVAL_SECONDS = 0.01
+_FAILED_PROOF_PARTICIPANT = ParticipantId(
+    "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+)
+_FAILED_PROOF_GENERATION = 1
+_FAILED_PROOF_PEER = ProcessIdentity(1, 1)
 
 
 class _JourneySelectionOperationStore(SelectionOperationStore):
@@ -666,6 +674,27 @@ class FakeCodexSupervisor:
     ) -> None:
         """Schedule one full-journey selection boundary action."""
         self._exchanges.schedule_selection_hook(kind, hook)
+
+    def stage_failed_participant_proof(self) -> None:
+        """Attach one closed proof peer for a prepare-stage refusal."""
+        participant, broker = socket.socketpair()
+        transaction = self._broker.participant_proofs.stage(
+            _FAILED_PROOF_PARTICIPANT,
+            _FAILED_PROOF_GENERATION,
+            _FAILED_PROOF_PEER,
+            broker,
+        )
+        transaction.commit()
+        transaction.finalize()
+        participant.close()
+
+    def remove_failed_participant_proof(self) -> None:
+        """Remove the synthetic failed proof after one refusal."""
+        self._broker.participant_proofs.remove(
+            _FAILED_PROOF_PARTICIPANT,
+            _FAILED_PROOF_GENERATION,
+            _FAILED_PROOF_PEER,
+        )
 
     def reject_final_selection_snapshot_once(self) -> None:
         """Fail one final snapshot without changing provider auth."""

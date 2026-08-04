@@ -1890,8 +1890,10 @@ The hardened contract is:
 
 - selection waits for active tool, approval, hook-equivalent, and MCP
   operations to finish before installing B;
-- idle account-scoped caches may be invalidated only through Codex's own
-  normal account-update behavior;
+- idle account-scoped caches may be invalidated through Codex's own normal
+  account-update behavior or through one exact-build-qualified
+  `config/mcpServer/reload` baseline operation while every participant is
+  frozen, idle, and still on the old authority;
 - participant readiness remains closed until account-update invalidation is
   observably quiescent through an exact-version-qualified signal;
 - if the exact build exposes no safe readiness signal, selection stays blocked
@@ -1920,19 +1922,90 @@ finishes and emits `starting`, followed by `ready`, `failed`, or `cancelled`
 The public app-server notification deliberately removes the internal submit
 ID and generation. A relay can observe only the thread ID, server name, and
 public status ([event mapping][codex-mcp-events]). Therefore readiness is a
-correlated barrier, not one notification in isolation:
+correlated barrier, not one notification in isolation.
 
-1. before mutation, read the exact configured server names for every loaded
-   thread and require every observed startup state to be terminal;
-2. retain each name and status revision under the closed participant barrier;
-3. after external-auth installation, require a later status revision for
-   every retained server;
-4. require every configured server to reach a newer `ready` state; a server
-   already failed or cancelled is terminal for precommit drain but cannot
-   produce ordinary READY after mutation;
-5. strictly reread `mcpServerStatus/list`, require the same names, and recheck
-   the later revisions before READY and again before OPEN; and
-6. keep the TUI, app-server, threads, sockets, and conversations resident.
+Exact 0.146.0 source inspection and the two-participant live cutover exposed
+an additional constraint. `mcpServerStatus/list` returns inventory,
+capabilities, and authentication state, but not lifecycle state or a lifecycle
+revision ([status schema][codex-mcp-status-schema],
+[status processor][codex-mcp-status-processor]). Lifecycle notifications are
+thread-scoped and reach only connections subscribed to that thread
+([thread-scoped mapping][codex-mcp-thread-events],
+[subscriber routing][codex-mcp-subscribers]). A participant attached after
+the original startup event may therefore know the exact thread and server
+names without retaining an authoritative terminal lifecycle event. Inventory
+must never be promoted into lifecycle proof, and waiting for history that the
+provider will not replay creates a permanent precommit deadlock.
+
+The status-list request is not a passive metadata read. Exact upstream tests
+show that it can create and wait for an independent live MCP initialization
+([status-list initialization][codex-mcp-status-initialization]). Each bounded
+inventory read must therefore start and finish while all participants are
+closed and drained. Timeout, initialization failure, or a changed result is a
+proof failure. A side-effect-free exact-config name source should replace it
+if the qualified release exposes one; until then it remains an explicitly
+qualified inventory operation and never a lifecycle signal.
+
+The exact barrier is:
+
+1. close admission for every participant and obtain a freeze/drain receipt
+   from every required participant after every admitted turn, retry, realtime
+   operation, tool, approval, and MCP operation finishes;
+2. only after all freeze/drain receipts exist, finish each participant's
+   bounded inventory operation, then snapshot its exact loaded thread IDs,
+   exact server names, and current notification revision without requiring a
+   historical terminal event;
+3. only after all required participants are armed, send exactly one official
+   parameterless `config/mcpServer/reload` request through the qualified
+   resident app-server connection ([reload schema][codex-mcp-reload-schema],
+   [reload owner][codex-mcp-reload-owner]);
+4. treat the empty reload response only as scheduling acknowledgement
+   ([reload handler][codex-mcp-reload-handler],
+   [thread scheduling][codex-mcp-refresh-scheduling]), then require every
+   unchanged thread/server pair to emit a newer terminal `ready`, `failed`, or
+   `cancelled` lifecycle revision;
+5. strictly reread `mcpServerStatus/list` and require the same thread and name
+   inventory before external-auth mutation;
+6. after external-auth installation, require a still-later status revision
+   for every retained thread/server pair;
+7. require every configured server to reach that newer `ready` state, reread
+   the same inventory, and recheck the later revisions before READY and again
+   before OPEN; and
+8. keep the TUI, app server, threads, sockets, and conversations resident.
+
+The baseline must not require an intervening `starting` event. Exact 0.146.0
+emits a fresh `ready` directly when it reuses an already-ready connection
+([ready reuse][codex-mcp-ready-reuse]); `starting` belongs to the new-
+connection path. The per-pair terminal revision newer than the arm watermark,
+unchanged inventory, and postcommit still-newer `ready` are the authoritative
+conditions.
+
+```mermaid
+sequenceDiagram
+    participant C as Coordinator
+    participant P as All participant relays
+    participant A as Resident Codex app server
+
+    C->>P: FREEZE_DRAIN_ALL
+    P-->>C: Every participant drained
+    C->>P: INVENTORY_ARM_ALL
+    P-->>C: Exact snapshots and revision watermarks
+    C->>A: config/mcpServer/reload (no params)
+    A-->>C: Empty scheduling acknowledgement
+    A-->>P: New terminal status per thread/server
+    P-->>C: Baseline confirmed under old authority
+    C->>A: Install target external auth
+    A-->>P: Still-newer ready per thread/server
+    P-->>C: POSTCOMMIT ready proof
+    C->>P: READY then OPEN
+```
+
+Failure to observe the baseline leaves the old authority installed and opens
+the old epoch. Failure after mutation enters the existing recovery protocol.
+Neither failure path sends a process signal, closes a provider connection,
+resumes a thread, replaces a conversation, or releases a prompt under an
+unproved authority. The reload is a provider-owned qualification operation,
+not a substitute account update and not evidence by itself.
 
 An expected cancellation from the superseded provider-owned runtime can
 arrive after the replacement is ready because the public event has no runtime
@@ -1942,13 +2015,19 @@ event but suppresses only its misleading TUI cancellation notification.
 that persists before OPEN invalidates readiness and returns a typed recovery
 result; after the barrier, cancellation is forwarded normally.
 
-Late or reconnected participants are different: exact authority readback has
-already proved the resident target and no second provider mutation occurs.
-Their versioned proof requires unchanged loaded threads, unchanged configured
-MCP names, and current terminal states. It must not wait for a new refresh
-event that Codex has no reason to emit. The local proof protocol carries this
-distinction explicitly; mutation proof and readback binding cannot be
-silently interchanged.
+Late or reconnected participants are different: exact authority readback may
+already prove the resident target, so binding performs no second auth
+mutation. The no-refresh shortcut is valid only for the same live relay and
+subscription when it retained authoritative terminal revisions for the exact
+unchanged loaded threads and configured names. A new or reconnected provider
+connection receives no historical lifecycle replay
+([listener subscription][codex-mcp-listener-subscription]). Without retained
+history, it remains gated and either joins a separate all-participant
+freeze/drain plus baseline-reload qualification, or returns a typed
+unavailable/degraded result until a fresh lifecycle event is obtained. It
+must never infer terminal state from inventory. The local proof protocol
+carries this distinction explicitly; mutation proof and readback binding
+cannot be silently interchanged.
 
 If provider commit and READY succeeded but durable finalization requires
 recovery, the relay retains that proof only for the exact target epoch, loaded-
@@ -1978,8 +2057,17 @@ Both transitions displayed normal MCP startup and cleared it without an
 interruption warning. The TUI then exited normally. The protected Claude
 process, unrelated Codex client, native and neutral app servers, supervisor,
 and native Claude credential metadata remained unchanged. This proves the
-resident HTTP/MCP/account-selection mechanism on the qualified build; it does
-not waive the remaining Claude, realtime, packaging, or release gates.
+resident HTTP/external-auth mechanism for one participant on the qualified
+build; it does not prove the multi-participant MCP barrier or waive the
+remaining Claude, realtime, packaging, or release gates.
+
+A later two-participant installed cutover preserved both live TUIs, threads,
+conversations, and the resident app server but failed the historical MCP
+precommit predicate described above. Recovery retained the old authority and
+all processes. That result is negative evidence against the earlier predicate,
+not cross-terminal switching proof. Release requires the corrected baseline
+reload barrier plus successful next-turn adoption in both already-running
+controlled terminals.
 
 ### 10.7 Realtime and other long-lived transports
 
@@ -2885,6 +2973,16 @@ The exact supported build must prove:
 - `previous_response_id`, thread ID, rollout, protocol ordering, approvals,
   tools, and background terminals remain valid;
 - active MCP/tool work drains before commit;
+- after every required participant freezes and drains, exactly one resident
+  MCP reload occurs; every unchanged thread/server pair supplies a newer
+  terminal baseline before auth installation and a still-newer `ready` before
+  READY/OPEN; missing, changed, or failed proof leaves sessions alive and
+  gated on the old authority or the specified recovery path;
+- every potentially initializing status-list inventory read completes inside
+  the closed/drained barrier, and its timeout or failure blocks selection;
+- a new or reconnected provider connection without retained lifecycle history
+  never uses inventory inference; it completes a separate all-participant
+  baseline qualification or remains typed unavailable/degraded;
 - provider-triggered idle plugin/skill/MCP invalidation is transparent;
 - an active realtime conversation completes naturally under A while selection
   remains pending and receives no stop/cancel/close action;
@@ -3238,7 +3336,8 @@ waits visibly or fails before provider commit.
 | Remote Control lacks a reliable status surface | Cannot prove special incompatibility | Do not infer it from foreground presence |
 | Codex external auth schema changes | Auth installation/readback may fail | Exact schema gate; retain old session/auth |
 | Codex re-enables WS or caches HTTP auth | Next turn can use stale account | Capability/source test; disable selection |
-| Codex account update invalidates active runtime work | Tool/MCP operation could be disrupted | Drain active work and qualify idle refresh |
+| Codex account update invalidates active runtime work | Tool/MCP operation could be disrupted | Drain active work; qualify baseline reload and post-update readiness |
+| Codex status-list initializes MCP state | Inventory proof could create runtime work or stall | Run bounded inside the closed/drained barrier; fail closed |
 | Project/CLI config shadows Codex session provider | Stale or redirected auth transport | Protected launch overlay, override rejection, effective-config proof |
 | Codex realtime cannot reach a terminal boundary | Selection cannot commit without interruption | Keep A active and show typed pending/degraded status |
 | Access lease outlives selection | Stale callback/update can install old auth | Account/generation/epoch scope and expiry |
@@ -3593,7 +3692,7 @@ the table above and in the reference definitions at the end of this document.
 15. [Account read processor](https://github.com/openai/codex/blob/rust-v0.146.0/codex-rs/app-server/src/request_processors/account_processor.rs#L1000-L1124)
 16. [Shared app-server auth manager and transports](https://github.com/openai/codex/blob/rust-v0.146.0/codex-rs/app-server/src/lib.rs#L711-L752)
 17. [Account login/update processor](https://github.com/openai/codex/blob/rust-v0.146.0/codex-rs/app-server/src/request_processors/account_processor.rs#L691-L839)
-18. [Global notification broadcast](https://github.com/openai/codex/blob/rust-v0.146.0/codex-rs/app-server/src/outgoing_message.rs#L590-L615)
+18. [Untargeted notification broadcast](https://github.com/openai/codex/blob/rust-v0.146.0/codex-rs/app-server/src/outgoing_message.rs#L590-L615)
 19. [Thread-manager shared auth and store](https://github.com/openai/codex/blob/rust-v0.146.0/codex-rs/core/src/thread_manager.rs#L273-L414)
 20. [Thread auth injection](https://github.com/openai/codex/blob/rust-v0.146.0/codex-rs/core/src/thread_manager.rs#L752-L797)
 21. [Thread schema](https://github.com/openai/codex/blob/rust-v0.146.0/codex-rs/app-server-protocol/src/protocol/v2/thread_data.rs#L167-L233)
@@ -3640,6 +3739,17 @@ the table above and in the reference definitions at the end of this document.
 62. [Codex MCP connection and startup states](https://github.com/openai/codex/blob/rust-v0.146.0/codex-rs/codex-mcp/src/connection_manager.rs)
 63. [Codex app-server MCP event mapping](https://github.com/openai/codex/blob/rust-v0.146.0/codex-rs/app-server/src/bespoke_event_handling.rs)
 64. [Codex app-server MCP status contract](https://github.com/openai/codex/blob/rust-v0.146.0/codex-rs/app-server/README.md)
+65. [Codex MCP status schema](https://github.com/openai/codex/blob/rust-v0.146.0/codex-rs/app-server-protocol/src/protocol/v2/mcp.rs#L32-L78)
+66. [Codex MCP status processor](https://github.com/openai/codex/blob/rust-v0.146.0/codex-rs/app-server/src/request_processors/mcp_processor.rs#L233-L388)
+67. [Codex thread-scoped MCP event mapping](https://github.com/openai/codex/blob/rust-v0.146.0/codex-rs/app-server/src/bespoke_event_handling.rs#L203-L230)
+68. [Codex dynamic thread subscribers](https://github.com/openai/codex/blob/rust-v0.146.0/codex-rs/app-server/src/request_processors/thread_lifecycle.rs#L315-L345)
+69. [Codex MCP reload schema](https://github.com/openai/codex/blob/rust-v0.146.0/codex-rs/app-server-protocol/src/protocol/common.rs#L999-L1008)
+70. [Codex MCP reload owner](https://github.com/openai/codex/blob/rust-v0.146.0/codex-rs/app-server/src/mcp_refresh.rs#L9-L28)
+71. [Codex MCP status-list initialization](https://github.com/openai/codex/blob/rust-v0.146.0/codex-rs/app-server/tests/suite/v2/mcp_server_status.rs#L140-L210)
+72. [Codex MCP reload request handler](https://github.com/openai/codex/blob/rust-v0.146.0/codex-rs/app-server/src/request_processors/mcp_processor.rs#L77-L85)
+73. [Codex thread MCP refresh scheduling](https://github.com/openai/codex/blob/rust-v0.146.0/codex-rs/core/src/session/mod.rs#L1689-L1707)
+74. [Codex thread listener subscription](https://github.com/openai/codex/blob/rust-v0.146.0/codex-rs/app-server/src/request_processors/thread_lifecycle.rs#L139-L187)
+75. [Codex reused-connection Ready publication](https://github.com/openai/codex/blob/rust-v0.146.0/codex-rs/codex-mcp/src/connection_manager.rs#L469-L510)
 
 ## 22. Design Review Checklist
 
@@ -3759,6 +3869,17 @@ the Anthropic product and legal clarification gate.
 [codex-mcp-runtime]: https://github.com/openai/codex/blob/rust-v0.146.0/codex-rs/codex-mcp/src/runtime.rs
 [codex-mcp-connection]: https://github.com/openai/codex/blob/rust-v0.146.0/codex-rs/codex-mcp/src/connection_manager.rs
 [codex-mcp-events]: https://github.com/openai/codex/blob/rust-v0.146.0/codex-rs/app-server/src/bespoke_event_handling.rs
+[codex-mcp-status-schema]: https://github.com/openai/codex/blob/rust-v0.146.0/codex-rs/app-server-protocol/src/protocol/v2/mcp.rs#L32-L78
+[codex-mcp-status-processor]: https://github.com/openai/codex/blob/rust-v0.146.0/codex-rs/app-server/src/request_processors/mcp_processor.rs#L233-L388
+[codex-mcp-thread-events]: https://github.com/openai/codex/blob/rust-v0.146.0/codex-rs/app-server/src/bespoke_event_handling.rs#L203-L230
+[codex-mcp-subscribers]: https://github.com/openai/codex/blob/rust-v0.146.0/codex-rs/app-server/src/request_processors/thread_lifecycle.rs#L315-L345
+[codex-mcp-reload-schema]: https://github.com/openai/codex/blob/rust-v0.146.0/codex-rs/app-server-protocol/src/protocol/common.rs#L999-L1008
+[codex-mcp-reload-owner]: https://github.com/openai/codex/blob/rust-v0.146.0/codex-rs/app-server/src/mcp_refresh.rs#L9-L28
+[codex-mcp-status-initialization]: https://github.com/openai/codex/blob/rust-v0.146.0/codex-rs/app-server/tests/suite/v2/mcp_server_status.rs#L140-L210
+[codex-mcp-reload-handler]: https://github.com/openai/codex/blob/rust-v0.146.0/codex-rs/app-server/src/request_processors/mcp_processor.rs#L77-L85
+[codex-mcp-refresh-scheduling]: https://github.com/openai/codex/blob/rust-v0.146.0/codex-rs/core/src/session/mod.rs#L1689-L1707
+[codex-mcp-listener-subscription]: https://github.com/openai/codex/blob/rust-v0.146.0/codex-rs/app-server/src/request_processors/thread_lifecycle.rs#L139-L187
+[codex-mcp-ready-reuse]: https://github.com/openai/codex/blob/rust-v0.146.0/codex-rs/codex-mcp/src/connection_manager.rs#L469-L510
 [codex-realtime]: https://github.com/openai/codex/blob/rust-v0.146.0/codex-rs/core/src/realtime_conversation.rs#L448-L518
 [codex-daemon-launch]: https://github.com/openai/codex/blob/rust-v0.146.0/codex-rs/app-server-daemon/src/backend/pid.rs#L459-L480
 [codex-daemon-install]: https://github.com/openai/codex/blob/rust-v0.146.0/codex-rs/app-server-daemon/src/managed_install.rs

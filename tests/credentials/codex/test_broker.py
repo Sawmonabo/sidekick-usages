@@ -2,7 +2,6 @@
 
 import os
 import time
-from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -57,10 +56,7 @@ from sidekick_usages.providers.codex.app_server.capabilities import (
 from sidekick_usages.providers.codex.app_server.executable import (
     discover_codex_executable,
 )
-from sidekick_usages.providers.codex.auth.storage import (
-    CODEX_AUTH_FILE,
-    observe_native_auth,
-)
+from sidekick_usages.providers.codex.auth.storage import observe_native_auth
 from sidekick_usages.providers.codex.broker.external_auth.refresh import (
     CODEX_REFRESH_ERROR_CODE,
 )
@@ -71,7 +67,10 @@ from sidekick_usages.providers.codex.session.models import (
     CODEX_SESSION_OPERATOR_PRECONDITION,
     CodexSessionConfigurationReason,
 )
-from tests.fakes.codex.app_server.daemon import FakeCodexDaemon
+from tests.fakes.codex.app_server.daemon import (
+    FakeCodexDaemon,
+    FakeCodexTuiObserver,
+)
 from tests.fakes.codex.app_server.executable import (
     configure_codex_daemon_lifecycle,
     write_fake_managed_codex,
@@ -79,7 +78,7 @@ from tests.fakes.codex.app_server.executable import (
     write_worker_router,
 )
 from tests.fakes.codex.app_server.schema import write_codex_schema
-from tests.fakes.codex.auth import managed_auth
+from tests.fakes.codex.auth import NEXT_AUTH_FILE, managed_auth
 from tests.fakes.codex.broker.runtime import (
     ACCOUNT_A_ID,
     ACCOUNT_A_PROVIDER_IDENTITY,
@@ -91,8 +90,8 @@ from tests.fakes.codex.broker.runtime import (
     PROVIDER_IDENTITY,
     RECOVERY_GENERATION,
     UNKNOWN_GENERATION,
-    UNSELECTED_NEXT_GENERATION,
     activation_source_fixture,
+    assert_callback_rejection,
     broker_finalized_fixture,
     projection_matches_account,
     real_worker_executable,
@@ -150,35 +149,6 @@ def _select_codex_account(
         return tuple(client.select_account(ProviderId.CODEX, account_id))
     finally:
         client.close()
-
-
-def _assert_callback_rejection(
-    supervisor: FakeCodexSupervisor,
-    daemon: FakeCodexDaemon,
-    paths: ApplicationPaths,
-    account_id: SidekickAccountId,
-    provider_identity: str,
-    schedule: Callable[[], None],
-) -> None:
-    """Require one real callback rejection before protected mutation."""
-    supervisor.wait_until_ready()
-    generation_before = saved_generation(paths, account_id)
-    installed_before = daemon.installed_account_ids
-    schedule()
-    started = time.monotonic()
-    stale = daemon.request_refresh(provider_identity)
-    elapsed = time.monotonic() - started
-    assert (stale.responder, stale.error_code) == (
-        "sidekick_usages",
-        CODEX_REFRESH_ERROR_CODE,
-    )
-    assert elapsed < _CALLBACK_RESPONSE_BOUND_SECONDS
-    assert daemon.read_current_external_auth() == ProviderIdentity(
-        provider_identity
-    )
-    assert daemon.installed_account_ids == installed_before
-    assert saved_generation(paths, account_id) == generation_before
-    supervisor.wait_until_callback_workers_collected()
 
 
 def _prove_postcommit_late_participant_recovery(
@@ -295,6 +265,73 @@ def _prove_postcommit_late_participant_recovery(
             session.close()
 
     assert fixture.native_auth.read_bytes() == NATIVE_AUTH_SENTINEL
+
+
+def _prove_precommit_refusal_preserves_resident(
+    supervisor: FakeCodexSupervisor,
+    daemon: FakeCodexDaemon,
+    paths: ApplicationPaths,
+    participant: FakeCodexTuiObserver,
+    finalized: FinalizedSelection,
+) -> None:
+    installed_before = daemon.installed_account_ids
+    resident_before = daemon.resident_connection_ids
+    assert resident_before
+    prepare_mutations = daemon.mutation_events
+    supervisor.stage_failed_participant_proof()
+    prepare_events = _select_codex_account(paths, ACCOUNT_A_ID)
+    supervisor.remove_failed_participant_proof()
+    prepare_result = prepare_events[-1].payload
+    assert isinstance(prepare_result, SelectionResult), prepare_events
+    assert prepare_result.outcome is SelectionOutcome.RECOVERY_REQUIRED
+    assert prepare_result.safe_code is (
+        SelectionCode.SELECTION_RECOVERY_REQUIRED
+    )
+    supervisor.wait_until_selection_workers_collected()
+    assert (
+        _finalized_codex_selection(paths),
+        daemon.installed_account_ids,
+        daemon.resident_connection_ids,
+        daemon.mutation_events,
+    ) == (finalized, installed_before, resident_before, prepare_mutations)
+    participant.assert_turn_completed(3, "thread-alpha")
+    next_auth = managed_codex_home(paths, ACCOUNT_A_ID) / NEXT_AUTH_FILE
+    next_auth.write_bytes(
+        managed_auth(ACCOUNT_A_PROVIDER_IDENTITY, UNKNOWN_GENERATION)
+    )
+    os.chmod(next_auth, 0o600)
+    missing_start = len(daemon.mutation_events)
+    daemon.suppress_next_mcp_reload_status()
+    events = _select_codex_account(paths, ACCOUNT_A_ID)
+    result = events[-1].payload
+    assert isinstance(result, SelectionResult), events
+    assert (result.outcome, result.safe_code) == (
+        SelectionOutcome.RECOVERY_REQUIRED,
+        SelectionCode.SELECTION_RECOVERY_REQUIRED,
+    )
+    supervisor.wait_until_selection_workers_collected()
+    assert (
+        _finalized_codex_selection(paths),
+        daemon.installed_account_ids,
+        daemon.resident_connection_ids,
+        daemon.mutation_events[missing_start:],
+    ) == (finalized, installed_before, resident_before, ("reload",))
+    participant.assert_turn_completed(4, "thread-alpha")
+    assert daemon.relay_start_request_ids[-2:] == (3, 4)
+    for schedule in (
+        supervisor.schedule_stale_callback_epoch,
+        supervisor.schedule_stale_callback_request,
+        lambda: supervisor.schedule_wrong_callback_home(ACCOUNT_A_ID),
+    ):
+        assert_callback_rejection(
+            supervisor,
+            daemon,
+            paths,
+            MANAGED_ACCOUNT_ID,
+            PROVIDER_IDENTITY,
+            schedule,
+            _CALLBACK_RESPONSE_BOUND_SECONDS,
+        )
 
 
 def _finalize_projected_generation(
@@ -658,7 +695,6 @@ def test_resident_broker_refreshes_and_recovers_provider_ahead_state(
                 dashboard.handshake()
             finally:
                 dashboard.close()
-
             rejected = daemon.request_refresh("unknown-provider-account")
             assert (rejected.responder, rejected.error_code) == (
                 "sidekick_usages",
@@ -687,7 +723,6 @@ def test_resident_broker_refreshes_and_recovers_provider_ahead_state(
             time.sleep(_IDLE_BROKER_OBSERVATION_SECONDS)
             assert lifecycle.start_statuses == initial_starts
             assert lifecycle.version_count == initial_versions
-
         stage_provider_ahead(fixture)
         assert (
             managed_generation(fixture.private, MANAGED_ACCOUNT_ID),
@@ -734,7 +769,6 @@ def test_resident_broker_refreshes_and_recovers_provider_ahead_state(
             assert saved_generation(paths, ACCOUNT_A_ID) == GENERATION
             observer_a.wait_for_account_update()
             observer_b.wait_for_account_update()
-
         observer_a.close()
         observer_b.close()
     assert fixture.native_auth.read_bytes() == NATIVE_AUTH_SENTINEL
@@ -753,10 +787,10 @@ def test_selection_worker_binds_codex_broker_journey(
     )
     paths = fixture.paths
     initial = _finalized_codex_selection(paths)
-
     with FakeCodexDaemon(
         fixture.session_home,
         app_server_version="0.146.0",
+        mcp_server_names=("synthetic",),
     ) as daemon:
         configure_codex_daemon_lifecycle(
             fixture.provider_root,
@@ -772,6 +806,13 @@ def test_selection_worker_binds_codex_broker_journey(
             paths.supervisor_socket,
             environment=fixture.environment,
         )
+        peer_session = CodexSessionRuntime.create(
+            fixture.executable,
+            fixture.session_home,
+            short_socket_root / "selection-peer.sock",
+            paths.supervisor_socket,
+            environment=fixture.environment,
+        )
         with FakeCodexSupervisor(
             paths,
             fixture.executable,
@@ -782,11 +823,17 @@ def test_selection_worker_binds_codex_broker_journey(
             supervisor.wait_until_ready()
             observer.wait_for_account_update()
             session.open()
+            peer_session.open()
             participant = daemon.connect_tui(session.socket_path)
+            peer = daemon.connect_tui(peer_session.socket_path)
             participant.send_request(
                 1, "thread/resume", {"threadId": "thread-alpha"}
             )
             assert participant.receive().get("id") == 1
+            peer.send_request(
+                1, "thread/resume", {"threadId": "thread-beta"}
+            )
+            assert peer.receive().get("id") == 1
             assert (
                 _finalized_codex_selection(paths),
                 set(daemon.installed_account_ids),
@@ -796,8 +843,8 @@ def test_selection_worker_binds_codex_broker_journey(
                 {ACCOUNT_A_PROVIDER_IDENTITY},
                 (),
             )
-
             assert saved_generation(paths, MANAGED_ACCOUNT_ID) == GENERATION
+            mutation_start = len(daemon.mutation_events)
             selected_events = _select_codex_account(
                 paths,
                 MANAGED_ACCOUNT_ID,
@@ -809,13 +856,11 @@ def test_selection_worker_binds_codex_broker_journey(
                 SelectionCode.SELECTION_SUCCEEDED,
             )
             supervisor.wait_until_selection_workers_collected()
-            participant.send_request(
-                2,
-                "turn/start",
-                {"input": [], "threadId": "thread-alpha"},
-            )
-            for _message_index in range(3):
-                participant.receive()
+            for _lifecycle_index in range(2):
+                assert participant.receive().get("method") == (
+                    "mcpServer/startupStatus/updated"
+                )
+            participant.assert_turn_completed(2, "thread-alpha")
             finalized = _finalized_codex_selection(paths)
             assert (
                 finalized.account_id,
@@ -823,80 +868,39 @@ def test_selection_worker_binds_codex_broker_journey(
                 str(finalized.generation),
                 set(daemon.installed_account_ids),
                 saved_generation(paths, MANAGED_ACCOUNT_ID),
-                daemon.mcp_status_thread_ids,
                 daemon.relay_start_request_ids[-1:],
+                daemon.mcp_reload_count,
+                daemon.mutation_events[mutation_start:],
             ) == (
                 MANAGED_ACCOUNT_ID,
                 initial.epoch.next(),
                 NEXT_GENERATION,
                 {ACCOUNT_A_PROVIDER_IDENTITY, PROVIDER_IDENTITY},
                 NEXT_GENERATION,
-                ("thread-alpha",) * 4,
                 (2,),
+                1,
+                ("reload", "install"),
             )
-
-            supervisor.schedule_selection_hook(
-                OperationKind.SELECTION_COMMIT,
-                daemon.replace_socket_listener,
-            )
-            target_auth = (
-                managed_codex_home(paths, ACCOUNT_A_ID) / CODEX_AUTH_FILE
-            )
-            supervisor.schedule_selection_hook(
-                OperationKind.SELECTION_READBACK,
-                target_auth.unlink,
-            )
-            rejected_events = _select_codex_account(paths, ACCOUNT_A_ID)
-            rejected = rejected_events[-1].payload
-            assert isinstance(rejected, SelectionResult), rejected_events
-            assert (rejected.outcome, rejected.safe_code) == (
-                SelectionOutcome.RECOVERY_REQUIRED,
-                SelectionCode.SELECTION_RECOVERY_REQUIRED,
-            )
-            supervisor.wait_until_selection_workers_collected()
-            recovered = SelectionOperationStore(paths.selection_journals).load(
-                ProviderId.CODEX
-            )
+            mcp_reads = daemon.mcp_status_thread_ids
+            assert mcp_reads[:6] == (
+                "thread-alpha",
+                "thread-beta",
+            ) * 3
             assert (
-                _finalized_codex_selection(paths),
-                set(daemon.installed_account_ids),
-                saved_generation(paths, ACCOUNT_A_ID),
-                recovered.active,
-                recovered.history[-1].outcome,
-            ) == (
+                mcp_reads.count("thread-alpha"),
+                mcp_reads.count("thread-beta"),
+            ) == (5, 5)
+            _prove_precommit_refusal_preserves_resident(
+                supervisor,
+                daemon,
+                paths,
+                participant,
                 finalized,
-                {ACCOUNT_A_PROVIDER_IDENTITY, PROVIDER_IDENTITY},
-                UNSELECTED_NEXT_GENERATION,
-                None,
-                SelectionOutcome.FAILED_OLD_EPOCH,
-            )
-            _assert_callback_rejection(
-                supervisor,
-                daemon,
-                paths,
-                MANAGED_ACCOUNT_ID,
-                PROVIDER_IDENTITY,
-                supervisor.schedule_stale_callback_epoch,
-            )
-            _assert_callback_rejection(
-                supervisor,
-                daemon,
-                paths,
-                MANAGED_ACCOUNT_ID,
-                PROVIDER_IDENTITY,
-                supervisor.schedule_stale_callback_request,
-            )
-            _assert_callback_rejection(
-                supervisor,
-                daemon,
-                paths,
-                MANAGED_ACCOUNT_ID,
-                PROVIDER_IDENTITY,
-                lambda: supervisor.schedule_wrong_callback_home(ACCOUNT_A_ID),
             )
             participant.close()
+            peer.close()
             session.close()
-
+            peer_session.close()
         observer.close()
     assert fixture.native_auth.read_bytes() == NATIVE_AUTH_SENTINEL
     with TemporaryDirectory(prefix="skl-") as late_socket_root:
@@ -926,7 +930,6 @@ def test_callback_preempts_stubborn_same_home_maintenance(
         real_worker_executable(),
     )
     queue = OperationQueueStore(paths.durable_operations)
-
     with FakeCodexDaemon(
         fixture.session_home,
         app_server_version="0.146.0",

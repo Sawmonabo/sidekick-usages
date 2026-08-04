@@ -61,7 +61,7 @@ class JsonRpcClient:
     def request(
         self,
         method: str,
-        params: JsonObject,
+        params: JsonObject | None = None,
         *,
         timeout_seconds: float = DEFAULT_JSON_RPC_TIMEOUT_SECONDS,
     ) -> JsonObject:
@@ -72,14 +72,13 @@ class JsonRpcClient:
             raise CodexAppServerError(CodexAppServerFailure.PROTOCOL_MALFORMED)
         self._next_request_id += 1
         try:
-            self._send(
-                {
-                    "id": request_id,
-                    "method": validated_json_rpc_method(method),
-                    "params": params,
-                },
-                deadline,
-            )
+            payload: JsonObject = {
+                "id": request_id,
+                "method": validated_json_rpc_method(method),
+            }
+            if params is not None:
+                payload["params"] = params
+            self._send(payload, deadline)
             while True:
                 message = self._receive(deadline)
                 if isinstance(

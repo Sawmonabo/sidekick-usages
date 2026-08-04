@@ -1916,10 +1916,13 @@ home is not any account's private authority home.
 Require `config/read`, `modelProvider/capabilities/read`, turn
 start/completion,
 realtime start/closed, external-auth login/notifications, account readback,
-and MCP status schemas. Use `config/read` on the resident connection to prove
-the effective provider object; never infer it from the planned argv alone.
-Keep broader maintenance support floors separate from the exact interactive
-selection capability.
+MCP status schemas, the exact `config/mcpServer/reload` method, and
+`v2/McpServerRefreshResponse.json`. The reload has absent parameters through
+0.146.0's `Option<()>`; do not invent or require an MCP refresh parameters
+schema. Require the response to allow only the exact empty object. Use
+`config/read` on the resident connection to prove the effective provider
+object; never infer it from the planned argv alone. Keep broader maintenance
+support floors separate from the exact interactive selection capability.
 
 - [ ] **Step 5: Move only the interactive resident runtime to neutral home.**
 
@@ -1962,11 +1965,15 @@ git commit -m "feat(codex): qualify the http-only session runtime"
 **Files:**
 
 - Create: `src/sidekick_usages/providers/codex/session/relay.py`
+- Modify: `src/sidekick_usages/providers/codex/session/mcp.py`
+- Modify: `src/sidekick_usages/providers/codex/session/quiescence.py`
 - Modify: `src/sidekick_usages/providers/codex/session/models.py`
 - Modify: `src/sidekick_usages/providers/codex/app_server/jsonrpc/codec.py`
+- Modify: `src/sidekick_usages/providers/codex/app_server/methods.py`
 - Modify: `src/sidekick_usages/providers/codex/app_server/capabilities.py`
 - Modify: `src/sidekick_usages/providers/codex/broker/service.py`
 - Modify: `src/sidekick_usages/providers/codex/broker/responder.py`
+- Modify: `src/sidekick_usages/providers/codex/broker/external_auth/selection.py`
 - Create: `src/sidekick_usages/cli/session/codex.py`
 - Modify: `src/sidekick_usages/cli/session/launcher.py`
 - Modify: `src/sidekick_usages/cli/contexts/session.py`
@@ -2041,20 +2048,61 @@ cannot install an older lease and another account's home cannot answer it.
 - [ ] **Step 6: Gate realtime and account-scoped cache refresh.**
 
 Realtime start is a turn lease; selection sends no stop or close. For plugin,
-skill, and MCP invalidation, qualify an observable completion sequence on exact
-0.146.0 using account update plus the loaded-thread MCP status notifications
-and subsequent strict `mcpServerStatus/list` readback. Retain exact per-thread
-server names and status revisions before mutation; after mutation, require
-every configured server to reach a later `ready` revision. A failed or
-cancelled server is terminal for precommit drain but cannot silently finalize
-ordinary READY. Reread the same names before READY and OPEN.
+skill, and MCP invalidation, qualify an observable completion sequence on
+exact 0.146.0. `mcpServerStatus/list` proves inventory only; it cannot supply
+lifecycle state or a lifecycle revision. Startup notifications are
+thread-scoped and a participant may attach after the provider emitted its
+initial terminal state.
+
+First obtain a freeze/drain receipt from every required participant without
+performing status-list. Only after every receipt exists, run each bounded
+inventory operation and retain exact loaded thread IDs, exact per-thread server
+names, and the current notification revision. Status-list is potentially
+initializing, not passive metadata; finish it inside the all-participant
+closed/drained barrier before reload or auth mutation. Timeout, initialization
+failure, or changed inventory is proof failure.
+
+The proof set arms every unchanged participant channel. `CodexSharedRuntime`
+then sends exactly one parameterless `config/mcpServer/reload` request through
+the resident app server. The proof set baseline-confirms every channel, and
+only then may `CodexSelectionBroker` install external auth. Treat the empty
+reload response only as scheduling acknowledgement. Before any external-auth
+mutation, require every unchanged thread/server pair to emit a newer terminal
+`ready`, `failed`, or `cancelled` revision and reread the same inventory.
+Missing baseline proof aborts on the old authority.
+
+The baseline accepts a per-pair terminal revision newer than the arm
+watermark. It must not require `starting`: exact 0.146.0 may emit fresh
+Ready-only notification when reusing an already-ready connection. Postcommit
+still requires another newer `ready` before READY/OPEN.
+
+```text
+FREEZE_DRAIN_ALL
+    -> INVENTORY_ARM_ALL
+    -> one resident config/mcpServer/reload
+    -> MCP_BASELINE_CONFIRM
+    -> external-auth install
+    -> POSTCOMMIT_READY
+```
+
+After mutation, require every configured thread/server pair to reach a
+still-later `ready` revision. A failed or cancelled server is terminal for the
+precommit baseline but cannot silently finalize ordinary READY. Reread the
+same names before READY and OPEN. The bounded wait is only a failure deadline
+and never evidence. Do not infer lifecycle from inventory, account update,
+elapsed time, or process survival. Do not restart, reconnect, resume, or
+replace the TUI, app server, thread, conversation, or socket.
 
 The local proof protocol must distinguish mutation proof from late-participant
-readback binding. A late or reconnected participant has no second provider
-mutation to trigger another MCP refresh; require unchanged threads, names, and
-terminal states instead. If the mutation path cannot prove that every loaded
-thread applied its queued refresh, fail closed before OPEN. The bounded wait is
-only a failure deadline and never evidence of success.
+readback binding. A late participant may use unchanged threads, names, and
+retained terminal revisions only on the same still-live relay/subscription.
+A new or reconnected provider connection receives no historical lifecycle
+replay. Keep it gated and run a separate all-participant frozen/drained
+baseline qualification, or return a typed unavailable/degraded result until a
+fresh event exists. Never infer lifecycle from status-list. If the mutation
+path cannot prove that every loaded thread applied its queued refresh, fail
+closed before OPEN. The bounded wait is only a failure deadline and never
+evidence of success.
 
 When READY completed but durable finalization enters recovery, retain the proof
 only for the same target epoch, loaded-thread revision, confirmed MCP names,
@@ -2065,6 +2113,13 @@ recovery path discards it.
 Discard a failed POSTCOMMIT proof before coordinator abort so the previous
 authority can resume. Treat repeated OPEN for an already finalized epoch as
 idempotent, but commit an uncommitted same-epoch newer-generation target first.
+
+Keep verification load-bearing and small. Extend the existing cohesive
+multi-participant selection journey to prove that one reload precedes target
+installation and that every thread/server pair supplies a fresh baseline.
+Use the same journey's refusal path to prove missing baseline prevents
+installation and preserves the old authority. Do not add a test module,
+parameter matrix, timer-based case, or private-helper assertion.
 
 - [ ] **Step 7: Start stock Codex once through the stable relay.**
 
@@ -2565,8 +2620,13 @@ cutover. Correct gaps in the feature branch; do not waive them.
   control sockets remain open.
 - [ ] Codex external-auth proof does not overclaim provider identity from
   `account/read`.
-- [ ] Codex active tool/MCP/realtime work drains naturally; missing quiescence
-  evidence blocks before mutation rather than using a timer.
+- [ ] Codex active tool/MCP/realtime work drains naturally; one official MCP
+  reload establishes a fresh terminal baseline for every exact thread/server
+  pair before auth mutation, and missing evidence blocks rather than using a
+  timer or inventory inference.
+- [ ] Codex status-list inventory reads are bounded, potentially initializing,
+  and complete only inside the closed/drained barrier; timeout or failure
+  blocks selection.
 - [ ] Selection and maintenance remain independent state machines.
 - [ ] The installed 0.7.0 command remains available for live metrics until
   final qualified cutover.

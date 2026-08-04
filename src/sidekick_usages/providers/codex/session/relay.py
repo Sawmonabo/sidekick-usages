@@ -5,7 +5,6 @@ from collections import deque
 from collections.abc import Callable
 from pathlib import Path
 from threading import Condition, RLock, Thread, current_thread
-from time import monotonic
 from types import TracebackType
 from typing import Protocol, Self
 
@@ -40,6 +39,7 @@ from sidekick_usages.providers.codex.broker.wire import (
 from sidekick_usages.providers.codex.session.config import CodexSessionReader
 from sidekick_usages.providers.codex.session.errors import CodexRelayError
 from sidekick_usages.providers.codex.session.mcp import (
+    CodexMcpLifecycle,
     CodexMcpRefreshProof,
     read_codex_mcp_names,
 )
@@ -56,8 +56,6 @@ from sidekick_usages.providers.codex.session.models import (
 MAX_CODEX_RELAY_QUEUED_FRAMES = 16
 MAX_CODEX_RELAY_LOADED_THREADS = 256
 _RELAY_POLL_SECONDS = 0.1
-_MCP_REFRESH_PROOF_TIMEOUT_SECONDS = 6.0
-_MCP_TERMINAL_STATES = frozenset({"cancelled", "failed", "ready"})
 _ACCOUNT_MUTATION_METHODS = frozenset(
     {
         ACCOUNT_LOGIN_CANCEL_METHOD,
@@ -124,8 +122,7 @@ class CodexAdmissionRelay:
         self._loaded_threads: set[str] = set()
         self._loaded_threads_revision = 0
         self._proof_snapshot: CodexLoadedThreadSnapshot | None = None
-        self._mcp_status_revision = 0
-        self._mcp_statuses: dict[tuple[str, str], tuple[str, int]] = {}
+        self._mcp_lifecycle = CodexMcpLifecycle(self._proof_condition)
         self._mcp_proof: CodexMcpRefreshProof | None = None
         self._active: set[TurnId] = set()
         self._baseline_authority: CodexRelayAuthority | None = None
@@ -181,17 +178,30 @@ class CodexAdmissionRelay:
         with self._lock:
             return self._loaded_threads_snapshot_locked()
 
-    def arm_quiescence(
-        self,
-        refresh_required: bool,
-    ) -> tuple[int, int, bool]:
-        """Arm the relay-local barrier and prove precommit quiescence."""
+    def freeze_quiescence(self) -> tuple[int, int, bool]:
+        """Freeze the relay-local barrier without provider inventory reads."""
         with self._proof_condition:
             self._raise_if_unusable()
             if self._proof_snapshot is not None:
                 raise CodexRelayError(SelectionCode.AUTHORITY_PROOF_FAILED)
             snapshot = self._loaded_threads_snapshot_locked()
             self._proof_snapshot = snapshot
+            return (
+                snapshot.revision,
+                len(snapshot.thread_ids),
+                not self._active,
+            )
+
+    def arm_quiescence(
+        self,
+        refresh_required: bool,
+    ) -> tuple[int, int, bool]:
+        """Inventory and arm the already-frozen participant snapshot."""
+        with self._lock:
+            self._raise_if_unusable()
+            snapshot = self._proof_snapshot
+            if snapshot is None or self._mcp_proof is not None:
+                raise CodexRelayError(SelectionCode.AUTHORITY_PROOF_FAILED)
             if self._active:
                 return snapshot.revision, len(snapshot.thread_ids), False
         try:
@@ -204,21 +214,52 @@ class CodexAdmissionRelay:
             quiescent = (
                 not self._active
                 and current == snapshot
-                and self._mcp_states_terminal_locked(names)
             )
             if quiescent:
-                self._mcp_proof = CodexMcpRefreshProof(
+                proof = CodexMcpRefreshProof(
                     refresh_required=refresh_required,
-                    armed_revision=self._mcp_status_revision,
-                    baseline_revisions={
-                        key: revision
-                        for key, (_status, revision) in (
-                            self._mcp_statuses.items()
-                        )
-                        if key[0] in names and key[1] in names[key[0]]
-                    },
+                    armed_revision=self._mcp_lifecycle.revision,
                     names=names,
                 )
+                quiescent = (
+                    refresh_required
+                    or self._mcp_lifecycle.retain_terminal(proof)
+                )
+                if quiescent:
+                    self._mcp_proof = proof
+            return current.revision, len(current.thread_ids), quiescent
+
+    def confirm_baseline(self) -> tuple[int, int, bool]:
+        """Require fresh terminal lifecycle for the armed inventory."""
+        with self._lock:
+            self._raise_if_unusable()
+            snapshot = self._proof_snapshot
+            proof = self._mcp_proof
+            if (
+                snapshot is None
+                or proof is None
+                or not proof.refresh_required
+                or proof.baseline_revisions is not None
+            ):
+                raise CodexRelayError(SelectionCode.AUTHORITY_PROOF_FAILED)
+        if not self._mcp_lifecycle.await_baseline(
+            proof,
+            self._raise_if_unusable,
+        ):
+            return snapshot.revision, len(snapshot.thread_ids), False
+        try:
+            names = read_codex_mcp_names(self._mcp_reader, snapshot)
+        except CodexRelayError:
+            return snapshot.revision, len(snapshot.thread_ids), False
+        with self._lock:
+            self._raise_if_unusable()
+            current = self._loaded_threads_snapshot_locked()
+            quiescent = (
+                not self._active
+                and current == snapshot
+                and names == proof.names
+                and self._mcp_lifecycle.confirm_baseline(proof)
+            )
             return current.revision, len(current.thread_ids), quiescent
 
     def confirm_quiescence(
@@ -236,16 +277,14 @@ class CodexAdmissionRelay:
                 or proof.refresh_required is not refresh_required
             ):
                 raise CodexRelayError(SelectionCode.AUTHORITY_PROOF_FAILED)
-        if refresh_required and not self._await_mcp_refresh(
+        if refresh_required and not self._mcp_lifecycle.await_ready(
             proof,
-            proof.names,
+            self._raise_if_unusable,
         ):
             return snapshot.revision, len(snapshot.thread_ids), False
         try:
             names = read_codex_mcp_names(self._mcp_reader, snapshot)
         except CodexRelayError:
-            return snapshot.revision, len(snapshot.thread_ids), False
-        if refresh_required and not self._await_mcp_refresh(proof, names):
             return snapshot.revision, len(snapshot.thread_ids), False
         with self._lock:
             self._raise_if_unusable()
@@ -255,9 +294,9 @@ class CodexAdmissionRelay:
                 and current == snapshot
                 and names == proof.names
                 and (
-                    self._mcp_states_refreshed_locked(proof, names)
+                    self._mcp_lifecycle.ready(proof)
                     if refresh_required
-                    else self._mcp_states_terminal_locked(names)
+                    else self._mcp_lifecycle.proven(proof, names)
                 )
             )
             if quiescent:
@@ -341,7 +380,7 @@ class CodexAdmissionRelay:
                 self._active
                 or (loaded_threads != self._loaded_threads_snapshot_locked())
                 or current_names != confirmed_names
-                or not self._mcp_states_proven_locked(proof, current_names)
+                or not self._mcp_lifecycle.proven(proof, current_names)
             ):
                 raise CodexRelayError(SelectionCode.AUTHORITY_PROOF_FAILED)
             self._readiness.ready(target)
@@ -407,7 +446,7 @@ class CodexAdmissionRelay:
                 == self._loaded_threads_revision
                 and proof is not None
                 and proof.confirmed_names is not None
-                and self._mcp_states_proven_locked(
+                and self._mcp_lifecycle.proven(
                     proof,
                     proof.confirmed_names,
                 )
@@ -458,7 +497,7 @@ class CodexAdmissionRelay:
                 or self._mcp_proof is not proof
                 or snapshot != self._loaded_threads_snapshot_locked()
                 or current_names != confirmed_names
-                or not self._mcp_states_proven_locked(proof, current_names)
+                or not self._mcp_lifecycle.proven(proof, current_names)
             ):
                 raise CodexRelayError(
                     SelectionCode.SELECTION_RECOVERY_REQUIRED
@@ -866,66 +905,7 @@ class CodexAdmissionRelay:
         status = routing.mcp_status
         if thread_id is None or name is None or status is None:
             return
-        self._mcp_status_revision += 1
-        self._mcp_statuses[(thread_id, name)] = (
-            status,
-            self._mcp_status_revision,
-        )
-        self._proof_condition.notify_all()
-
-    def _mcp_states_terminal_locked(
-        self,
-        names: dict[str, frozenset[str]],
-    ) -> bool:
-        return all(
-            self._mcp_statuses.get((thread_id, name), (None, 0))[0]
-            in _MCP_TERMINAL_STATES
-            for thread_id, thread_names in names.items()
-            for name in thread_names
-        )
-
-    def _mcp_states_refreshed_locked(
-        self,
-        proof: CodexMcpRefreshProof,
-        names: dict[str, frozenset[str]],
-    ) -> bool:
-        for thread_id, thread_names in names.items():
-            for name in thread_names:
-                status, revision = self._mcp_statuses.get(
-                    (thread_id, name),
-                    (None, 0),
-                )
-                baseline = proof.baseline_revisions.get(
-                    (thread_id, name),
-                    proof.armed_revision,
-                )
-                if status != "ready" or revision <= baseline:
-                    return False
-        return True
-
-    def _mcp_states_proven_locked(
-        self,
-        proof: CodexMcpRefreshProof,
-        names: dict[str, frozenset[str]],
-    ) -> bool:
-        if proof.refresh_required:
-            return self._mcp_states_refreshed_locked(proof, names)
-        return names == proof.names and self._mcp_states_terminal_locked(names)
-
-    def _await_mcp_refresh(
-        self,
-        proof: CodexMcpRefreshProof,
-        names: dict[str, frozenset[str]],
-    ) -> bool:
-        deadline = monotonic() + _MCP_REFRESH_PROOF_TIMEOUT_SECONDS
-        with self._proof_condition:
-            while not self._mcp_states_refreshed_locked(proof, names):
-                self._raise_if_unusable()
-                remaining = deadline - monotonic()
-                if remaining <= 0:
-                    return False
-                self._proof_condition.wait(remaining)
-            return True
+        self._mcp_lifecycle.observe(thread_id, name, status)
 
     def _ensure_loaded_thread_capacity_locked(
         self,

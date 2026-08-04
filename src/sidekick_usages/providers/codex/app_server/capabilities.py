@@ -25,6 +25,7 @@ from sidekick_usages.providers.codex.app_server.methods import (
     ACCOUNT_LOGOUT_METHOD,
     ACCOUNT_READ_METHOD,
     ACCOUNT_UPDATED_METHOD,
+    CONFIG_MCP_SERVER_RELOAD_METHOD,
     CONFIG_READ_METHOD,
     INITIALIZE_METHOD,
     INITIALIZED_METHOD,
@@ -94,6 +95,7 @@ _SESSION_SCHEMA_FILES = (
     "v2/ThreadRealtimeClosedNotification.json",
     "v2/ListMcpServerStatusParams.json",
     "v2/ListMcpServerStatusResponse.json",
+    "v2/McpServerRefreshResponse.json",
     "v2/McpServerStatusUpdatedNotification.json",
 )
 _MAX_SCHEMA_FILE_BYTES = 512 * 1024
@@ -460,6 +462,18 @@ def _validate_session_mcp_schemas(
     mcp_response = schemas["v2/ListMcpServerStatusResponse.json"]
     _require_names(mcp_response, "required", ("data",))
     _require_property(mcp_response, "data", "array")
+    reload_response = schemas["v2/McpServerRefreshResponse.json"]
+    if (
+        not _schema_allows_type(
+            reload_response,
+            reload_response,
+            "object",
+            depth=0,
+        )
+        or reload_response.get("properties") not in (None, {})
+        or reload_response.get("required") not in (None, [])
+    ):
+        _unsupported()
     mcp_updated = schemas["v2/McpServerStatusUpdatedNotification.json"]
     _require_names(mcp_updated, "required", ("name", "status"))
     _require_property(mcp_updated, "name", "string")
@@ -471,6 +485,7 @@ def _validate_session_methods(schemas: dict[str, JsonObject]) -> None:
     """Require every correlated session method in its method union."""
     for method in (
         ACCOUNT_LOGIN_CANCEL_METHOD,
+        CONFIG_MCP_SERVER_RELOAD_METHOD,
         CONFIG_READ_METHOD,
         MODEL_PROVIDER_CAPABILITIES_READ_METHOD,
         TURN_START_METHOD,

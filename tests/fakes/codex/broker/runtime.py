@@ -3,6 +3,7 @@
 import os
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -57,6 +58,9 @@ from sidekick_usages.providers.codex.app_server.capabilities import (
 )
 from sidekick_usages.providers.codex.app_server.executable import (
     discover_codex_executable,
+)
+from sidekick_usages.providers.codex.broker.external_auth.refresh import (
+    CODEX_REFRESH_ERROR_CODE,
 )
 from sidekick_usages.providers.codex.broker.models import (
     CodexProjectionExpectation,
@@ -265,6 +269,36 @@ def saved_generation(
     if account is None:
         raise AssertionError("Managed Codex account disappeared.")
     return str(managed_subscription(account).generation)
+
+
+def assert_callback_rejection(
+    supervisor: FakeCodexSupervisor,
+    daemon: FakeCodexDaemon,
+    paths: ApplicationPaths,
+    account_id: SidekickAccountId,
+    provider_identity: str,
+    schedule: Callable[[], None],
+    maximum_seconds: float,
+) -> None:
+    """Require one real callback rejection before protected mutation."""
+    supervisor.wait_until_ready()
+    generation_before = saved_generation(paths, account_id)
+    installed_before = daemon.installed_account_ids
+    schedule()
+    started = time.monotonic()
+    stale = daemon.request_refresh(provider_identity)
+    elapsed = time.monotonic() - started
+    assert (stale.responder, stale.error_code) == (
+        "sidekick_usages",
+        CODEX_REFRESH_ERROR_CODE,
+    )
+    assert elapsed < maximum_seconds
+    assert daemon.read_current_external_auth() == ProviderIdentity(
+        provider_identity
+    )
+    assert daemon.installed_account_ids == installed_before
+    assert saved_generation(paths, account_id) == generation_before
+    supervisor.wait_until_callback_workers_collected()
 
 
 def wait_for_projected_generation(
