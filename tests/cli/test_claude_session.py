@@ -62,12 +62,25 @@ class _JourneyTerminal(ClaudeTerminal):
 
     def run(self, session: ClaudeTerminalSession) -> None:
         """Drive one compact retained-engine parity journey."""
+        self._control.wait_initial_recovered()
+        recovered = session.receive_event()
+        if recovered.status != (
+            "Sidekick recovered the terminal; Claude remained active."
+        ):
+            raise AssertionError("Terminal recovery status was lost.")
+        self.render(recovered)
         self._control.refuse_once()
         try:
             session.start_turn("refused prompt")
         except ClaudeSessionGateError as error:
             self.render_status(error.code)
         self._control.start_selection()
+        recovery = session.receive_event()
+        if recovery.status != "Sidekick: selection_recovery_required":
+            raise AssertionError("Ambiguous target install was not gated.")
+        self.render(recovery)
+        self._control.retry_target_projection()
+        self._control.wait_target_recovered()
         turn_id = session.start_turn("queued prompt")
         self._control.disconnect()
         self._control.wait_reconnected()
@@ -181,11 +194,27 @@ class _JourneyTerminal(ClaudeTerminal):
 
 
 class _FailingTerminal(ClaudeTerminal):
-    def __init__(self, events: list[str]) -> None:
+    def __init__(
+        self,
+        control: ClaudeSessionControlFake,
+        events: list[str],
+    ) -> None:
+        self._control = control
         self._events = events
 
     def run(self, session: ClaudeTerminalSession) -> None:
         """Fail one terminal owner without touching its live session."""
+        recovery = session.receive_event()
+        if recovery.status != "Sidekick: selection_recovery_required":
+            raise AssertionError("Ambiguous bootstrap was not gated.")
+        with pytest.raises(ClaudeSessionGateError) as failure:
+            session.start_turn("must remain behind bootstrap recovery")
+        if failure.value.code is not SelectionCode.SELECTION_RECOVERY_REQUIRED:
+            raise AssertionError("Ambiguous bootstrap used the wrong gate.")
+        readiness = session.receive_event()
+        if readiness.status != "Sidekick: selection_recovery_required":
+            raise AssertionError("Ambiguous readiness was not gated.")
+        self._control.retry_initial_readiness()
         for _index in range(3):
             session.receive_event()
         session.stop_terminal_events()
@@ -197,15 +226,29 @@ def test_claude_session_keeps_one_engine_across_a_queued_switch() -> None:
     """Keep PID and conversation through refusal, switch, and interrupt."""
     events: list[str] = []
     engine = ClaudeSessionEngineFake(
-        (StructuredResponseCase.SUCCESS,) * 4,
+        (
+            StructuredResponseCase.MALFORMED_UTF8,
+            StructuredResponseCase.SUCCESS,
+            StructuredResponseCase.MALFORMED_UTF8,
+            StructuredResponseCase.SUCCESS,
+            StructuredResponseCase.MALFORMED_UTF8,
+            *(StructuredResponseCase.SUCCESS,) * 2,
+        ),
         _stream_events(),
         events,
+        expected_oauth_values=(
+            "synthetic-oauth-a",
+            "synthetic-oauth-a",
+            "synthetic-oauth-b",
+            "synthetic-oauth-b",
+        ),
         fail_control_once=True,
         initial_event_count=3,
     )
     control = ClaudeSessionControlFake(events)
+    control.recover_initial_projection_once()
+    control.recover_target_projection_once()
     control.disconnect_initial_once()
-    control.disconnect_initial_subscription_once()
     host, supervisor = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
     runtime = ClaudeSessionRuntime(
         engine,
@@ -220,7 +263,7 @@ def test_claude_session_keeps_one_engine_across_a_queued_switch() -> None:
         request_id_factory=iter(SESSION_REQUESTS).__next__,
     )
     terminal = _JourneyTerminal(control, events)
-    terminals = iter((_FailingTerminal(events), terminal))
+    terminals = iter((_FailingTerminal(control, events), terminal))
 
     status = ClaudeCliSession(runtime, terminals.__next__).run(())
 
@@ -247,23 +290,25 @@ def test_claude_session_keeps_one_engine_across_a_queued_switch() -> None:
         "bootstrap_disconnect:1",
         "reattach:2",
         f"install:{SESSION_REQUESTS[0]}",
+        f"install:{SESSION_REQUESTS[1]}",
+        "recovery_receipt",
         "initialize",
-        "subscription_disconnect:2",
-        "reattach:3",
-        "preopen_disconnect:3",
-        "reattach:4",
-        "terminal_failure",
-        f"status:{SelectionCode.SELECTION_RECOVERY_REQUIRED.value}",
-        f"install:{SESSION_REQUESTS[2]}",
-        "receipt",
+        "initialize",
         "ready",
-        "adoption",
-        "prompt",
-        "reattach:5",
+        "terminal_failure",
         (
             "presentation:Sidekick recovered the terminal; Claude remained "
             "active."
         ),
+        f"status:{SelectionCode.SELECTION_RECOVERY_REQUIRED.value}",
+        f"install:{SESSION_REQUESTS[4]}",
+        "presentation:Sidekick: selection_recovery_required",
+        f"install:{SESSION_REQUESTS[5]}",
+        "receipt",
+        "ready",
+        "adoption",
+        "prompt",
+        "reattach:3",
         "presentation:A Claude hook is running.",
         "permission_pending",
         "cancel:cancel-1",
@@ -352,6 +397,7 @@ def test_claude_session_fails_closed_on_invalid_reattachment() -> None:
     assert events == [
         f"install:{SESSION_REQUESTS[0]}",
         "initialize",
+        "ready",
         "reattach:3",
         "fatal_notice:3",
     ]
@@ -377,7 +423,6 @@ def test_claude_session_gates_an_active_postcommit_projection() -> None:
         turn_id_factory=lambda: SESSION_TURN,
         request_id_factory=iter(SESSION_REQUESTS).__next__,
     )
-
     runtime.open()
     turn_id = runtime.start_turn("keep this turn alive")
     control.start_selection(expect_receipt=False)

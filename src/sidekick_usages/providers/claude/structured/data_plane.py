@@ -57,6 +57,9 @@ from sidekick_usages.providers.claude.structured.models import (
     ClaudeStructuredBinding,
     ClaudeStructuredInstallReceipt,
 )
+from sidekick_usages.providers.claude.structured.protected_frame import (
+    ClaudeProtectedOAuthFrame,
+)
 from sidekick_usages.providers.claude.structured.transport import (
     receive_protected_socket_frame,
 )
@@ -68,10 +71,12 @@ from sidekick_usages.serialization.framing import (
 MAX_CLAUDE_PARTICIPANT_CHANNELS = 16
 CLAUDE_PROTECTED_RESPONSE_SECONDS = 8.0
 CLAUDE_PROTECTED_COMPLETION_SECONDS = 120.0
-_CLAUDE_PROJECTION_KINDS = frozenset({
-    OperationKind.SELECTION_COMMIT,
-    OperationKind.CLAUDE_PARTICIPANT_BIND,
-})
+_CLAUDE_PROJECTION_KINDS = frozenset(
+    {
+        OperationKind.SELECTION_COMMIT,
+        OperationKind.CLAUDE_PARTICIPANT_BIND,
+    }
+)
 
 
 def claude_participant_ack_required(
@@ -90,50 +95,6 @@ def claude_participant_ack_required(
             "The protected Claude target is unavailable."
         )
     return not matches[0].has_managed_authority
-
-
-class ClaudeProtectedOAuthFrame:
-    """Single-use mutable OAuth projection bound to one target epoch."""
-
-    __slots__ = ("_active", "_observed", "protected_binding")
-
-    def __init__(
-        self,
-        binding: ClaudeStructuredBinding,
-        oauth: bytearray,
-    ) -> None:
-        if not oauth:
-            raise ClaudeProtectedChannelError(
-                "The protected OAuth projection is empty."
-            )
-        self.protected_binding = binding
-        self._active: bytearray | None = oauth
-        self._observed = oauth
-
-    @property
-    def is_cleared(self) -> bool:
-        """Return whether the mutable credential buffer was wiped."""
-        return not any(self._observed)
-
-    def take_protected_oauth(self) -> bytearray:
-        """Transfer the mutable credential buffer exactly once."""
-        oauth = self._active
-        if oauth is None:
-            raise ClaudeProtectedChannelError(
-                "The protected OAuth projection was already consumed."
-            )
-        self._active = None
-        return oauth
-
-    def close_protected_frame(self) -> None:
-        """Clear any credential buffer still owned by this frame."""
-        if self._active is not None:
-            clear_secret_buffer(self._active)
-            self._active = None
-
-    def __repr__(self) -> str:
-        """Return no authority or credential material."""
-        return "<ClaudeProtectedOAuthFrame redacted>"
 
 
 @dataclass(slots=True)
@@ -290,7 +251,9 @@ class ClaudeParticipantChannelRegistry:
                 safe_code=SelectionCode.SELECTION_RECOVERY_REQUIRED,
             )
         return selection_recovery_decision(
-            operation, baseline, observation,
+            operation,
+            baseline,
+            observation,
             target_binding_proven=target_binding_proven,
             baseline_observation_conclusive=not classified,
         )
@@ -387,14 +350,17 @@ class ClaudeParticipantChannelRegistry:
     ) -> bool:
         """Return whether an exact channel acknowledged finalized authority."""
         return self.matches_target(
-            participant_id, connection_generation, peer, operation_id,
+            participant_id,
+            connection_generation,
+            peer,
+            operation_id,
             AuthorityReadyProof(
                 provider_id=finalized.provider_id,
                 account_id=finalized.account_id,
                 generation=finalized.generation,
                 epoch=finalized.epoch,
                 safe_code=SelectionCode.SELECTION_SUCCEEDED,
-            )
+            ),
         )
 
     def refresh_binding(
@@ -426,7 +392,9 @@ class ClaudeParticipantChannelRegistry:
                 channel.endpoint.sendall(frame)
                 report = require_protected_binding_report(
                     receive_protected_socket_frame(channel.endpoint),
-                    nonce, participant_id, connection_generation,
+                    nonce,
+                    participant_id,
+                    connection_generation,
                 )
                 with self._lock:
                     current = self._channels.get(participant_id)
@@ -538,7 +506,9 @@ class ClaudeParticipantChannelRegistry:
         channel.endpoint.close()
         if self._participant_failed is not None:
             self._participant_failed(
-                participant_id, channel.connection_generation)
+                participant_id,
+                channel.connection_generation,
+            )
 
     def _commit(
         self,
@@ -625,10 +595,8 @@ class ClaudeProtectedHostChannel:
         oauth: bytearray | None = None
         try:
             metadata, oauth = decode_protected_projection(payload)
-            if (
-                metadata.participant_id != self._participant_id
-                or metadata.connection_generation
-                != self._connection_generation
+            if metadata.participant_id != self._participant_id or (
+                metadata.connection_generation != self._connection_generation
             ):
                 raise ClaudeProtectedChannelError(
                     "The protected participant projection does not match."
@@ -658,10 +626,7 @@ class ClaudeProtectedHostChannel:
             self._participant_id,
             self._connection_generation,
         )
-        frame = encode_bounded_frame(
-            payload,
-            MAX_CLAUDE_PROTECTED_FRAME_BYTES,
-        )
+        frame = encode_bounded_frame(payload, MAX_CLAUDE_PROTECTED_FRAME_BYTES)
         try:
             self._endpoint.sendall(frame)
             self._pending = None
@@ -672,8 +637,17 @@ class ClaudeProtectedHostChannel:
         finally:
             clear_mutable_buffer(frame)
 
+    def release_ambiguous_projection(self) -> None:
+        """Release only receipt correlation after an ambiguous install."""
+        if self._closed or self._pending is None:
+            raise ClaudeProtectedChannelError(
+                "The protected host projection is not pending."
+            )
+        self._pending = None
+
     def report_current_binding(
-        self, binding: ClaudeStructuredBinding | None,
+        self,
+        binding: ClaudeStructuredBinding | None,
     ) -> None:
         """Answer one nonce-correlated supervisor binding query."""
         if self._closed or self._pending is not None:
@@ -686,12 +660,9 @@ class ClaudeProtectedHostChannel:
             self._connection_generation,
         )
         payload = encode_protected_binding_report(
-            binding, nonce, self._participant_id,
-            self._connection_generation,
+            binding, nonce, self._participant_id, self._connection_generation
         )
-        frame = encode_bounded_frame(
-            payload, MAX_CLAUDE_PROTECTED_FRAME_BYTES
-        )
+        frame = encode_bounded_frame(payload, MAX_CLAUDE_PROTECTED_FRAME_BYTES)
         try:
             self._endpoint.sendall(frame)
         except OSError:

@@ -46,11 +46,18 @@ from sidekick_usages.providers.claude.structured.models import (
     ClaudeStructuredError,
     ClaudeStructuredFailure,
 )
+from sidekick_usages.providers.claude.structured.process import (
+    ClaudeStructuredProcess,
+)
 from sidekick_usages.serialization.framing import (
     BoundedFrameDecoder,
     encode_bounded_frame,
 )
-from sidekick_usages.serialization.json import JsonObject, decode_json_object
+from sidekick_usages.serialization.json import (
+    JsonObject,
+    decode_json_object,
+    encode_compact_json,
+)
 from tests.fakes.claude.managed import (
     ClaudeStructuredEngineFake,
     StructuredResponseCase,
@@ -63,6 +70,9 @@ SESSION_REQUESTS = (
     RequestId("99999999-9999-4999-8999-999999999999"),
     RequestId("12121212-1212-4212-8212-121212121212"),
     RequestId("13131313-1313-4313-8313-131313131313"),
+    RequestId("16161616-1616-4616-8616-161616161616"),
+    RequestId("17171717-1717-4717-8717-171717171717"),
+    RequestId("18181818-1818-4818-8818-181818181818"),
 )
 SESSION_OAUTH = ("synthetic-oauth-a", "synthetic-oauth-b")
 _ACCOUNT_A = SidekickAccountId("22222222-2222-4222-8222-222222222222")
@@ -71,6 +81,8 @@ _OPERATION_A = OperationId("44444444-4444-4444-8444-444444444444")
 _OPERATION_B = OperationId("55555555-5555-4555-8555-555555555555")
 _NONCE_A = RequestId("66666666-6666-4666-8666-666666666666")
 _NONCE_B = RequestId("77777777-7777-4777-8777-777777777777")
+_RECOVERY_NONCE = RequestId("15151515-1515-4515-8515-151515151515")
+_TARGET_RECOVERY_NONCE = RequestId("19191919-1919-4919-8919-191919191919")
 _QUERY_NONCE = RequestId("14141414-1414-4414-8414-141414141414")
 _CONTROL_RESPONSE_SUBTYPES = {
     "dialog-1": "error",
@@ -104,10 +116,11 @@ class ClaudeSessionEngineFake(ClaudeStructuredEngineFake):
         interactive_events: tuple[bytes, ...],
         journey_events: list[str],
         *,
+        expected_oauth_values: tuple[str, ...] = SESSION_OAUTH,
         fail_control_once: bool = False,
         initial_event_count: int = 0,
     ) -> None:
-        super().__init__(responses, SESSION_OAUTH)
+        super().__init__(responses, expected_oauth_values)
         self._interactive_events = list(interactive_events)
         self._journey_events = journey_events
         self._fail_control_once = fail_control_once
@@ -145,6 +158,18 @@ class ClaudeSessionEngineFake(ClaudeStructuredEngineFake):
             response_case = self._responses.pop(0)
             clear_secret_buffer(request)
             self._journey_events.append("initialize")
+            if response_case is StructuredResponseCase.SUCCESS:
+                encoded = encode_compact_json(
+                    {
+                        "type": "control_response",
+                        "response": {
+                            "subtype": "success",
+                            "request_id": str(request_id),
+                            "response": {"commands": []},
+                        },
+                    }
+                )
+                return _route_control_response(encoded, request_id)
             return self._response(response_case, str(request_id))
         if control.get("subtype") != "interrupt":
             raise AssertionError("Unexpected structured control request.")
@@ -256,15 +281,21 @@ class ClaudeSessionControlFake:
         self._target_open = False
         self._connection_generation = 1
         self._disconnect_initial = False
-        self._disconnect_subscription = False
-        self._disconnect_preopen = False
+        self._recover_initial = False
+        self._recover_target = False
+        self._target_recovery_sent = False
+        self._recovered_initial = False
         self._initial_projected = False
         self._initial_receipt_proven = False
+        self._initial_ready = False
         self._registration_failure: BaseException | None = None
         self._notice_failure: BaseException | None = None
         self._notice_failure_raised = False
         self._failed_attachment_closed = Event()
+        self._initial_recovered = Event()
+        self._target_recovered = Event()
         self._reconnected = Event()
+        self._reopen_applied = Event()
         self._initial = _binding(_OPERATION_A, _ACCOUNT_A, SESSION_OAUTH[0], 1)
         self._target = _binding(_OPERATION_B, _ACCOUNT_B, SESSION_OAUTH[1], 2)
 
@@ -320,43 +351,57 @@ class ClaudeSessionControlFake:
     def notices(self) -> Iterator[ParticipantNotice]:
         """Yield the baseline and exact transition notices."""
         notices = self._notices
-        if self._disconnect_subscription:
-            self._disconnect_subscription = False
-            self._prove_initial_receipt()
-            self._events.append(
-                f"subscription_disconnect:{self._connection_generation}"
-            )
-            return
-        if self._disconnect_preopen:
-            self._disconnect_preopen = False
-            self._events.append(
-                f"preopen_disconnect:{self._connection_generation}"
-            )
-            yield _notice(ParticipantNoticeKind.PREPARE, 1)
-            return
+        yield from self._initial_notices()
         failure = self._notice_failure
         if failure is not None:
             self._notice_failure = None
             yield _notice(ParticipantNoticeKind.PREPARE, 1)
-            self._events.append(
-                f"fatal_notice:{self._connection_generation}"
-            )
+            self._events.append(f"fatal_notice:{self._connection_generation}")
             self._notice_failure_raised = True
             raise failure
-        yield _notice(
-            ParticipantNoticeKind.OPEN,
-            2 if self._target_open else 1,
-        )
+        yield from self._open_notices()
         while (notice := notices.get()) is not None:
             yield notice
-            if notice.kind is ParticipantNoticeKind.STATUS:
+            if notice.kind is ParticipantNoticeKind.OPEN:
+                if self._target_open:
+                    self._target_recovered.set()
+                else:
+                    self._initial_recovered.set()
+            elif notice.kind is ParticipantNoticeKind.STATUS:
                 self._status_applied.set()
             elif notice.kind is ParticipantNoticeKind.PREPARE:
                 self._prepare_applied.set()
 
+    def _initial_notices(self) -> Iterator[ParticipantNotice]:
+        if self._recover_initial:
+            self._recover_initial = False
+            yield _notice(ParticipantNoticeKind.PREPARE, 1)
+            self._recover_initial_authority()
+        elif not self._initial_receipt_proven:
+            self._prove_initial_receipt()
+        if not self._initial_ready:
+            yield ParticipantNotice(
+                participant_id=SESSION_PARTICIPANT,
+                provider_id=ProviderId.CLAUDE,
+                kind=ParticipantNoticeKind.READY,
+                epoch=self._initial.epoch,
+                operation_id=self._initial.operation_id,
+                target_account_id=self._initial.account_id,
+                target_generation=self._initial.generation,
+            )
+
+    def _open_notices(self) -> Iterator[ParticipantNotice]:
+        if self._initial_ready:
+            yield _notice(
+                ParticipantNoticeKind.OPEN,
+                2 if self._target_open else 1,
+            )
+            self._reopen_applied.set()
+
     def disconnect(self) -> None:
         """Drop only the current fake supervisor attachment."""
         self._reconnected.clear()
+        self._reopen_applied.clear()
         self._notices.put(None)
         if self._endpoint is not None:
             self._endpoint.close()
@@ -366,10 +411,53 @@ class ClaudeSessionControlFake:
         """Drop generation one before projecting its first binding."""
         self._disconnect_initial = True
 
-    def disconnect_initial_subscription_once(self) -> None:
-        """Drop bootstrap subscription and one pre-OPEN retry."""
-        self._disconnect_subscription = True
-        self._disconnect_preopen = True
+    def recover_initial_projection_once(self) -> None:
+        """Replace one ambiguous bootstrap lease with a fresh projection."""
+        self._recover_initial = True
+
+    def wait_initial_recovered(self) -> None:
+        """Wait until fresh bootstrap recovery reopens the initial epoch."""
+        if not self._initial_recovered.wait(timeout=2):
+            raise AssertionError("Claude bootstrap recovery did not open.")
+
+    def retry_initial_readiness(self) -> None:
+        """Retry readiness without projecting the proven authority again."""
+        self._notices.put(
+            ParticipantNotice(
+                participant_id=SESSION_PARTICIPANT,
+                provider_id=ProviderId.CLAUDE,
+                kind=ParticipantNoticeKind.READY,
+                epoch=self._initial.epoch,
+                operation_id=self._initial.operation_id,
+                target_account_id=self._initial.account_id,
+                target_generation=self._initial.generation,
+            )
+        )
+
+    def recover_target_projection_once(self) -> None:
+        """Send one fresh lease after an ambiguous target install."""
+        self._recover_target = True
+
+    def retry_target_projection(self) -> None:
+        """Project a fresh target lease after the ambiguous attempt."""
+        if not self._recover_target:
+            raise AssertionError("Target recovery was not requested.")
+        self._recover_target = False
+        self._target_recovery_sent = True
+        _send(
+            self._require_endpoint(),
+            self._target,
+            SESSION_OAUTH[1],
+            _TARGET_RECOVERY_NONCE,
+            self._connection_generation,
+        )
+        self._receipt = Thread(target=self._finish_install, daemon=True)
+        self._receipt.start()
+
+    def wait_target_recovered(self) -> None:
+        """Wait until the fresh target projection reopens admission."""
+        if not self._target_recovered.wait(timeout=2):
+            raise AssertionError("Claude target recovery did not open.")
 
     def fail_registration_once(self, failure: BaseException) -> None:
         """Fail one attachment before its binding reporter can finish."""
@@ -388,6 +476,8 @@ class ClaudeSessionControlFake:
         """Wait for the exact binding re-registration proof."""
         if not self._reconnected.wait(timeout=2):
             raise AssertionError("Claude participant did not reattach.")
+        if not self._reopen_applied.wait(timeout=2):
+            raise AssertionError("Claude participant did not reopen.")
 
     def wait_failed_attachment_closed(self) -> None:
         """Wait until the fatally invalid attachment is released."""
@@ -424,7 +514,7 @@ class ClaudeSessionControlFake:
             _NONCE_B,
             self._connection_generation,
         )
-        if expect_receipt:
+        if expect_receipt and not self._recover_target:
             self._receipt = Thread(target=self._finish_install, daemon=True)
             self._receipt.start()
 
@@ -449,15 +539,21 @@ class ClaudeSessionControlFake:
 
     def ready(self, proof: ParticipantReadyProof) -> None:
         """Open only the exactly installed target."""
+        binding = self._target if self._selection_started else self._initial
         if proof != ParticipantReadyProof(
-            account_id=self._target.account_id,
-            generation=self._target.generation,
-            epoch=self._target.epoch,
+            account_id=binding.account_id,
+            generation=binding.generation,
+            epoch=binding.epoch,
         ):
             raise AssertionError("Unexpected Claude readiness proof.")
         self._events.append("ready")
-        self._target_open = True
-        self._notices.put(_notice(ParticipantNoticeKind.OPEN, 2))
+        if self._selection_started:
+            self._target_open = True
+        else:
+            self._initial_ready = True
+        self._notices.put(
+            _notice(ParticipantNoticeKind.OPEN, binding.epoch.value)
+        )
 
     def adopted(self, proof: ParticipantAdoptionProof) -> None:
         """Record adoption before transmission."""
@@ -488,12 +584,17 @@ class ClaudeSessionControlFake:
             self._endpoint.close()
 
     def _finish_install(self) -> None:
+        recovered = self._target_recovery_sent
+        nonce = _TARGET_RECOVERY_NONCE if recovered else _NONCE_B
+        request_index = 4 if self._recovered_initial else 2
+        if recovered:
+            request_index += 1
         _receive_receipt(
             self._require_endpoint(),
             self._target,
-            _NONCE_B,
+            nonce,
             self._connection_generation,
-            SESSION_REQUESTS[2],
+            SESSION_REQUESTS[request_index],
         )
         self._events.append("receipt")
         self._notices.put(
@@ -507,6 +608,26 @@ class ClaudeSessionControlFake:
                 target_generation=self._target.generation,
             )
         )
+
+    def _recover_initial_authority(self) -> None:
+        endpoint = self._require_endpoint()
+        _send(
+            endpoint,
+            self._initial,
+            SESSION_OAUTH[0],
+            _RECOVERY_NONCE,
+            self._connection_generation,
+        )
+        _receive_receipt(
+            endpoint,
+            self._initial,
+            _RECOVERY_NONCE,
+            self._connection_generation,
+            SESSION_REQUESTS[1],
+        )
+        self._events.append("recovery_receipt")
+        self._initial_receipt_proven = True
+        self._recovered_initial = True
 
     def _prove_initial_receipt(self) -> None:
         _receive_receipt(
@@ -621,3 +742,17 @@ def _receive_receipt(
             if receipt.request_id != structured_request_id:
                 raise AssertionError("Structured install receipt mismatched.")
             return
+
+
+def _route_control_response(
+    encoded: bytes,
+    request_id: RequestId,
+) -> bytes:
+    transport = ClaudeStructuredProcess.__new__(ClaudeStructuredProcess)
+    transport._buffer = bytearray(encoded + b"\n")
+    transport._event_frames = []
+    transport._event_bytes = 0
+    response = transport._consume_pending_frames(request_id)
+    if response != encoded:
+        raise AssertionError("Initialize response routing changed.")
+    return response

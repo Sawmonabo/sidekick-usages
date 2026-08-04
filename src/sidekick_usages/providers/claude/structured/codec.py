@@ -37,6 +37,10 @@ CLAUDE_AUTH_ENVIRONMENT_KEY = "CLAUDE_CODE_OAUTH_TOKEN"
 MAX_CLAUDE_PROTECTED_FRAME_BYTES = 512 * 1024
 _RESPONSE_KEYS = frozenset({"response", "type"})
 _SUCCESS_KEYS = frozenset({"request_id", "subtype"})
+_INITIALIZE_SUCCESS_KEYS = _SUCCESS_KEYS | {"response"}
+_INITIALIZE_OPTIONAL_KEYS = frozenset(
+    {"pending_permission_requests", "pending_user_dialog_requests"}
+)
 _REJECTION_KEYS = frozenset({"error", "request_id", "subtype"})
 _MAXIMUM_REJECTION_ERROR_BYTES = 1024
 _MINIMUM_PRINTABLE_ASCII = ord(" ")
@@ -589,6 +593,42 @@ def decode_control_success(
         _malformed()
 
 
+def decode_initialize_success(
+    payload: bytes,
+    request_id: RequestId,
+) -> None:
+    """Require one bounded exact-build initialize success envelope."""
+    root = _decode_frame(payload)
+    if set(root) != _RESPONSE_KEYS or root.get("type") != "control_response":
+        _malformed()
+    response = root.get("response")
+    if not isinstance(response, dict):
+        _malformed()
+    keys = set(response)
+    if (
+        not keys >= _INITIALIZE_SUCCESS_KEYS
+        or not keys <= _INITIALIZE_SUCCESS_KEYS | _INITIALIZE_OPTIONAL_KEYS
+        or bool(keys & _INITIALIZE_OPTIONAL_KEYS)
+        != (keys >= _INITIALIZE_OPTIONAL_KEYS)
+        or response.get("subtype") != "success"
+        or not isinstance(response.get("response"), dict)
+    ):
+        _malformed()
+    for name in _INITIALIZE_OPTIONAL_KEYS:
+        pending = response.get(name, [])
+        if not isinstance(pending, list):
+            _malformed()
+    received_id = response.get("request_id")
+    if not isinstance(received_id, str):
+        _malformed()
+    try:
+        correlated = RequestId(received_id)
+    except ValueError:
+        _malformed()
+    if correlated != request_id:
+        _malformed()
+
+
 def decode_oauth_update_rejection(
     payload: bytes,
     request_id: RequestId,
@@ -609,8 +649,7 @@ def decode_control_response_request_id(
     root = _decode_frame(payload)
     if root.get("type") != "control_response":
         return None
-    _, correlated = _decode_control_response_root(root)
-    return correlated
+    return _decode_control_response_correlation(root)
 
 
 def _decode_control_response(
@@ -637,14 +676,12 @@ def _decode_control_response_root(
     *,
     expected_error: str | None = None,
 ) -> tuple[str, RequestId]:
-    if set(root) != _RESPONSE_KEYS or root.get("type") != "control_response":
-        _malformed()
+    correlated = _decode_control_response_correlation(root)
     response = root.get("response")
     if not isinstance(response, dict):
         _malformed()
-    received_id = response.get("request_id")
     subtype = response.get("subtype")
-    if not isinstance(received_id, str) or not isinstance(subtype, str):
+    if not isinstance(subtype, str):
         _malformed()
     if subtype == "success":
         if set(response) != _SUCCESS_KEYS:
@@ -662,11 +699,22 @@ def _decode_control_response_root(
             _malformed()
     else:
         _malformed()
+    return subtype, correlated
+
+
+def _decode_control_response_correlation(root: JsonObject) -> RequestId:
+    if set(root) != _RESPONSE_KEYS or root.get("type") != "control_response":
+        _malformed()
+    response = root.get("response")
+    if not isinstance(response, dict):
+        _malformed()
+    received_id = response.get("request_id")
+    if not isinstance(received_id, str):
+        _malformed()
     try:
-        correlated = RequestId(received_id)
+        return RequestId(received_id)
     except ValueError:
         _malformed()
-    return subtype, correlated
 
 
 def _valid_error(error: str) -> bool:

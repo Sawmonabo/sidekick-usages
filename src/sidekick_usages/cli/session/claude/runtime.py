@@ -18,6 +18,19 @@ from sidekick_usages.cli.session.claude.coordination import (
     claude_participant_manifest,
     require_first_claude_notice,
 )
+from sidekick_usages.cli.session.claude.lifecycle import (
+    ClaudeProviderTerminatedError,
+    ClaudeSessionGateError,
+    ClaudeTerminalEventsClosedError,
+    claude_recovery_event,
+    new_claude_turn_id,
+    retain_claude_turn,
+)
+from sidekick_usages.cli.session.claude.projection import (
+    CLAUDE_ENGINE_EVENT_TIMEOUT_SECONDS,
+    ClaudeProjectionInstaller,
+    new_claude_request_id,
+)
 from sidekick_usages.core.accounts.types import RequestId
 from sidekick_usages.core.selection.types import (
     ParticipantId,
@@ -45,7 +58,6 @@ from sidekick_usages.providers.claude.structured.data_plane import (
 from sidekick_usages.providers.claude.structured.models import (
     ClaudeStructuredActivityKind,
     ClaudeStructuredActivityState,
-    ClaudeStructuredAdoptionReceipt,
     ClaudeStructuredBinding,
     ClaudeStructuredControlRequest,
     ClaudeStructuredConversationId,
@@ -55,7 +67,6 @@ from sidekick_usages.providers.claude.structured.models import (
     ClaudeStructuredError,
     ClaudeStructuredFailure,
     ClaudeStructuredHookCallbackRequest,
-    ClaudeStructuredInstallReceipt,
     ClaudeStructuredMcpMessageRequest,
     ClaudeStructuredPermissionDecision,
     ClaudeStructuredPermissionRequest,
@@ -71,7 +82,6 @@ from sidekick_usages.providers.claude.structured.stream import (
     ClaudeStructuredStreamDecoder,
     encode_claude_dialog_unsupported,
     encode_claude_elicitation_decline,
-    encode_claude_initialize,
     encode_claude_interrupt,
     encode_claude_permission_response,
     encode_claude_question_response,
@@ -80,48 +90,21 @@ from sidekick_usages.providers.claude.structured.stream import (
 )
 
 _CONNECTION_GENERATION = 1
-_ENGINE_EVENT_TIMEOUT_SECONDS = 60.0
 _ENGINE_POLL_SECONDS = 0.1
 _ENGINE_EXIT_TIMEOUT_SECONDS = 30.0
 _THREAD_JOIN_SECONDS = 2.0
 _COMPLETED_CONTROL_LIMIT = 256
 _REATTACH_DELAYS_SECONDS = (0.0, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0)
 _ATTACHMENT_RETRY_ERRORS = (
-    BrokenPipeError, ClaudeProtectedChannelClosedError,
-    ConnectionAbortedError, ConnectionClosedError,
-    ConnectionRefusedError, ConnectionResetError,
-    FileNotFoundError, TimeoutError,
+    BrokenPipeError,
+    ClaudeProtectedChannelClosedError,
+    ConnectionAbortedError,
+    ConnectionClosedError,
+    ConnectionRefusedError,
+    ConnectionResetError,
+    FileNotFoundError,
+    TimeoutError,
 )
-
-
-def _new_turn_id() -> TurnId:
-    return TurnId(str(uuid4()))
-
-
-def _new_request_id() -> RequestId:
-    return RequestId(str(uuid4()))
-
-
-def _retain_turn(
-    receipt: ClaudeStructuredAdoptionReceipt,
-) -> None:
-    del receipt
-
-
-class ClaudeSessionGateError(RuntimeError):
-    """One recoverable supervisor gate status for a live engine."""
-
-    def __init__(self, code: SelectionCode) -> None:
-        self.code = code
-        super().__init__(code.value)
-
-
-class ClaudeTerminalEventsClosedError(RuntimeError):
-    """Stop only the terminal-facing event consumer at ordinary exit."""
-
-
-class ClaudeProviderTerminatedError(RuntimeError):
-    """Report the official engine's natural termination to its host."""
 
 
 class ClaudeSessionRuntime:
@@ -136,7 +119,7 @@ class ClaudeSessionRuntime:
         *,
         participant_id: ParticipantId,
         coordination_factory: ClaudeCoordinationFactory | None = None,
-        turn_id_factory: Callable[[], TurnId] = _new_turn_id,
+        turn_id_factory: Callable[[], TurnId] = new_claude_turn_id,
         request_id_factory: Callable[[], RequestId] | None = None,
     ) -> None:
         self._require_endpoint(host_endpoint)
@@ -155,6 +138,12 @@ class ClaudeSessionRuntime:
         self._condition = Condition(RLock())
         self._engine_lock = RLock()
         self._session_lock = RLock()
+        self._projections = ClaudeProjectionInstaller(
+            engine,
+            self._engine_lock,
+            self._session_lock,
+            request_id_factory,
+        )
         self._closing = Event()
         self._coordination_changed = Event()
         self._session: ClaudeStructuredSession | None = None
@@ -234,10 +223,21 @@ class ClaudeSessionRuntime:
         try:
             channel, initial = self._initial_attachment(coordination)
             self._channel = channel
-            with self._session_lock:
-                session, receipt = self._bootstrap(initial)
+            try:
+                session, receipt = self._projections.bind_initial(initial)
                 self._session = session
-            self._initialize_engine()
+            except ClaudeStructuredError as error:
+                if error.code is ClaudeStructuredFailure.PROCESS_EXITED:
+                    self._provider_terminated = True
+                    raise ClaudeProviderTerminatedError() from None
+                initial.close_protected_frame()
+                self._projections.remember_ambiguous(initial.protected_binding)
+                channel.release_ambiguous_projection()
+                self._mark_recovery_required()
+                notices = self._control.notices()
+                self._enrolled = True
+                self._start_threads(notices, self._connection_generation)
+                return
             try:
                 channel.acknowledge(receipt)
                 notices = self._control.notices()
@@ -251,12 +251,7 @@ class ClaudeSessionRuntime:
                 self._raise_failure()
             else:
                 self._start_threads(notices, self._connection_generation)
-            events = Thread(
-                target=self._consume_events,
-                daemon=True, name="claude-structured-events",
-            )
-            events.start()
-            self._event_thread = events
+            self._start_event_thread()
             self._enrolled = True
         except BaseException:
             if self._channel is not None:
@@ -310,40 +305,6 @@ class ClaudeSessionRuntime:
             self._control = current.control
             return channel, initial
 
-    def dispose_unenrolled_engine(self) -> None:
-        """Dispose the child only before participant enrollment finishes."""
-        if self._enrolled:
-            raise RuntimeError("An enrolled Claude engine cannot be disposed.")
-        self._engine.dispose_unenrolled()
-
-    def _bootstrap(
-        self,
-        frame: ClaudeStructuredProtectedFrame,
-    ) -> tuple[ClaudeStructuredSession, ClaudeStructuredInstallReceipt]:
-        request_id_factory = self._request_id_factory
-        if request_id_factory is None:
-            return ClaudeStructuredSession.bootstrap(self._engine, frame)
-        return ClaudeStructuredSession.bootstrap(
-            self._engine,
-            frame,
-            request_id_factory=request_id_factory,
-        )
-
-    def _initialize_engine(self) -> None:
-        factory = self._request_id_factory
-        request_id = _new_request_id() if factory is None else factory()
-        frame = encode_claude_initialize(request_id)
-        try:
-            with self._engine_lock:
-                response = self._engine.exchange(
-                    frame,
-                    request_id,
-                    _ENGINE_EVENT_TIMEOUT_SECONDS,
-                )
-        finally:
-            clear_secret_buffer(frame)
-        decode_control_success(response, request_id)
-
     def start_turn(self, prompt: str) -> TurnId:
         """Queue or admit one prompt and transmit it exactly once."""
         turn_id = self._turn_id_factory()
@@ -357,7 +318,7 @@ class ClaudeSessionRuntime:
                 self._require_session().route_turn(
                     turn_id,
                     binding,
-                    _retain_turn,
+                    retain_claude_turn,
                 )
                 routed = True
             proof = ParticipantAdoptionProof(
@@ -375,7 +336,7 @@ class ClaudeSessionRuntime:
             with self._engine_lock:
                 self._engine.send_interactive(
                     frame,
-                    _ENGINE_EVENT_TIMEOUT_SECONDS,
+                    CLAUDE_ENGINE_EVENT_TIMEOUT_SECONDS,
                 )
         except BaseException as error:
             if not routed:
@@ -497,7 +458,7 @@ class ClaudeSessionRuntime:
                     self._fail(ClaudeStructuredFailure.ACTIVITY_INVALID)
                 self._engine.send_interactive(
                     frame,
-                    _ENGINE_EVENT_TIMEOUT_SECONDS,
+                    CLAUDE_ENGINE_EVENT_TIMEOUT_SECONDS,
                 )
                 del self._pending_controls[request_id]
                 self._require_session().observe_activity(
@@ -512,14 +473,14 @@ class ClaudeSessionRuntime:
     def interrupt(self) -> None:
         """Interrupt the active response inside the retained engine."""
         factory = self._request_id_factory
-        request_id = _new_request_id() if factory is None else factory()
+        request_id = new_claude_request_id() if factory is None else factory()
         frame = encode_claude_interrupt(request_id)
         try:
             with self._engine_lock:
                 response = self._engine.exchange(
                     frame,
                     request_id,
-                    _ENGINE_EVENT_TIMEOUT_SECONDS,
+                    CLAUDE_ENGINE_EVENT_TIMEOUT_SECONDS,
                 )
         finally:
             clear_secret_buffer(frame)
@@ -544,6 +505,11 @@ class ClaudeSessionRuntime:
             if not self._provider_terminated:
                 self._engine.close_input()
             return self._engine.wait(_ENGINE_EXIT_TIMEOUT_SECONDS)
+
+    def finish_unattached_engine(self) -> None:
+        """Finish naturally only before any protected frame handoff."""
+        if self._channel is None and not self._enrolled:
+            self.finish_engine()
 
     def close(self) -> None:
         """Close only host and supervisor resources owned by this runtime."""
@@ -606,6 +572,17 @@ class ClaudeSessionRuntime:
         self._protected_thread = protected
         self._notice_thread = notice
 
+    def _start_event_thread(self) -> None:
+        if self._event_thread is not None:
+            return
+        events = Thread(
+            target=self._consume_events,
+            daemon=True,
+            name="claude-structured-events",
+        )
+        events.start()
+        self._event_thread = events
+
     def _consume_protected(
         self,
         channel: ClaudeProtectedHostChannel,
@@ -615,15 +592,23 @@ class ClaudeSessionRuntime:
             while not self._closing.is_set():
                 frame = channel.receive()
                 try:
-                    with self._engine_lock, self._session_lock:
-                        session = self._require_session()
-                        session.prepare_target(frame.protected_binding)
-                        receipt = session.update_oauth(frame)
+                    session, receipt = self._projections.install(
+                        frame,
+                        self._session,
+                    )
+                    self._session = session
+                except ClaudeStructuredError as error:
+                    retained = self._projections.retain_failure(
+                        channel, frame, error
+                    )
+                    if retained:
+                        self._mark_recovery_required()
+                        continue
+                    self._provider_terminated = True
+                    self._events.put(ClaudeProviderTerminatedError())
+                    return
                 except BaseException:
-                    frame.close_protected_frame()
-                    with self._session_lock:
-                        self._require_session().discard_uninstalled_target()
-                    channel.close()
+                    self._projections.reject(channel, frame, self._session)
                     self._control_lost(connection_generation, False)
                     return
                 channel.acknowledge(receipt)
@@ -752,6 +737,8 @@ class ClaudeSessionRuntime:
                 self._condition.notify_all()
             return
         if notice.kind is ParticipantNoticeKind.OPEN:
+            if not self._initialize_for_readiness():
+                return
             with self._condition:
                 self._control_available = True
                 self._reattaching = False
@@ -780,6 +767,8 @@ class ClaudeSessionRuntime:
             or notice.epoch != binding.epoch
         ):
             self._fail(ClaudeStructuredFailure.AUTHORITY_MISMATCH)
+        if not self._initialize_for_readiness():
+            return
         self._control.ready(
             ParticipantReadyProof(
                 account_id=binding.account_id,
@@ -787,6 +776,21 @@ class ClaudeSessionRuntime:
                 epoch=binding.epoch,
             )
         )
+        self._start_event_thread()
+
+    def _initialize_for_readiness(self) -> bool:
+        try:
+            with self._session_lock:
+                self._require_session()
+            self._projections.initialize()
+        except ClaudeStructuredError as error:
+            if error.code is ClaudeStructuredFailure.PROCESS_EXITED:
+                self._provider_terminated = True
+                self._events.put(ClaudeProviderTerminatedError())
+            else:
+                self._mark_recovery_required()
+            return False
+        return True
 
     def _await_admission(self, turn_id: TurnId) -> TurnAdmission:
         while True:
@@ -852,6 +856,12 @@ class ClaudeSessionRuntime:
         if publish:
             self._events.put(error)
 
+    def _mark_recovery_required(self) -> None:
+        with self._condition:
+            self._gate_code = SelectionCode.SELECTION_RECOVERY_REQUIRED
+            self._condition.notify_all()
+        self._events.put(claude_recovery_event())
+
     def _control_lost(self, connection_generation: int, retry: bool) -> None:
         report_unavailable = False
         with self._condition:
@@ -879,13 +889,7 @@ class ClaudeSessionRuntime:
                 report_unavailable = True
             self._condition.notify_all()
         if report_unavailable:
-            self._events.put(
-                ClaudeStructuredTerminalEvent(
-                    conversation_id=None,
-                    text=(),
-                    status="Sidekick: selection_recovery_required",
-                )
-            )
+            self._events.put(claude_recovery_event())
 
     def _reattach(self) -> None:
         factory = self._coordination_factory
@@ -912,13 +916,7 @@ class ClaudeSessionRuntime:
                 return
             if not reported and self._enrolled:
                 reported = True
-                self._events.put(
-                    ClaudeStructuredTerminalEvent(
-                        conversation_id=None,
-                        text=(),
-                        status="Sidekick: selection_recovery_required",
-                    )
-                )
+                self._events.put(claude_recovery_event())
             attempt += 1
 
     def _reattach_once(
@@ -934,7 +932,8 @@ class ClaudeSessionRuntime:
         try:
             coordination = factory(self._participant_id, generation)
             with self._session_lock:
-                binding = self._require_session().binding
+                session = self._session
+                binding = None if session is None else session.binding
             manifest = claude_participant_manifest(
                 self._participant_id,
                 generation,

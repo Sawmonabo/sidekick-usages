@@ -5,6 +5,7 @@ import selectors
 import subprocess
 import time
 from collections.abc import Callable, Mapping
+from contextlib import suppress
 from itertools import pairwise
 from pathlib import Path
 from threading import Thread
@@ -30,7 +31,6 @@ from sidekick_usages.providers.claude.models import (
 )
 from sidekick_usages.providers.claude.process import (
     MAX_CLAUDE_CONTROL_FRAME_BYTES,
-    dispose_piped_claude_command,
     launch_piped_claude_command,
 )
 from sidekick_usages.providers.claude.structured.codec import (
@@ -93,7 +93,6 @@ _NETWORK_NAMESPACE_ARGUMENTS = (
     "--net",
     "--",
 )
-
 type ClaudeStructuredArtifactReader = Callable[
     [ClaudeExecutable, tuple[bytes, ...]],
     tuple[str, frozenset[bytes]],
@@ -102,6 +101,15 @@ type ClaudeStructuredArtifactReader = Callable[
 
 def _new_request_id() -> RequestId:
     return RequestId(str(uuid4()))
+
+
+def _finish_unattached_process(process: subprocess.Popen[bytes]) -> None:
+    """Close owned pipes and await natural pre-handoff process exit."""
+    for stream in (process.stdin, process.stdout, process.stderr):
+        if stream is not None:
+            with suppress(OSError):
+                stream.close()
+    process.wait()
 
 
 def qualify_claude_structured_capability(
@@ -305,7 +313,7 @@ class ClaudeStructuredProcess:
             verify_claude_executable(executable)
             return cls(process)
         except BaseException:
-            dispose_piped_claude_command(process)
+            _finish_unattached_process(process)
             raise
 
     def exchange(
@@ -399,9 +407,8 @@ class ClaudeStructuredProcess:
 
     def dispose_unenrolled(self) -> None:
         """Dispose this child only before participant enrollment."""
-        dispose_piped_claude_command(self._process)
-        self._selector.close()
-        self._stderr_reader.join(_PROBE_TIMEOUT_SECONDS)
+        self.close_input()
+        self.wait(_PROBE_TIMEOUT_SECONDS)
 
     def _send(self, request: bytearray, deadline: float) -> None:
         selector = selectors.DefaultSelector()
@@ -594,5 +601,5 @@ def _open_probe_engine(
         verify_claude_executable(executable)
         return ClaudeStructuredProcess(process)
     except BaseException:
-        dispose_piped_claude_command(process)
+        _finish_unattached_process(process)
         raise

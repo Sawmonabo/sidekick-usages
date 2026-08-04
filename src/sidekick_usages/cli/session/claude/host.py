@@ -35,10 +35,14 @@ class ClaudeCliSession:
     def run(self, arguments: tuple[str, ...]) -> int:
         """Run one application and return the engine's natural status."""
         del arguments
-        opened = False
         try:
-            self._runtime.open()
-            opened = True
+            try:
+                self._runtime.open()
+            except ClaudeProviderTerminatedError:
+                return self._runtime.finish_engine()
+            except BaseException:
+                self._runtime.finish_unattached_engine()
+                raise
             while True:
                 try:
                     self._terminal_factory().run(self)
@@ -48,10 +52,6 @@ class ClaudeCliSession:
                 except BaseException:
                     self._runtime.report_terminal_failure()
             return self._runtime.finish_engine()
-        except BaseException:
-            if not opened:
-                self._runtime.dispose_unenrolled_engine()
-            raise
         finally:
             self._runtime.close()
 
