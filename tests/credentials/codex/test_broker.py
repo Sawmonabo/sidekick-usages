@@ -62,11 +62,7 @@ from sidekick_usages.providers.codex.broker.external_auth.refresh import (
 )
 from sidekick_usages.providers.codex.broker.service import CodexSharedRuntime
 from sidekick_usages.providers.codex.broker.types import CodexBrokerFailure
-from sidekick_usages.providers.codex.session.config import CodexSessionConfig
-from sidekick_usages.providers.codex.session.models import (
-    CODEX_SESSION_OPERATOR_PRECONDITION,
-    CodexSessionConfigurationReason,
-)
+from sidekick_usages.providers.codex.session import config, mcp, models
 from tests.fakes.codex.app_server.daemon import (
     FakeCodexDaemon,
     FakeCodexTuiObserver,
@@ -494,11 +490,12 @@ def test_stale_resident_config_is_terminal_until_operator_restart(
             report = supervisor.broker_preparation_report
             assert report is not None
             assert report.reason == (
-                CodexSessionConfigurationReason.RESIDENT_CONFIG_STALE.value
+                models.CodexSessionConfigurationReason.RESIDENT_CONFIG_STALE.value
             )
             assert report.dry_run is True
             assert (
-                report.operator_steps[0] == CODEX_SESSION_OPERATOR_PRECONDITION
+                report.operator_steps[0]
+                == models.CODEX_SESSION_OPERATOR_PRECONDITION
             )
             observed = (
                 lifecycle.start_statuses,
@@ -532,7 +529,7 @@ def test_shared_codex_runtime_is_idempotent_and_rehydrates(
     session_home = short_socket_root / "session"
     session_home.mkdir()
     (session_home / "config.toml").write_bytes(
-        CodexSessionConfig(session_home).prepare(None)
+        config.CodexSessionConfig(session_home).prepare(None)
     )
     write_codex_schema(schema_root, external_auth=True)
     write_fake_managed_codex(
@@ -780,6 +777,7 @@ def test_selection_worker_binds_codex_broker_journey(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Codex selection uses one epoch-bound resident broker journey."""
+    monkeypatch.setattr(mcp, "_MCP_PROOF_TIMEOUT_SECONDS", 0.2)
     fixture = activation_source_fixture(
         tmp_path,
         short_socket_root,
@@ -830,9 +828,7 @@ def test_selection_worker_binds_codex_broker_journey(
                 1, "thread/resume", {"threadId": "thread-alpha"}
             )
             assert participant.receive().get("id") == 1
-            peer.send_request(
-                1, "thread/resume", {"threadId": "thread-beta"}
-            )
+            peer.send_request(1, "thread/resume", {"threadId": "thread-beta"})
             assert peer.receive().get("id") == 1
             assert (
                 _finalized_codex_selection(paths),
@@ -882,10 +878,14 @@ def test_selection_worker_binds_codex_broker_journey(
                 ("reload", "install"),
             )
             mcp_reads = daemon.mcp_status_thread_ids
-            assert mcp_reads[:6] == (
-                "thread-alpha",
-                "thread-beta",
-            ) * 3
+            assert (
+                mcp_reads[:6]
+                == (
+                    "thread-alpha",
+                    "thread-beta",
+                )
+                * 3
+            )
             assert (
                 mcp_reads.count("thread-alpha"),
                 mcp_reads.count("thread-beta"),
@@ -971,7 +971,6 @@ def test_callback_preempts_stubborn_same_home_maintenance(
                 OperationState.RUNNING,
             )
             wait_for_file(route.started)
-
             started = time.monotonic()
             refreshed = daemon.request_refresh(PROVIDER_IDENTITY)
             elapsed = time.monotonic() - started
@@ -986,7 +985,6 @@ def test_callback_preempts_stubborn_same_home_maintenance(
                 _MAINTENANCE_OPERATION_ID,
                 OperationState.RETRY_WAIT,
             )
-
             assert refreshed.responder == "sidekick_usages"
             assert refreshed.account_id == PROVIDER_IDENTITY
             assert elapsed < _CALLBACK_RESPONSE_BOUND_SECONDS

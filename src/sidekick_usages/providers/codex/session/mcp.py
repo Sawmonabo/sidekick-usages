@@ -16,7 +16,7 @@ from sidekick_usages.providers.codex.session.models import (
 )
 
 MAX_CODEX_RELAY_MCP_SERVERS = 256
-_MCP_PROOF_TIMEOUT_SECONDS = 6.0
+_MCP_PROOF_TIMEOUT_SECONDS = 40.0
 _MCP_TERMINAL_STATES = frozenset({"cancelled", "failed", "ready"})
 type CodexMcpNames = dict[str, frozenset[str]]
 
@@ -158,14 +158,11 @@ class CodexMcpLifecycle:
         revision_watermark: int,
     ) -> bool:
         return all(
-            status in _MCP_TERMINAL_STATES
-            and revision > revision_watermark
+            status in _MCP_TERMINAL_STATES and revision > revision_watermark
             for thread_id, thread_names in names.items()
             for name in thread_names
             for key in ((thread_id, name),)
-            for status, revision in (
-                self._statuses.get(key, ("", 0)),
-            )
+            for status, revision in (self._statuses.get(key, ("", 0)),)
         )
 
     def _retained_terminal(self, proof: CodexMcpRefreshProof) -> bool:
@@ -173,8 +170,7 @@ class CodexMcpLifecycle:
         if revisions is None:
             return False
         return all(
-            status in _MCP_TERMINAL_STATES
-            and revisions.get(key) == revision
+            status in _MCP_TERMINAL_STATES and revisions.get(key) == revision
             for thread_id, thread_names in proof.names.items()
             for name in thread_names
             for key in ((thread_id, name),)

@@ -40,6 +40,9 @@ from sidekick_usages.persistence.supervisor.selection import (
     SelectedStateStore,
     SelectionOperationStore,
 )
+from sidekick_usages.providers.codex.session.quiescence import (
+    CodexParticipantProofSet,
+)
 from tests.support.persistence import (
     make_application_paths,
     seed_finalized_selections,
@@ -221,6 +224,32 @@ def test_recovery_finalizes_forward_from_target_provider_proof(
             SelectionRecoveryRelation.BASELINE_PROVEN,
             SelectionRecoveryRelation.TARGET_PROVEN,
             SelectionRecoveryRelation.UNRESOLVED,
+        )
+        codex_baseline = replace(
+            baseline,
+            provider_id=ProviderId.CODEX,
+            generation=AuthorityGeneration("2026-08-04T03:38:35.101902541Z"),
+        )
+        codex_operation = replace(
+            operation,
+            provider_id=ProviderId.CODEX,
+            baseline_account_id=codex_baseline.account_id,
+            target_account_id=TARGET_ACCOUNT_ID,
+        )
+        refreshed_baseline = CodexParticipantProofSet.recovery_decision(
+            codex_operation,
+            codex_baseline,
+            SelectionAuthorityObservation(
+                provider_id=ProviderId.CODEX,
+                account_id=codex_baseline.account_id,
+                generation=AuthorityGeneration(
+                    "2026-08-04T05:29:38.756428940Z"
+                ),
+            ),
+            target_binding_proven=False,
+        )
+        assert refreshed_baseline.relation is (
+            SelectionRecoveryRelation.BASELINE_PROVEN
         )
         recovery.complete_readback(
             _completion(

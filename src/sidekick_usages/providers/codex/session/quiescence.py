@@ -22,14 +22,14 @@ from sidekick_usages.core.selection.models import (
     SelectionEpoch,
     SelectionRecoveryDecision,
 )
-from sidekick_usages.core.selection.policy import (
-    selection_recovery_decision,
-)
 from sidekick_usages.core.selection.types import ParticipantId
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.errors import InvalidPayloadError
 from sidekick_usages.platform.models import ProcessIdentity
 from sidekick_usages.providers.codex.session.models import CodexRelayAuthority
+from sidekick_usages.providers.codex.session.recovery import (
+    codex_recovery_decision,
+)
 from sidekick_usages.serialization.json import (
     JsonObject,
     decode_json_object,
@@ -37,7 +37,7 @@ from sidekick_usages.serialization.json import (
 )
 
 _PROTOCOL_VERSION = 3
-_PROOF_TIMEOUT_SECONDS = 8.0
+_PROOF_TIMEOUT_SECONDS = 45.0
 _MAX_PARTICIPANTS = 16
 _CHALLENGE_KEYS = frozenset(
     {
@@ -261,12 +261,11 @@ class CodexParticipantProofSet:
         target_binding_proven: bool,
     ) -> SelectionRecoveryDecision:
         """Relate Codex runtime and exact participant authority proof."""
-        return selection_recovery_decision(
+        return codex_recovery_decision(
             operation,
             baseline,
             observation,
             target_binding_proven=target_binding_proven,
-            baseline_observation_conclusive=True,
         )
 
     def stage(
@@ -763,9 +762,7 @@ class CodexParticipantProofChannel:
                 relay.freeze_quiescence(),
             )
             armed = True
-            inventory = _decode_challenge(
-                self._transport.receive_payload()
-            )
+            inventory = _decode_challenge(self._transport.receive_payload())
             self._require_challenge(
                 inventory,
                 first.operation_id,
@@ -795,9 +792,7 @@ class CodexParticipantProofChannel:
                     armed = False
                     return
                 self._respond(terminal, relay.confirm_baseline())
-                terminal = _decode_challenge(
-                    self._transport.receive_payload()
-                )
+                terminal = _decode_challenge(self._transport.receive_payload())
             self._require_challenge(
                 terminal,
                 first.operation_id,
