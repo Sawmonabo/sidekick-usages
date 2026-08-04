@@ -26,7 +26,13 @@ DASHBOARD_BENCHMARK_RELATIVE_PATH = (
 DASHBOARD_BENCHMARK_HOME_PREFIX = "sidekick-dashboard-benchmark-home-"
 PUBLIC_ROOT_USAGE = "Usage: sidekick-usages"
 PRIVATE_ROOT_USAGE = "sidekick_usages.cli.runtime.application"
-SESSION_NOT_STARTED = "provider process was not started"
+CLAUDE_UNMANAGED_FALLBACK = (
+    "Sidekick: these arguments are not structured-host qualified; "
+    "launching exact native Claude unmanaged."
+)
+PROVIDER_EXECUTABLE_UNAVAILABLE = (
+    "The official provider executable is unavailable or unsafe."
+)
 CODEX_EXECUTABLE_MISSING = "The Codex CLI executable was not found."
 DASHBOARD_NORMAL_EXIT = "installed_console_natural_exit=true"
 DASHBOARD_TERMINAL_RESTORED = "installed_console_terminal_restored=true"
@@ -286,8 +292,8 @@ def _verify_dashboard_benchmark(
             "claude",
             claude,
             (
-                "claude session integration is not available",
-                SESSION_NOT_STARTED,
+                CLAUDE_UNMANAGED_FALLBACK,
+                PROVIDER_EXECUTABLE_UNAVAILABLE,
             ),
         )
         codex = run_command(
