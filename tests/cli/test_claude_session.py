@@ -44,6 +44,8 @@ class _JourneyTerminal(ClaudeTerminal):
         self._events = events
         self._prompt = 0
         self._interrupted = False
+        self._cancelled: ClaudeStructuredPermissionRequest | None = None
+        self._stream_correlation: str | None = None
         self.rendered: list[str] = []
 
     def run(self, session: ClaudeTerminalSession) -> None:
@@ -64,6 +66,13 @@ class _JourneyTerminal(ClaudeTerminal):
             self._respond(session, event)
             if event.cancelled_request_id is not None:
                 self._events.append(f"cancel:{event.cancelled_request_id}")
+                if self._cancelled is None:
+                    raise AssertionError("Missing cancelled request.")
+                session.respond_permission(
+                    self._cancelled,
+                    ClaudeStructuredPermissionDecision.DENY,
+                )
+                self._cancelled = None
             if event.turn_complete:
                 session.end_turn(turn_id)
                 return
@@ -77,6 +86,7 @@ class _JourneyTerminal(ClaudeTerminal):
         if isinstance(control, ClaudeStructuredPermissionRequest):
             if control.request_id == "cancel-1":
                 self._events.append("permission_pending")
+                self._cancelled = control
                 return
             session.respond_permission(
                 control, self.request_permission(control)
@@ -99,8 +109,17 @@ class _JourneyTerminal(ClaudeTerminal):
         return None
 
     def render(self, event: ClaudeStructuredTerminalEvent) -> None:
-        self.rendered.extend(event.text)
-        if event.text and not self._interrupted:
+        if event.text_append and event.text_correlation is not None:
+            if self._stream_correlation == event.text_correlation:
+                self.rendered[-1] += "".join(event.text)
+            else:
+                self._stream_correlation = event.text_correlation
+                self.rendered.extend(event.text)
+        else:
+            self.rendered.extend(event.text)
+        if event.status is not None:
+            self._events.append(f"presentation:{event.status}")
+        if event.text_append and event.text and not self._interrupted:
             self._interrupted = True
             raise KeyboardInterrupt
 
@@ -161,7 +180,17 @@ def test_claude_session_keeps_one_engine_across_a_queued_switch() -> None:
         str(runtime.conversation_id),
         terminal.rendered,
         engine.user_turn_count,
-    ) == (0, True, _CONVERSATION, ["continued"], 1)
+    ) == (
+        0,
+        True,
+        _CONVERSATION,
+        [
+            "Suggestion: Check tests",
+            "continued",
+            "Claude could not complete the request.",
+        ],
+        1,
+    )
     assert events == [
         f"install:{SESSION_REQUESTS[0]}",
         "initialize",
@@ -171,6 +200,7 @@ def test_claude_session_keeps_one_engine_across_a_queued_switch() -> None:
         "ready",
         "adoption",
         "prompt",
+        "presentation:A Claude hook is running.",
         "permission_pending",
         "cancel:cancel-1",
         "permission",
@@ -179,6 +209,11 @@ def test_claude_session_keeps_one_engine_across_a_queued_switch() -> None:
         "question_response",
         "elicitation_response",
         "dialog_response",
+        "presentation:Claude entered plan mode.",
+        "presentation:Claude is thinking.",
+        "presentation:Bash has been running for 2s.",
+        "presentation:Claude usage limits are nearly exhausted.",
+        "presentation:Claude authentication requires attention.",
         "interrupt",
         "end",
         "close_input",
@@ -195,6 +230,16 @@ def _stream_events() -> tuple[bytes, ...]:
             b'"session_id":"'
             + session
             + b'","task_id":"agent-1","task_type":"local_agent"}'
+        ),
+        (
+            b'{"type":"system","subtype":"task_started",'
+            b'"session_id":"'
+            + session
+            + b'","task_id":"agent-1","task_type":"local_agent"}'
+        ),
+        (
+            b'{"type":"system","subtype":"task_notification",'
+            b'"task_id":"unbookended-task"}'
         ),
         (
             b'{"type":"system","subtype":"hook_started",'
@@ -216,7 +261,8 @@ def _stream_events() -> tuple[bytes, ...]:
             b'{"type":"control_request","request_id":"permission-1",'
             b'"request":{"subtype":"can_use_tool","tool_name":"Bash",'
             b'"tool_use_id":"tool-1","input":{"command":"true"},'
-            b'"requires_user_interaction":true}}'
+            b'"requires_user_interaction":true,'
+            b'"permission_suggestions":[{"type":"addRules"}]}}'
         ),
         (
             b'{"type":"control_request","request_id":"question-1",'
@@ -243,16 +289,60 @@ def _stream_events() -> tuple[bytes, ...]:
             b'"dialog_kind":"private","payload":{}}}'
         ),
         (
+            b'{"type":"system","subtype":"status","status":null,'
+            b'"permissionMode":"plan","uuid":"status-1",'
+            b'"session_id":"' + session + b'"}'
+        ),
+        (
+            b'{"type":"system","subtype":"thinking_tokens",'
+            b'"estimated_tokens":10,"estimated_tokens_delta":2,'
+            b'"uuid":"thinking-1","session_id":"' + session + b'"}'
+        ),
+        (
+            b'{"type":"tool_progress","tool_use_id":"tool-1",'
+            b'"tool_name":"Bash","parent_tool_use_id":null,'
+            b'"elapsed_time_seconds":2,"uuid":"progress-1",'
+            b'"session_id":"' + session + b'"}'
+        ),
+        (
+            b'{"type":"rate_limit_event","rate_limit_info":'
+            b'{"status":"allowed_warning"},"uuid":"rate-1",'
+            b'"session_id":"' + session + b'"}'
+        ),
+        (
+            b'{"type":"auth_status","isAuthenticating":false,'
+            b'"output":[],"error":"provider secret",'
+            b'"uuid":"auth-1","session_id":"' + session + b'"}'
+        ),
+        (
+            b'{"type":"prompt_suggestion","suggestion":"Check tests",'
+            b'"uuid":"suggestion-1","session_id":"' + session + b'"}'
+        ),
+        (
+            b'{"type":"stream_event","session_id":"'
+            + session
+            + b'","event":{"type":"message_start","message":'
+            b'{"id":"message-1"}}}'
+        ),
+        (
             b'{"type":"stream_event","session_id":"'
             + session
             + b'","event":{"type":"content_block_delta",'
-            b'"delta":{"type":"text_delta","text":"continued"}}}'
+            b'"index":0,"delta":{"type":"text_delta",'
+            b'"text":"con"}}}'
+        ),
+        (
+            b'{"type":"stream_event","session_id":"'
+            + session
+            + b'","event":{"type":"content_block_delta",'
+            b'"index":0,"delta":{"type":"text_delta",'
+            b'"text":"tinued"}}}'
         ),
         b'{"type":"assistant","session_id":"'
         + session
-        + b'","message":{"role":"assistant","content":'
+        + b'","message":{"id":"message-1","role":"assistant","content":'
         b'[{"type":"text","text":"continued"}]}}',
         b'{"type":"result","subtype":"success","session_id":"'
         + session
-        + b'","is_error":false}',
+        + b'","is_error":true,"errors":["provider secret"]}',
     )

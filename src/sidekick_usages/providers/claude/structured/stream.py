@@ -42,11 +42,16 @@ from sidekick_usages.serialization.json import (
 _MESSAGE_TYPES = frozenset(
     {
         "assistant",
+        "auth_status",
         "control_cancel_request",
         "control_request",
+        "prompt_suggestion",
+        "rate_limit_event",
         "result",
         "stream_event",
         "system",
+        "tool_progress",
+        "tool_use_summary",
         "user",
     }
 )
@@ -129,10 +134,6 @@ def encode_claude_permission_response(
         response = {
             "behavior": "allow",
             "updatedInput": decode_json_object(request.tool_input),
-            "updatedPermissions": [
-                decode_json_object(value)
-                for value in request.permission_suggestions
-            ],
         }
     else:
         response = {
@@ -181,10 +182,6 @@ def encode_claude_question_response(
         {
             "behavior": "allow",
             "updatedInput": updated,
-            "updatedPermissions": [
-                decode_json_object(value)
-                for value in request.permission.permission_suggestions
-            ],
         },
     )
 
@@ -225,7 +222,8 @@ class ClaudeStructuredStreamDecoder:
     def __init__(self) -> None:
         self._tasks: dict[str, ClaudeStructuredActivityKind] = {}
         self._ignored_tasks: set[str] = set()
-        self._streamed_text = False
+        self._stream_message_id: str | None = None
+        self._streamed_blocks: set[tuple[str, int]] = set()
 
     def decode(self, payload: bytes) -> ClaudeStructuredTerminalEvent:
         """Decode one exact-build frame with sessionless lifecycle support."""
@@ -243,12 +241,22 @@ class ClaudeStructuredStreamDecoder:
         if message_type not in _MESSAGE_TYPES:
             _malformed()
         conversation_id = _optional_conversation(root, message_type)
-        text, activities, control, cancelled_request_id, turn_complete = (
-            self._event_content(root, message_type, conversation_id)
-        )
+        (
+            text,
+            correlation,
+            append,
+            status,
+            activities,
+            control,
+            cancelled_request_id,
+            turn_complete,
+        ) = self._event_content(root, message_type, conversation_id)
         return ClaudeStructuredTerminalEvent(
             conversation_id=conversation_id,
             text=text,
+            text_correlation=correlation,
+            text_append=append,
+            status=status,
             activities=activities,
             control=control,
             cancelled_request_id=cancelled_request_id,
@@ -262,6 +270,9 @@ class ClaudeStructuredStreamDecoder:
         conversation_id: ClaudeStructuredConversationId | None,
     ) -> tuple[
         tuple[str, ...],
+        str | None,
+        bool,
+        str | None,
         tuple[ClaudeStructuredStreamEvent, ...],
         ClaudeStructuredControlRequest | None,
         str | None,
@@ -270,6 +281,9 @@ class ClaudeStructuredStreamDecoder:
         if message_type in {"control_request", "control_cancel_request"}:
             return (
                 (),
+                None,
+                False,
+                None,
                 (),
                 _control_request(root)
                 if message_type == "control_request"
@@ -284,15 +298,38 @@ class ClaudeStructuredStreamDecoder:
             and conversation_id is not None
         ):
             if message_type == "assistant":
-                text, activities = _assistant(root, conversation_id)
-                if self._streamed_text:
-                    text = ()
-                    self._streamed_text = False
-                return text, activities, None, None, False
-            return (), _user(root, conversation_id), None, None, False
-        if message_type == "system":
+                text, activities = _assistant(
+                    root,
+                    conversation_id,
+                    self._streamed_blocks,
+                )
+                return (
+                    text,
+                    None,
+                    False,
+                    None,
+                    activities,
+                    None,
+                    None,
+                    False,
+                )
             return (
                 (),
+                None,
+                False,
+                None,
+                _user(root, conversation_id),
+                None,
+                None,
+                False,
+            )
+        if message_type == "system":
+            status = _system_status(root)
+            return (
+                (),
+                None,
+                False,
+                status,
                 _system(
                     root,
                     conversation_id,
@@ -304,17 +341,56 @@ class ClaudeStructuredStreamDecoder:
                 False,
             )
         if message_type in {"stream_event", "result"}:
-            text = (
-                _stream_text(root)
-                if message_type == "stream_event"
-                else _result_text(root)
+            if message_type == "stream_event":
+                text, correlation, append, status = self._stream_content(root)
+            else:
+                text = _result_text(root)
+                correlation = None
+                append = False
+                status = None
+                self._stream_message_id = None
+                self._streamed_blocks.clear()
+            return (
+                text,
+                correlation,
+                append,
+                status,
+                (),
+                None,
+                None,
+                message_type == "result",
             )
-            if message_type == "stream_event" and text:
-                self._streamed_text = True
-            elif message_type == "result":
-                self._streamed_text = False
-            return text, (), None, None, message_type == "result"
-        return (), (), None, None, False
+        text, status = _presentation(root, message_type)
+        return text, None, False, status, (), None, None, False
+
+    def _stream_content(
+        self,
+        root: JsonObject,
+    ) -> tuple[tuple[str, ...], str | None, bool, str | None]:
+        event = _object(root, "event")
+        event_type = _bounded_text(event, "type")
+        if event_type == "message_start":
+            self._stream_message_id = _bounded_text(
+                _object(event, "message"),
+                "id",
+            )
+            return (), None, False, None
+        if event_type != "content_block_delta":
+            return (), None, False, None
+        index = _nonnegative_int(event, "index")
+        delta = _object(event, "delta")
+        delta_type = _bounded_text(delta, "type")
+        if delta_type == "thinking_delta":
+            _bounded_text(delta, "thinking")
+            return (), None, False, "Claude is thinking."
+        if delta_type != "text_delta":
+            return (), None, False, None
+        message_id = self._stream_message_id
+        if message_id is None:
+            _malformed()
+        self._streamed_blocks.add((message_id, index))
+        correlation = f"{message_id}:{index}"
+        return (_text(delta, "text"),), correlation, True, None
 
 
 def _control_request(root: JsonObject) -> ClaudeStructuredControlRequest:
@@ -494,15 +570,17 @@ def _validate_permission_options(request: JsonObject) -> None:
 def _assistant(
     root: JsonObject,
     conversation_id: ClaudeStructuredConversationId,
+    streamed_blocks: set[tuple[str, int]],
 ) -> tuple[tuple[str, ...], tuple[ClaudeStructuredStreamEvent, ...]]:
     message = _object(root, "message")
+    message_id = _bounded_text(message, "id")
     blocks = _list(message, "content")
     text: list[str] = []
     activities: list[ClaudeStructuredStreamEvent] = []
-    for value in blocks:
+    for index, value in enumerate(blocks):
         block = _require_object(value)
         block_type = _text(block, "type")
-        if block_type == "text":
+        if block_type == "text" and (message_id, index) not in streamed_blocks:
             text.append(_text(block, "text"))
         elif block_type == "tool_use":
             activities.append(
@@ -513,6 +591,9 @@ def _assistant(
                     ClaudeStructuredActivityState.STARTED,
                 )
             )
+    streamed_blocks.difference_update(
+        (message_id, index) for index in range(len(blocks))
+    )
     return tuple(text), tuple(activities)
 
 
@@ -582,48 +663,44 @@ def _task_event(
     ignored_tasks: set[str],
     subtype: str,
 ) -> tuple[ClaudeStructuredStreamEvent, ...]:
+    events: tuple[ClaudeStructuredStreamEvent, ...] = ()
     if subtype == "task_started":
         task_id = _bounded_text(root, "task_id")
-        task_type = _bounded_text(root, "task_type")
+        task_type = _optional_text(root, "task_type")
         if task_type in _IGNORED_TASK_TYPES:
             ignored_tasks.add(task_id)
-            return ()
-        kind = _task_kind(task_type)
-        if task_id in tasks:
-            _malformed()
-        tasks[task_id] = kind
-        return (
-            _activity(
-                conversation_id,
-                kind,
-                task_id,
-                ClaudeStructuredActivityState.STARTED,
-            ),
-        )
-    if subtype in {"task_notification", "task_updated"}:
+        elif task_id not in tasks:
+            kind = _task_kind(task_type)
+            tasks[task_id] = kind
+            events = (
+                _activity(
+                    conversation_id,
+                    kind,
+                    task_id,
+                    ClaudeStructuredActivityState.STARTED,
+                ),
+            )
+    elif subtype in {"task_notification", "task_updated"}:
         task_id = _bounded_text(root, "task_id")
         if task_id in ignored_tasks:
             if subtype == "task_notification" or _task_update_terminal(root):
-                ignored_tasks.remove(task_id)
-            return ()
-        kind = tasks.get(task_id)
-        if kind is None:
-            _malformed()
-        terminal = subtype == "task_notification"
-        if subtype == "task_updated":
-            terminal = _task_update_terminal(root)
-        if not terminal:
-            return ()
-        del tasks[task_id]
-        return (
-            _activity(
-                conversation_id,
-                kind,
-                task_id,
-                ClaudeStructuredActivityState.FINISHED,
-            ),
-        )
-    return ()
+                ignored_tasks.discard(task_id)
+        else:
+            kind = tasks.get(task_id)
+            terminal = subtype == "task_notification"
+            if subtype == "task_updated":
+                terminal = _task_update_terminal(root)
+            if kind is not None and terminal:
+                del tasks[task_id]
+                events = (
+                    _activity(
+                        conversation_id,
+                        kind,
+                        task_id,
+                        ClaudeStructuredActivityState.FINISHED,
+                    ),
+                )
+    return events
 
 
 def _task_update_terminal(root: JsonObject) -> bool:
@@ -646,15 +723,88 @@ def _result_text(root: JsonObject) -> tuple[str, ...]:
         _malformed()
     if not is_error:
         return ()
-    errors = root.get("errors")
-    if isinstance(errors, list):
-        messages = tuple(
-            value for value in errors if isinstance(value, str) and value
+    return ("Claude could not complete the request.",)
+
+
+def _system_status(root: JsonObject) -> str | None:
+    subtype = _bounded_text(root, "subtype")
+    if subtype == "status":
+        return _status_presentation(root)
+    if subtype == "thinking_tokens":
+        _nonnegative_int(root, "estimated_tokens")
+        _nonnegative_int(root, "estimated_tokens_delta")
+        return "Claude is thinking."
+    if subtype == "notification":
+        return _bounded_text(root, "text")
+    return {
+        "hook_progress": "A Claude hook is running.",
+        "task_progress": "A Claude background task is running.",
+        "compact_boundary": "Claude compacted the conversation.",
+    }.get(subtype)
+
+
+def _status_presentation(root: JsonObject) -> str | None:
+    status = root.get("status")
+    if status == "compacting":
+        return "Claude is compacting the conversation."
+    if status == "requesting":
+        return "Claude is requesting a response."
+    mode = root.get("permissionMode")
+    if mode == "plan":
+        return "Claude entered plan mode."
+    if isinstance(mode, str):
+        return "Claude left plan mode."
+    return None
+
+
+def _presentation(
+    root: JsonObject,
+    message_type: str,
+) -> tuple[tuple[str, ...], str | None]:
+    if message_type == "prompt_suggestion":
+        return (
+            (f"Suggestion: {_bounded_text(root, 'suggestion')}",),
+            None,
         )
-        if len(messages) == len(errors):
-            return messages
-    result = root.get("result")
-    return (result,) if isinstance(result, str) and result else ()
+    if message_type == "auth_status":
+        return (), _auth_status(root)
+    if message_type == "rate_limit_event":
+        return (), _rate_limit_status(root)
+    if message_type == "tool_progress":
+        tool_name = _bounded_text(root, "tool_name")
+        elapsed = _nonnegative_int(root, "elapsed_time_seconds")
+        return (), f"{tool_name} has been running for {elapsed}s."
+    if message_type == "tool_use_summary":
+        _bounded_text(root, "summary")
+        return (), "Claude completed a tool operation."
+    return (), None
+
+
+def _auth_status(root: JsonObject) -> str:
+    authenticating = root.get("isAuthenticating")
+    output = root.get("output")
+    if not isinstance(authenticating, bool) or not (
+        isinstance(output, list)
+        and all(isinstance(value, str) for value in output)
+    ):
+        _malformed()
+    if root.get("error") is not None:
+        _bounded_text(root, "error")
+        return "Claude authentication requires attention."
+    if authenticating:
+        return "Claude authentication is in progress."
+    return "Claude authentication status changed."
+
+
+def _rate_limit_status(root: JsonObject) -> str:
+    status = _bounded_text(_object(root, "rate_limit_info"), "status")
+    if status == "rejected":
+        return "Claude usage limits currently block requests."
+    if status == "allowed_warning":
+        return "Claude usage limits are nearly exhausted."
+    if status != "allowed":
+        _malformed()
+    return "Claude usage limits allow requests."
 
 
 def _conversation(root: JsonObject) -> ClaudeStructuredConversationId:
@@ -682,7 +832,7 @@ def _hook_id(root: JsonObject) -> str:
     return _bounded_text(root, "hook_id")
 
 
-def _task_kind(task_type: str) -> ClaudeStructuredActivityKind:
+def _task_kind(task_type: str | None) -> ClaudeStructuredActivityKind:
     if task_type == "local_agent":
         return ClaudeStructuredActivityKind.BACKGROUND_AGENT
     if task_type == "local_bash":
@@ -777,6 +927,13 @@ def _require_object(value: JsonValue | None) -> JsonObject:
 def _list(root: JsonObject, name: str) -> list[JsonValue]:
     value = root.get(name)
     if not isinstance(value, list):
+        _malformed()
+    return value
+
+
+def _nonnegative_int(root: JsonObject, name: str) -> int:
+    value = root.get(name)
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
         _malformed()
     return value
 

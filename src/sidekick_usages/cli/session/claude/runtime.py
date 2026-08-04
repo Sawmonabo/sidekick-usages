@@ -1,6 +1,7 @@
 """Retained engine and participant runtime for coordinated Claude."""
 
 import socket
+from collections import deque
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from queue import Queue
@@ -74,6 +75,7 @@ _ENGINE_EVENT_TIMEOUT_SECONDS = 60.0
 _ENGINE_POLL_SECONDS = 0.1
 _ENGINE_EXIT_TIMEOUT_SECONDS = 30.0
 _THREAD_JOIN_SECONDS = 2.0
+_COMPLETED_CONTROL_LIMIT = 256
 
 
 def _new_turn_id() -> TurnId:
@@ -82,6 +84,12 @@ def _new_turn_id() -> TurnId:
 
 def _new_request_id() -> RequestId:
     return RequestId(str(uuid4()))
+
+
+def _retain_turn(
+    receipt: ClaudeStructuredAdoptionReceipt,
+) -> None:
+    del receipt
 
 
 class ClaudeSessionGateError(RuntimeError):
@@ -207,6 +215,8 @@ class ClaudeSessionRuntime:
             str,
             ClaudeStructuredActivityKind,
         ] = {}
+        self._completed_control_ids: set[str] = set()
+        self._completed_control_order: deque[str] = deque()
         self._open_revision = 0
         self._gate_code: SelectionCode | None = None
         self._failure: BaseException | None = None
@@ -352,9 +362,16 @@ class ClaudeSessionRuntime:
         admission = self._await_admission(turn_id)
         binding = self._require_admitted_binding(admission)
         frame = encode_claude_user_prompt(prompt)
+        routed = False
 
-        def transmit(receipt: ClaudeStructuredAdoptionReceipt) -> None:
-            del receipt
+        try:
+            with self._session_lock:
+                self._require_session().route_turn(
+                    turn_id,
+                    binding,
+                    _retain_turn,
+                )
+                routed = True
             proof = ParticipantAdoptionProof(
                 turn_id=turn_id,
                 account_id=binding.account_id,
@@ -367,14 +384,25 @@ class ClaudeSessionRuntime:
                     frame,
                     _ENGINE_EVENT_TIMEOUT_SECONDS,
                 )
-
-        try:
-            with self._session_lock:
-                self._require_session().route_turn(
-                    turn_id,
-                    binding,
-                    transmit,
-                )
+        except BaseException as error:
+            if not routed:
+                raise
+            failures: list[BaseException] = [error]
+            try:
+                with self._session_lock:
+                    self._require_session().end_turn(turn_id)
+            except BaseException as cleanup_error:
+                failures.append(cleanup_error)
+            try:
+                self._control.end(turn_id)
+            except BaseException as cleanup_error:
+                failures.append(cleanup_error)
+            if len(failures) > 1:
+                raise BaseExceptionGroup(
+                    "Claude turn transmission cleanup failed.",
+                    failures,
+                ) from None
+            raise
         finally:
             clear_secret_buffer(frame)
         return turn_id
@@ -430,26 +458,26 @@ class ClaudeSessionRuntime:
         )
 
     def _respond_control(self, request_id: str, frame: bytearray) -> None:
-        with self._session_lock:
-            kind = self._pending_controls.get(request_id)
-            if kind is None:
-                clear_secret_buffer(frame)
-                self._fail(ClaudeStructuredFailure.ACTIVITY_INVALID)
         try:
-            with self._engine_lock:
+            with self._engine_lock, self._session_lock:
+                kind = self._pending_controls.get(request_id)
+                if kind is None:
+                    if request_id in self._completed_control_ids:
+                        return
+                    self._fail(ClaudeStructuredFailure.ACTIVITY_INVALID)
                 self._engine.send_interactive(
                     frame,
                     _ENGINE_EVENT_TIMEOUT_SECONDS,
                 )
+                del self._pending_controls[request_id]
+                self._require_session().observe_activity(
+                    kind,
+                    request_id,
+                    ClaudeStructuredActivityState.FINISHED,
+                )
+                self._remember_completed_control(request_id)
         finally:
             clear_secret_buffer(frame)
-        with self._session_lock:
-            del self._pending_controls[request_id]
-            self._require_session().observe_activity(
-                kind,
-                request_id,
-                ClaudeStructuredActivityState.FINISHED,
-            )
 
     def interrupt(self) -> None:
         """Interrupt the active response inside the retained engine."""
@@ -568,6 +596,8 @@ class ClaudeSessionRuntime:
                         payload = self._engine.receive_event(
                             _ENGINE_POLL_SECONDS
                         )
+                        event = self._stream_decoder.decode(payload)
+                        self._observe_terminal_event(event)
                 except ClaudeStructuredError as error:
                     if error.code is ClaudeStructuredFailure.PROTOCOL_TIMEOUT:
                         continue
@@ -577,8 +607,6 @@ class ClaudeSessionRuntime:
                     }:
                         return
                     raise
-                event = self._stream_decoder.decode(payload)
-                self._observe_terminal_event(event)
                 self._events.put(event)
         except BaseException as error:
             if not self._closing.is_set() and not self._finished:
@@ -610,12 +638,23 @@ class ClaudeSessionRuntime:
             if cancelled is not None:
                 kind = self._pending_controls.pop(cancelled, None)
                 if kind is None:
-                    self._fail(ClaudeStructuredFailure.ACTIVITY_INVALID)
+                    self._remember_completed_control(cancelled)
+                    return
                 session.observe_activity(
                     kind,
                     cancelled,
                     ClaudeStructuredActivityState.FINISHED,
                 )
+                self._remember_completed_control(cancelled)
+
+    def _remember_completed_control(self, request_id: str) -> None:
+        if request_id in self._completed_control_ids:
+            return
+        self._completed_control_ids.add(request_id)
+        self._completed_control_order.append(request_id)
+        if len(self._completed_control_order) > _COMPLETED_CONTROL_LIMIT:
+            expired = self._completed_control_order.popleft()
+            self._completed_control_ids.remove(expired)
 
     @staticmethod
     def _control_activity(

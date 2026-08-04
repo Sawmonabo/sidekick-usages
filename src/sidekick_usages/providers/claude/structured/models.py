@@ -183,6 +183,9 @@ class ClaudeStructuredTerminalEvent:
 
     conversation_id: ClaudeStructuredConversationId | None
     text: tuple[str, ...]
+    text_correlation: str | None = None
+    text_append: bool = False
+    status: str | None = None
     activities: tuple[ClaudeStructuredStreamEvent, ...] = ()
     control: ClaudeStructuredControlRequest | None = None
     cancelled_request_id: str | None = None

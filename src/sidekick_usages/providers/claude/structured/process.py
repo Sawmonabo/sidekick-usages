@@ -58,6 +58,8 @@ CLAUDE_STRUCTURED_ARGUMENTS = (
     "stream-json",
     "--include-partial-messages",
     "--include-hook-events",
+    "--enable-auth-status",
+    "--prompt-suggestions",
     "--permission-prompt-tool",
     "stdio",
 )

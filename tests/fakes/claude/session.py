@@ -153,6 +153,9 @@ class ClaudeSessionEngineFake(ClaudeStructuredEngineFake):
                     "Choose a mode": "Safe"
                 }:
                     raise AssertionError("Claude question answers were lost.")
+            payload = response.get("response")
+            if isinstance(payload, dict) and "updatedPermissions" in payload:
+                raise AssertionError("Permission suggestions were implicit.")
             self._journey_events.append(label)
 
     def receive_event(self, timeout_seconds: float) -> bytes:

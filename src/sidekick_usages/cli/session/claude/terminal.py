@@ -1,6 +1,8 @@
 """Single prompt-toolkit owner for coordinated Claude sessions."""
 
+from collections import deque
 from collections.abc import Callable
+from contextlib import suppress
 from enum import StrEnum
 from functools import partial
 from queue import Queue
@@ -35,6 +37,7 @@ from sidekick_usages.providers.claude.structured.models import (
     ClaudeStructuredQuestionRequest,
     ClaudeStructuredTerminalEvent,
 )
+from sidekick_usages.serialization.json import decode_json_object
 
 _THREAD_JOIN_SECONDS = 2.0
 type _TerminalAction = Callable[[], None]
@@ -107,14 +110,22 @@ class ClaudeTerminalApplication:
         self._turn_condition = Condition(self._lock)
         self._closing = Event()
         self._prompts: Queue[str | None] = Queue()
-        self._actions: Queue[_TerminalAction | None] = Queue()
+        self._control_actions: Queue[_TerminalAction | None] = Queue()
+        self._selection_actions: Queue[_TerminalAction | None] = Queue()
         self._output: list[str] = []
+        self._output_correlations: dict[str, int] = {}
         self._status = "Enter a prompt. Ctrl-C interrupts an active turn."
         self._mode = _TerminalMode.PROMPT
         self._active_turn: TurnId | None = None
         self._turn_starting = False
         self._close_when_idle = False
         self._control: ClaudeStructuredControlRequest | None = None
+        self._controls: dict[
+            str,
+            ClaudeStructuredPermissionRequest
+            | ClaudeStructuredQuestionRequest,
+        ] = {}
+        self._control_order: deque[str] = deque()
         self._question_answers: list[ClaudeStructuredQuestionAnswer] = []
         self._question_index = 0
         self._accounts: tuple[SavedAccount, ...] = ()
@@ -166,7 +177,8 @@ class ClaudeTerminalApplication:
         self._session = session
         self._threads = (
             Thread(target=self._consume_prompts, daemon=True),
-            Thread(target=self._consume_actions, daemon=True),
+            Thread(target=self._consume_control_actions, daemon=True),
+            Thread(target=self._consume_selection_actions, daemon=True),
             Thread(target=self._consume_events, daemon=True),
         )
         for thread in self._threads:
@@ -180,7 +192,8 @@ class ClaudeTerminalApplication:
             self._closing.set()
             session.stop_terminal_events()
             self._prompts.put(None)
-            self._actions.put(None)
+            self._control_actions.put(None)
+            self._selection_actions.put(None)
             with self._turn_condition:
                 self._turn_condition.notify_all()
             for thread in self._threads:
@@ -235,7 +248,7 @@ class ClaudeTerminalApplication:
             account = self._accounts[self._account_index]
             self._mode = _TerminalMode.PROMPT
             self._status = "Selecting the saved Claude account..."
-        self._actions.put(
+        self._selection_actions.put(
             lambda selected=account: self._append(
                 self._commands.select(selected.account_id)
             )
@@ -252,7 +265,7 @@ class ClaudeTerminalApplication:
             else ClaudeStructuredPermissionDecision.DENY
         )
         self._clear_control()
-        self._actions.put(
+        self._control_actions.put(
             lambda request=control, answer=decision: (
                 self._require_session().respond_permission(request, answer)
             )
@@ -281,7 +294,7 @@ class ClaudeTerminalApplication:
             return
         answers = tuple(self._question_answers)
         self._clear_control()
-        self._actions.put(
+        self._control_actions.put(
             lambda request=control, values=answers: (
                 self._require_session().respond_question(request, values)
             )
@@ -321,7 +334,7 @@ class ClaudeTerminalApplication:
         control = self._control
         if isinstance(control, ClaudeStructuredQuestionRequest):
             self._clear_control()
-            self._actions.put(
+            self._control_actions.put(
                 lambda request=control.permission: (
                     self._require_session().respond_permission(
                         request,
@@ -332,7 +345,7 @@ class ClaudeTerminalApplication:
             return
         if isinstance(control, ClaudeStructuredPermissionRequest):
             self._clear_control()
-            self._actions.put(
+            self._control_actions.put(
                 lambda request=control: (
                     self._require_session().respond_permission(
                         request,
@@ -344,7 +357,7 @@ class ClaudeTerminalApplication:
         with self._lock:
             active = self._active_turn is not None
         if active:
-            self._actions.put(self._require_session().interrupt)
+            self._control_actions.put(self._require_session().interrupt)
             self._set_status("Interrupt requested for the active response.")
         else:
             self._buffer.text = ""
@@ -410,9 +423,18 @@ class ClaudeTerminalApplication:
                 self._turn_condition.notify_all()
             self._set_status("Claude is responding. New prompts will queue.")
 
-    def _consume_actions(self) -> None:
+    def _consume_control_actions(self) -> None:
+        self._consume_actions(self._control_actions)
+
+    def _consume_selection_actions(self) -> None:
+        self._consume_actions(self._selection_actions)
+
+    def _consume_actions(
+        self,
+        actions: Queue[_TerminalAction | None],
+    ) -> None:
         while not self._closing.is_set():
-            action = self._actions.get()
+            action = actions.get()
             if action is None:
                 return
             try:
@@ -432,21 +454,26 @@ class ClaudeTerminalApplication:
                 return
 
     def _present_event(self, event: ClaudeStructuredTerminalEvent) -> None:
-        for text in event.text:
-            self._append(text)
+        self._present_text(event)
+        if event.status is not None:
+            self._set_status(event.status)
         control = event.control
-        if isinstance(control, ClaudeStructuredPermissionRequest):
-            self._show_permission(control)
-        elif isinstance(control, ClaudeStructuredQuestionRequest):
-            self._show_question_request(control)
+        if isinstance(
+            control,
+            ClaudeStructuredPermissionRequest
+            | ClaudeStructuredQuestionRequest,
+        ):
+            self._enqueue_control(control)
         elif isinstance(control, ClaudeStructuredElicitationRequest):
-            self._actions.put(
+            self._append("Sidekick safely declined an MCP elicitation.")
+            self._control_actions.put(
                 lambda request=control: (
                     self._require_session().decline_elicitation(request)
                 )
             )
         elif isinstance(control, ClaudeStructuredDialogRequest):
-            self._actions.put(
+            self._append("Sidekick safely refused an unsupported dialog.")
+            self._control_actions.put(
                 lambda request=control: self._require_session().refuse_dialog(
                     request
                 )
@@ -460,23 +487,30 @@ class ClaudeTerminalApplication:
         self,
         request: ClaudeStructuredPermissionRequest,
     ) -> None:
-        details = tuple(
-            value
-            for value in (
-                request.title,
-                request.display_name,
-                request.description,
-                request.decision_reason,
-                request.blocked_path,
-            )
-            if value is not None
+        details = (
+            self._permission_action(request),
+            *tuple(
+                value
+                for value in (
+                    request.title,
+                    request.display_name,
+                    request.description,
+                    request.decision_reason,
+                    request.blocked_path,
+                )
+                if value is not None
+            ),
         )
         for detail in details:
             self._append(detail)
         with self._lock:
-            self._control = request
             self._mode = _TerminalMode.PERMISSION
             self._status = f"Allow {request.tool_name}? Type y or n."
+        if request.permission_suggestions:
+            self._append(
+                "Persistent permission changes require separate consent "
+                "and were not applied."
+            )
         self._application.invalidate()
 
     def _show_question_request(
@@ -484,7 +518,6 @@ class ClaudeTerminalApplication:
         request: ClaudeStructuredQuestionRequest,
     ) -> None:
         with self._lock:
-            self._control = request
             self._question_answers.clear()
             self._question_index = 0
             self._mode = _TerminalMode.QUESTION
@@ -499,11 +532,15 @@ class ClaudeTerminalApplication:
         self._set_status("Choose an option label or number.")
 
     def _cancel_control(self, request_id: str) -> None:
-        control = self._control
-        current_id = self._control_request_id(control)
-        if current_id != request_id:
-            return
-        self._clear_control()
+        with self._lock:
+            control = self._controls.pop(request_id, None)
+            if control is None:
+                return
+            with suppress(ValueError):
+                self._control_order.remove(request_id)
+            if self._control_request_id(self._control) == request_id:
+                self._control = None
+                self._activate_next_control()
         self._append("The provider cancelled the pending request.")
 
     def _finish_turn(self) -> None:
@@ -523,18 +560,37 @@ class ClaudeTerminalApplication:
             self._set_status("Enter a prompt. Ctrl-D exits.")
 
     def _clear_control(self) -> None:
+        request_id = self._control_request_id(self._control)
         with self._lock:
             self._control = None
             self._question_answers.clear()
             self._question_index = 0
             self._mode = _TerminalMode.PROMPT
             self._status = "Claude is responding."
+        if request_id is not None:
+            self._controls.pop(request_id, None)
+        self._activate_next_control()
         self._application.invalidate()
 
     def _append(self, text: str) -> None:
         with self._lock:
             self._output.append(text)
         self._application.invalidate()
+
+    def _present_text(self, event: ClaudeStructuredTerminalEvent) -> None:
+        correlation = event.text_correlation
+        for text in event.text:
+            if not event.text_append or correlation is None:
+                self._append(text)
+                continue
+            with self._lock:
+                index = self._output_correlations.get(correlation)
+                if index is None:
+                    self._output_correlations[correlation] = len(self._output)
+                    self._output.append(text)
+                else:
+                    self._output[index] += text
+            self._application.invalidate()
 
     def _set_status(self, text: str) -> None:
         with self._lock:
@@ -589,12 +645,49 @@ class ClaudeTerminalApplication:
             request = control
         else:
             return
-        self._actions.put(
+        self._control_actions.put(
             lambda denied=request: self._require_session().respond_permission(
                 denied,
                 ClaudeStructuredPermissionDecision.DENY,
             )
         )
+
+    def _enqueue_control(
+        self,
+        control: ClaudeStructuredPermissionRequest
+        | ClaudeStructuredQuestionRequest,
+    ) -> None:
+        request_id = self._control_request_id(control)
+        with self._lock:
+            if request_id is None or request_id in self._controls:
+                return
+            self._controls[request_id] = control
+            self._control_order.append(request_id)
+            if self._control is None:
+                self._activate_next_control()
+
+    def _activate_next_control(self) -> None:
+        with self._lock:
+            while self._control_order:
+                request_id = self._control_order.popleft()
+                control = self._controls.get(request_id)
+                if control is None:
+                    continue
+                self._control = control
+                if isinstance(control, ClaudeStructuredQuestionRequest):
+                    self._show_question_request(control)
+                else:
+                    self._show_permission(control)
+                return
+            self._mode = _TerminalMode.PROMPT
+
+    @staticmethod
+    def _permission_action(
+        request: ClaudeStructuredPermissionRequest,
+    ) -> str:
+        payload = decode_json_object(request.tool_input)
+        fields = ", ".join(tuple(payload)[:3]) or "no input fields"
+        return f"Requested action: {request.tool_name} ({fields})"
 
     @staticmethod
     def _control_request_id(
