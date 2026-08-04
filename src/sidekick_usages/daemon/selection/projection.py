@@ -56,6 +56,7 @@ class ProviderGate:
     operation_id: OperationId
     pending_epoch: SelectionEpoch
     required: set[ParticipantId]
+    confirmed_dead_tombstones: set[ParticipantId] = field(default_factory=set)
     account_id: SidekickAccountId | None = None
     generation: AuthorityGeneration | None = None
     queued: dict[TurnId, TurnBeginRequest] = field(default_factory=dict)
@@ -218,6 +219,83 @@ def require_membership_bound(
     return member_ids
 
 
+def restored_gate_membership(
+    participants: dict[ParticipantId, ParticipantRecord],
+    provider_id: ProviderId,
+    required_participant_ids: tuple[ParticipantId, ...],
+    lost_participant_ids: tuple[ParticipantId, ...],
+    current: ProviderGate | None,
+) -> tuple[set[ParticipantId], set[ParticipantId]]:
+    """Restore bounded required membership and immutable death facts."""
+    required = set(required_participant_ids)
+    tombstones = set(lost_participant_ids)
+    if not tombstones <= required:
+        raise ParticipantRequestError(
+            SelectionCode.SELECTION_RECOVERY_REQUIRED
+        )
+    if current is not None:
+        required |= current.required
+        tombstones |= current.confirmed_dead_tombstones
+    if any(
+        (participant := participants.get(participant_id)) is not None
+        and (
+            participant.manifest.provider_id is not provider_id
+            or (
+                participant_id in tombstones and not participant.confirmed_dead
+            )
+        )
+        for participant_id in required
+    ):
+        raise ParticipantRequestError(
+            SelectionCode.SELECTION_RECOVERY_REQUIRED
+        )
+    require_membership_bound(participants, provider_id, required)
+    return required, tombstones
+
+
+def require_prunable_dead(
+    participant: ParticipantRecord | None,
+    provider_id: ProviderId,
+    *,
+    tombstoned: bool,
+) -> None:
+    """Require either a live death record or its restored tombstone."""
+    if participant is None:
+        if not tombstoned:
+            raise ParticipantRequestError(SelectionCode.AUTHORITY_PROOF_FAILED)
+        return
+    if (
+        participant.manifest.provider_id is not provider_id
+        or not participant.confirmed_dead
+    ):
+        raise ParticipantRequestError(SelectionCode.AUTHORITY_PROOF_FAILED)
+
+
+def snapshot_ready_resolved(snapshot: ParticipantSnapshot) -> bool:
+    """Return whether every required participant has exact resolution."""
+    return set(snapshot.required_participant_ids) == set(
+        snapshot.ready_participant_ids
+    ) | set(snapshot.confirmed_dead_participant_ids)
+
+
+def required_target_prepared(
+    gate: ProviderGate,
+    participants: dict[ParticipantId, ParticipantRecord],
+) -> bool:
+    """Return whether every live obligation installed the target."""
+    return all(
+        participant_id in gate.confirmed_dead_tombstones
+        or (
+            (participant := participants.get(participant_id)) is not None
+            and (
+                participant.confirmed_dead
+                or participant.attachment_ready_epoch == gate.pending_epoch
+            )
+        )
+        for participant_id in gate.required
+    )
+
+
 def require_reconnect(
     current: ParticipantRecord,
     manifest: ParticipantManifest,
@@ -251,7 +329,8 @@ def project_snapshot(
         for participant_id, participant in participants.items()
         if participant.manifest.provider_id is provider_id
     }
-    dead = {
+    dead = set() if gate is None else set(gate.confirmed_dead_tombstones)
+    dead |= {
         participant_id
         for participant_id in required
         if (participant := provider_participants.get(participant_id))
@@ -270,9 +349,7 @@ def project_snapshot(
         is not None
         and (
             participant.connected
-            or (
-                finalized is None and participant.prebootstrap_reachable
-            )
+            or (finalized is None and participant.prebootstrap_reachable)
         )
         and not participant.confirmed_dead
     }

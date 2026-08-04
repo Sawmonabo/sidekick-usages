@@ -200,8 +200,7 @@ class SelectionRecovery:
                 or metadata.provider_id is not operation.provider_id
                 or metadata.kind is not OperationKind.SELECTION_COMMIT
                 or metadata.pending_epoch != operation.pending_epoch
-                or metadata.observed_account_id
-                != operation.target_account_id
+                or metadata.observed_account_id != operation.target_account_id
                 or metadata.observed_generation is None
                 or (
                     operation.target_generation is not None
@@ -343,7 +342,8 @@ class SelectionRecovery:
                 self._target_proof(operation, generation),
             )
         if decision.relation is SelectionRecoveryRelation.BASELINE_PROVEN and (
-            operation.phase in {
+            operation.phase
+            in {
                 SelectionPhase.COMMITTING,
                 SelectionPhase.RECOVERING,
             }
@@ -366,12 +366,9 @@ class SelectionRecovery:
         """Restore admission only after PREVALIDATE closed the baseline."""
         if operation.phase is SelectionPhase.PREVALIDATING:
             return
-        membership_sealed = (
-            operation.phase is SelectionPhase.COMMITTING
-            or (
-                operation.phase is SelectionPhase.RECOVERING
-                and operation.target_generation is None
-            )
+        membership_sealed = operation.phase is SelectionPhase.COMMITTING or (
+            operation.phase is SelectionPhase.RECOVERING
+            and operation.target_generation is None
         )
         self._participants.restore_admission(
             operation.provider_id,
@@ -379,6 +376,7 @@ class SelectionRecovery:
             operation.pending_epoch,
             operation.target_account_id,
             operation.required_participant_ids,
+            operation.lost_after_commit_participant_ids,
             membership_sealed=membership_sealed,
         )
 
@@ -396,7 +394,11 @@ class SelectionRecovery:
                     operation,
                     phase=SelectionPhase.AWAITING_READY,
                     target_generation=proof.generation,
-                    outcome_code=None,
+                    outcome_code=(
+                        None
+                        if not operation.lost_after_commit_participant_ids
+                        else SelectionCode.PARTICIPANT_LOST_AFTER_COMMIT
+                    ),
                     updated_at=self._clock.now(),
                 ),
             )

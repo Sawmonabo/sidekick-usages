@@ -15,6 +15,7 @@ from sidekick_usages.core.accounts.types import (
     OperationId,
 )
 from sidekick_usages.core.selection.models import (
+    AuthorityReadyProof,
     DueOperation,
     PreparedSelection,
     RelatedRuntimeAuthority,
@@ -26,6 +27,8 @@ from sidekick_usages.core.selection.types import (
     OperationKind,
     OperationPriority,
     OperationState,
+    ParticipantId,
+    SelectionCode,
     SelectionOutcome,
     SelectionPhase,
 )
@@ -35,10 +38,12 @@ from sidekick_usages.daemon.lifecycle.constants import (
     CLAUDE_LAUNCHER_OPTION,
     CODEX_LAUNCHER_OPTION,
 )
+from sidekick_usages.daemon.models.scheduler import SchedulerCompletion
 from sidekick_usages.daemon.models.worker import (
     WORKER_CLAUDE_LAUNCHER_ENVIRONMENT_KEY,
     WORKER_CODEX_LAUNCHER_ENVIRONMENT_KEY,
     ProviderLaunchers,
+    SelectionWorkerMetadata,
     WorkerResult,
 )
 from sidekick_usages.daemon.runtime.recovery import (
@@ -51,6 +56,14 @@ from sidekick_usages.daemon.runtime.supervisor import (
     WakeupChannel,
 )
 from sidekick_usages.daemon.selection.coordinator import SelectionCoordinator
+from sidekick_usages.daemon.selection.models import (
+    ParticipantClientKind,
+    ParticipantConnectionRequest,
+    ParticipantManifest,
+    ParticipantReadyProof,
+    ParticipantReadyRequest,
+    ParticipantRequestError,
+)
 from sidekick_usages.daemon.selection.recovery import SelectionRecovery
 from sidekick_usages.daemon.selection.registry import ParticipantRegistry
 from sidekick_usages.daemon.selection.worker import (
@@ -70,6 +83,7 @@ from sidekick_usages.persistence.supervisor.selection import (
     SelectionOperationStore,
 )
 from sidekick_usages.persistence.supervisor.service import ServiceStateStore
+from sidekick_usages.platform.models import ProcessIdentity
 from tests.fakes.claude.activation import claude_activation_scenario
 from tests.fakes.claude.managed import use_synthetic_claude
 from tests.fakes.claude.selection import existing_selection_operation
@@ -104,6 +118,9 @@ NATIVE_SUPERSEDED_CODE = "superseded_by_native_login"
 CLAUDE_RECOVERY_OPERATION_ID = OperationId(
     "cc413f38-2b11-418a-a4a7-b0e45666067e"
 )
+_PARTICIPANT_A = ParticipantId("521d4f0d-f92a-4d67-a5fa-f5ec86131337")
+_PARTICIPANT_B = ParticipantId("b3348405-3d31-410c-9afc-9af6761976dc")
+_TARGET_GENERATION = AuthorityGeneration("generation-target-restored")
 _LEGACY_SERVICE_STATE = b"""{
   "active_workers": 0,
   "broker_ready": true,
@@ -651,6 +668,138 @@ def test_postcommit_failure_reads_back_without_replaying_commit(
     ]
     assert queue.find(scenario.operation.operation_id) is None
     assert journal.load(ProviderId.CLAUDE).active is None
+
+
+def test_recovery_restores_durable_participant_loss(tmp_path: Path) -> None:
+    """Restore durable loss without inventing one process identity."""
+    scenario = claude_activation_scenario(tmp_path)
+    journal = SelectionOperationStore(scenario.paths.selection_journals)
+    operation, _baseline = existing_selection_operation(scenario)
+    journal.begin(operation)
+    for phase in (
+        SelectionPhase.PREPARING,
+        SelectionPhase.WAITING_OLD_TURNS,
+        SelectionPhase.COMMITTING,
+    ):
+        replacement = replace(
+            operation,
+            phase=phase,
+            prepared_generation=AuthorityGeneration("generation-source"),
+        )
+        journal.compare_and_swap(operation, replacement)
+        operation = replacement
+    replacement = replace(
+        operation,
+        phase=SelectionPhase.RECOVERING,
+        required_participant_ids=(_PARTICIPANT_A, _PARTICIPANT_B),
+        lost_after_commit_participant_ids=(_PARTICIPANT_B,),
+        outcome_code=SelectionCode.SELECTION_RECOVERY_REQUIRED,
+    )
+    journal.compare_and_swap(operation, replacement)
+    operation = replacement
+    registry = ParticipantRegistry(scenario.selected)
+    manifest = ParticipantManifest(
+        participant_id=_PARTICIPANT_A,
+        provider_id=ProviderId.CLAUDE,
+        client_kind=ParticipantClientKind.CLAUDE_CODE,
+        capability_version=1,
+        connection_generation=1,
+    )
+    recovery = SelectionRecovery(
+        scenario.selected,
+        journal,
+        registry,
+        SelectionWorkerGateway(
+            OperationQueueStore(scenario.paths.durable_operations),
+            FixedClock(),
+            lambda: None,
+        ),
+        FixedClock(),
+    )
+    assert recovery.restore(ProviderId.CLAUDE)
+    registered = Event()
+    Thread(
+        target=lambda: (
+            registry.register(manifest, ProcessIdentity(1001, 1)),
+            registered.set(),
+        ),
+        daemon=True,
+    ).start()
+    assert registered.wait(1)
+    notices = registry.subscribe(
+        new_request_id(),
+        ParticipantConnectionRequest(_PARTICIPANT_A, 1),
+    )
+    next(notices)
+    proof = AuthorityReadyProof(
+        provider_id=ProviderId.CLAUDE,
+        account_id=operation.target_account_id,
+        generation=_TARGET_GENERATION,
+        epoch=operation.pending_epoch,
+        safe_code=SelectionCode.SELECTION_SUCCEEDED,
+    )
+    registry.prepare_target(operation.operation_id, proof)
+    registry.ready_request(
+        ParticipantReadyRequest(
+            participant_id=_PARTICIPANT_A,
+            connection_generation=1,
+            proof=ParticipantReadyProof(
+                account_id=proof.account_id,
+                generation=proof.generation,
+                epoch=proof.epoch,
+            ),
+        )
+    )
+    snapshot = registry.snapshot(ProviderId.CLAUDE)
+    assert (
+        snapshot.registered_count,
+        snapshot.reachable_count,
+        snapshot.required_participant_ids,
+        snapshot.ready_participant_ids,
+        snapshot.confirmed_dead_participant_ids,
+        snapshot.unreachable_participant_ids,
+    ) == (
+        2,
+        1,
+        (_PARTICIPANT_A, _PARTICIPANT_B),
+        (_PARTICIPANT_A,),
+        (_PARTICIPANT_B,),
+        (),
+    )
+    with pytest.raises(ParticipantRequestError):
+        registry.register(
+            replace(manifest, participant_id=_PARTICIPANT_B),
+            ProcessIdentity(1002, 2),
+        )
+    recovery.complete_readback(
+        SchedulerCompletion(
+            provider_id=ProviderId.CLAUDE,
+            operation_id=operation.operation_id,
+            operation_kind=OperationKind.SELECTION_READBACK,
+            state=None,
+            outcome=WorkerOutcome.SUCCEEDED,
+            failure_code=None,
+            selection=SelectionWorkerMetadata(
+                operation_id=operation.operation_id,
+                provider_id=ProviderId.CLAUDE,
+                kind=OperationKind.SELECTION_READBACK,
+                pending_epoch=operation.pending_epoch,
+                observed_account_id=operation.target_account_id,
+                observed_generation=_TARGET_GENERATION,
+            ),
+        )
+    )
+    (result,) = journal.load(ProviderId.CLAUDE).history
+    assert (result.outcome, result.required_count, result.lost_count) == (
+        SelectionOutcome.PARTICIPANT_LOST_AFTER_COMMIT,
+        2,
+        1,
+    )
+    registry.register(
+        replace(manifest, participant_id=_PARTICIPANT_B),
+        ProcessIdentity(1002, 2),
+    )
+    notices.close()
 
 
 def test_supervisor_and_workers_isolate_failures_and_recover_durably(

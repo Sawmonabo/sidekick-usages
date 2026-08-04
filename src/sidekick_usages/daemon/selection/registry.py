@@ -60,8 +60,12 @@ from sidekick_usages.daemon.selection.projection import (
     require_gate_binding,
     require_gate_epoch,
     require_membership_bound,
+    require_prunable_dead,
     require_reconnect,
     require_selected,
+    required_target_prepared,
+    restored_gate_membership,
+    snapshot_ready_resolved,
 )
 from sidekick_usages.platform.models import ProcessIdentity
 
@@ -293,7 +297,7 @@ class ParticipantRegistry:
             ):
                 raise ParticipantRequestError(_SELECTION_RECOVERY_REQUIRED)
             if (
-                self._active_turn_count(provider_id)
+                self._snapshot(provider_id).active_turn_count
                 >= MAX_ACTIVE_TURNS_PER_PROVIDER
             ):
                 raise ParticipantRequestError(_ACTIVE_OPERATION_TIMEOUT)
@@ -336,9 +340,11 @@ class ParticipantRegistry:
             participant = self._require_connection(participant_id, generation)
             if participant.process_identity != peer:
                 raise ParticipantRequestError(_PARTICIPANT_UNREACHABLE)
-            if unbound and self._selected.load(
-                participant.manifest.provider_id
-            ) is None:
+            if (
+                unbound
+                and self._selected.load(participant.manifest.provider_id)
+                is None
+            ):
                 participant.prebootstrap_reachable = True
                 self._condition.notify_all()
 
@@ -394,6 +400,7 @@ class ParticipantRegistry:
         pending_epoch: SelectionEpoch,
         target_account_id: SidekickAccountId,
         required_participant_ids: tuple[ParticipantId, ...],
+        lost_participant_ids: tuple[ParticipantId, ...] = (),
         *,
         membership_sealed: bool = False,
     ) -> ParticipantSnapshot:
@@ -405,16 +412,21 @@ class ParticipantRegistry:
                 recovery_target=target_account_id,
             )
             current = self._gates.get(provider_id)
-            required = set(required_participant_ids) | (
-                set() if current is None else current.required
+            required, tombstones = restored_gate_membership(
+                self._participants,
+                provider_id,
+                required_participant_ids,
+                lost_participant_ids,
+                current,
             )
-            require_membership_bound(self._participants, provider_id, required)
             if current is not None:
                 require_gate_binding(current, operation_id, pending_epoch)
                 current.required = required
+                current.confirmed_dead_tombstones = tombstones
                 current.membership_sealed = membership_sealed
                 return self._snapshot(provider_id)
             gate = new_gate(operation_id, pending_epoch, required)
+            gate.confirmed_dead_tombstones = tombstones
             gate.membership_sealed = membership_sealed
             self._gates[provider_id] = gate
             return self._snapshot(provider_id)
@@ -510,7 +522,9 @@ class ParticipantRegistry:
     def disconnect(
         self,
         participant_id: ParticipantId,
-        connection_generation: int, *, attachment_failure: bool = False,
+        connection_generation: int,
+        *,
+        attachment_failure: bool = False,
     ) -> None:
         """Mark one exact connection unreachable without assuming death."""
         with self._condition:
@@ -705,15 +719,17 @@ class ParticipantRegistry:
             gate = self._gates.get(provider_id)
             for participant_id in participant_ids:
                 participant = self._participants.get(participant_id)
-                if (
-                    participant is None
-                    or participant.manifest.provider_id is not provider_id
-                    or not participant.confirmed_dead
-                ):
-                    raise ParticipantRequestError(_AUTHORITY_PROOF_FAILED)
-                self._participants.pop(participant_id)
+                tombstoned = gate is not None and (
+                    participant_id in gate.confirmed_dead_tombstones
+                )
+                require_prunable_dead(
+                    participant, provider_id, tombstoned=tombstoned
+                )
+                if participant is not None:
+                    self._participants.pop(participant_id)
                 if gate is not None:
                     gate.required.discard(participant_id)
+                    gate.confirmed_dead_tombstones.discard(participant_id)
                     gate.queued = {
                         turn_id: request
                         for turn_id, request in gate.queued.items()
@@ -729,7 +745,7 @@ class ParticipantRegistry:
         """Wait without polling until every admitted provider turn ends."""
         with self._condition:
             return self._wait_until(
-                lambda: self._active_turn_count(provider_id) == 0,
+                lambda: self._snapshot(provider_id).active_turn_count == 0,
                 timeout_seconds,
             )
 
@@ -741,28 +757,20 @@ class ParticipantRegistry:
         """Wait until every required client is ready or proven dead."""
         with self._condition:
             return self._wait_until(
-                lambda: self._all_required_resolved(provider_id),
+                lambda: snapshot_ready_resolved(self._snapshot(provider_id)),
                 timeout_seconds,
             )
 
     def ready_resolved(self, provider_id: ProviderId) -> bool:
         """Return whether every required participant has exact resolution."""
         with self._condition:
-            return self._all_required_resolved(provider_id)
+            return snapshot_ready_resolved(self._snapshot(provider_id))
 
     def target_prepared(self, provider_id: ProviderId) -> bool:
         """Return whether every live obligation installed the target."""
         with self._condition:
             gate = require_gate(self._gates, provider_id)
-            return all(
-                (participant := self._participants.get(participant_id))
-                is not None
-                and (
-                    participant.confirmed_dead
-                    or participant.attachment_ready_epoch == gate.pending_epoch
-                )
-                for participant_id in gate.required
-            )
+            return required_target_prepared(gate, self._participants)
 
     def prepare_finalized(
         self,
@@ -793,7 +801,7 @@ class ParticipantRegistry:
         """Freeze resolved membership through the finalization write window."""
         with self._condition:
             gate = require_gate(self._gates, provider_id)
-            if not self._all_required_resolved(provider_id):
+            if not snapshot_ready_resolved(self._snapshot(provider_id)):
                 raise ParticipantRequestError(_SELECTION_RECOVERY_REQUIRED)
             gate.sealed = True
             return self._snapshot(provider_id)
@@ -826,8 +834,8 @@ class ParticipantRegistry:
         """Open one finalized epoch without transmitting queued prompts."""
         with self._condition:
             gate = require_gate(self._gates, provider_id)
-            if gate.pending_epoch != epoch or not self._all_required_resolved(
-                provider_id
+            if gate.pending_epoch != epoch or not snapshot_ready_resolved(
+                self._snapshot(provider_id)
             ):
                 raise ParticipantRequestError(_SELECTION_RECOVERY_REQUIRED)
             participants = gate.queued.values()
@@ -859,19 +867,6 @@ class ParticipantRegistry:
             self._selected.load(provider_id),
         )
 
-    def _all_required_resolved(self, provider_id: ProviderId) -> bool:
-        snapshot = self._snapshot(provider_id)
-        return set(snapshot.required_participant_ids) == set(
-            snapshot.ready_participant_ids
-        ) | set(snapshot.confirmed_dead_participant_ids)
-
-    def _active_turn_count(self, provider_id: ProviderId) -> int:
-        return sum(
-            self._participants[turn.participant_id].manifest.provider_id
-            is provider_id
-            for turn in self._turns.values()
-        )
-
     def _wait_unsealed(self, provider_id: ProviderId) -> None:
         while (
             gate := self._gates.get(provider_id)
@@ -884,10 +879,9 @@ class ParticipantRegistry:
         current: ParticipantRecord | None,
     ) -> None:
         while gate := self._gates.get(manifest.provider_id):
-            reconnecting_required = (
-                current is not None
-                and manifest.participant_id in gate.required
-            )
+            if manifest.participant_id in gate.confirmed_dead_tombstones:
+                raise ParticipantRequestError(_PARTICIPANT_UNREACHABLE)
+            reconnecting_required = manifest.participant_id in gate.required
             if gate.sealed and not reconnecting_required:
                 self._condition.wait()
                 continue
