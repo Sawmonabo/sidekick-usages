@@ -563,7 +563,15 @@ def decode_oauth_update_success(
     consumed_request_ids: frozenset[RequestId],
 ) -> None:
     """Require one exact, fresh, correlated success response."""
-    decode_control_success(payload, request_id, consumed_request_ids)
+    subtype, correlated = _decode_control_response(payload)
+    if correlated in consumed_request_ids or correlated != request_id:
+        _malformed()
+    if subtype == "error":
+        raise ClaudeStructuredError(
+            ClaudeStructuredFailure.OAUTH_UPDATE_REJECTED
+        )
+    if subtype != "success":
+        _malformed()
 
 
 def decode_control_success(

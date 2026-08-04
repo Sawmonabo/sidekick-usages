@@ -35,6 +35,7 @@ class ClaudeStructuredFailure(StrEnum):
     ACTIVITY_INVALID = "activity_invalid"
     AUTHORITY_MISMATCH = "authority_mismatch"
     CONVERSATION_MISMATCH = "conversation_mismatch"
+    OAUTH_UPDATE_REJECTED = "oauth_update_rejected"
     PROTOCOL_MALFORMED = "protocol_malformed"
     PROTOCOL_TIMEOUT = "protocol_timeout"
     PROTOCOL_EOF = "protocol_eof"
@@ -336,6 +337,9 @@ def _failure_message(code: ClaudeStructuredFailure) -> str:
         ),
         ClaudeStructuredFailure.CONVERSATION_MISMATCH: (
             "The structured Claude conversation identity does not match."
+        ),
+        ClaudeStructuredFailure.OAUTH_UPDATE_REJECTED: (
+            "The structured Claude OAuth update was rejected."
         ),
         ClaudeStructuredFailure.PROTOCOL_MALFORMED: (
             "The structured Claude control response is invalid."

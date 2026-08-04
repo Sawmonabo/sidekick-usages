@@ -136,6 +136,14 @@ _SESSION_IDLE = (
 _BACKGROUND_EMPTY = (
     b'{"type":"system","subtype":"background_tasks_changed","tasks":[]}'
 )
+_RESPONSE_FAILURES = {
+    StructuredResponseCase.TIMEOUT: "protocol_timeout",
+    StructuredResponseCase.EOF: "protocol_eof",
+    StructuredResponseCase.PROCESS_ERROR: "process_exited",
+    StructuredResponseCase.ERROR_RESPONSE: "oauth_update_rejected",
+    StructuredResponseCase.ERROR_OLD_TEXT: "oauth_update_rejected",
+    StructuredResponseCase.ERROR_UNRELATED: "oauth_update_rejected",
+}
 
 
 def _probe_runner(
@@ -811,19 +819,14 @@ def test_structured_session_updates_oauth_only_at_an_idle_turn_boundary(
     session.observe_terminal_event(decoder.decode(_BACKGROUND_EMPTY))
     protected_b = protected(binding_b, mutable(fixture.oauth_b))
     install_b = session.update_oauth(protected_b)
-    assert (
-        install_b,
-        protected_b.is_cleared,
-    ) == (
+    assert (install_b, protected_b.is_cleared) == (
         ClaudeStructuredInstallReceipt(
-            binding=binding_b,
-            request_id=fixture.request_id_b,
+            binding=binding_b, request_id=fixture.request_id_b
         ),
         True,
     )
     session.route_turn(turn_id, binding_b, engine.transmit_turn)
     session.end_turn(turn_id)
-
     session.begin_turn(turn_id, binding_b)
     session.prepare_target(binding_c)
     rejected = protected(binding_c, mutable(fixture.oauth_c))
@@ -853,9 +856,11 @@ def test_structured_session_updates_oauth_only_at_an_idle_turn_boundary(
     else:
         with pytest.raises(ClaudeStructuredError) as failure:
             session.update_oauth(protected_c)
-        assert session.binding == binding_b
+        assert (session.binding, failure.value.code.value) == (
+            binding_b,
+            _RESPONSE_FAILURES.get(response_case, "protocol_malformed"),
+        )
         assert fixture.oauth_c not in repr(failure.value)
-
     assert all(
         request.exact_envelope
         and request.expected_oauth
