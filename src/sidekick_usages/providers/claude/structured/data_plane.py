@@ -3,6 +3,7 @@
 import os
 import socket
 from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from threading import Lock
 from time import monotonic
@@ -24,9 +25,7 @@ from sidekick_usages.core.selection.models import (
     SelectionEpoch,
     SelectionRecoveryDecision,
 )
-from sidekick_usages.core.selection.policy import (
-    selection_recovery_decision,
-)
+from sidekick_usages.core.selection.policy import selection_recovery_decision
 from sidekick_usages.core.selection.types import (
     OperationKind,
     ParticipantId,
@@ -68,12 +67,10 @@ MAX_CLAUDE_PARTICIPANT_CHANNELS = 16
 CLAUDE_PROTECTED_RESPONSE_SECONDS = 8.0
 CLAUDE_PROTECTED_COMPLETION_SECONDS = 120.0
 _SOCKET_READ_BYTES = 64 * 1024
-_CLAUDE_PROJECTION_KINDS = frozenset(
-    {
-        OperationKind.SELECTION_COMMIT,
-        OperationKind.CLAUDE_PARTICIPANT_BIND,
-    }
-)
+_CLAUDE_PROJECTION_KINDS = frozenset({
+    OperationKind.SELECTION_COMMIT,
+    OperationKind.CLAUDE_PARTICIPANT_BIND,
+})
 
 
 def claude_participant_ack_required(
@@ -690,6 +687,8 @@ class ClaudeProtectedHostChannel:
             return
         self._closed = True
         self._pending = None
+        with suppress(OSError):
+            self._endpoint.shutdown(socket.SHUT_RDWR)
         self._endpoint.close()
 
     def __repr__(self) -> str:

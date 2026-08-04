@@ -3,7 +3,7 @@
 import socket
 from collections.abc import Iterator
 from queue import Queue
-from threading import Event, Thread
+from threading import Event, Thread, get_ident
 
 from sidekick_usages.core.accounts.types import (
     OperationId,
@@ -36,6 +36,7 @@ from sidekick_usages.providers.claude.structured.codec import (
     encode_protected_binding_query,
     encode_protected_projection,
     require_protected_binding_report,
+    require_protected_install_receipt,
 )
 from sidekick_usages.providers.claude.structured.data_plane import (
     ClaudeProtectedHostChannel,
@@ -111,7 +112,13 @@ class ClaudeSessionEngineFake(ClaudeStructuredEngineFake):
         self._journey_events = journey_events
         self._fail_control_once = fail_control_once
         self._initial_event_count = initial_event_count
+        self._event_consumers: set[int] = set()
         self.interactive_frames: list[JsonObject] = []
+
+    @property
+    def event_consumer_count(self) -> int:
+        """Return the number of engine-lifetime event consumers."""
+        return len(self._event_consumers)
 
     def exchange(
         self,
@@ -210,6 +217,7 @@ class ClaudeSessionEngineFake(ClaudeStructuredEngineFake):
     def receive_event(self, timeout_seconds: float) -> bytes:
         """Return available events or one typed polling boundary."""
         del timeout_seconds
+        self._event_consumers.add(get_ident())
         if self._initial_event_count:
             self._initial_event_count -= 1
             return self._interactive_events.pop(0)
@@ -248,7 +256,11 @@ class ClaudeSessionControlFake:
         self._target_open = False
         self._connection_generation = 1
         self._disconnect_initial = False
+        self._disconnect_subscription = False
+        self._disconnect_preopen = False
         self._initial_projected = False
+        self._initial_receipt_proven = False
+        self._registration_failure: BaseException | None = None
         self._reconnected = Event()
         self._initial = _binding(_OPERATION_A, _ACCOUNT_A, SESSION_OAUTH[0], 1)
         self._target = _binding(_OPERATION_B, _ACCOUNT_B, SESSION_OAUTH[1], 2)
@@ -259,6 +271,10 @@ class ClaudeSessionControlFake:
         protected_endpoint: socket.socket,
     ) -> ParticipantRegistration:
         """Register and project the exact baseline authority."""
+        failure = self._registration_failure
+        if failure is not None:
+            self._registration_failure = None
+            raise failure
         if manifest.participant_id != SESSION_PARTICIPANT:
             raise AssertionError("Unexpected Claude participant.")
         if manifest.connection_generation != self._connection_generation:
@@ -301,6 +317,20 @@ class ClaudeSessionControlFake:
     def notices(self) -> Iterator[ParticipantNotice]:
         """Yield the baseline and exact transition notices."""
         notices = self._notices
+        if self._disconnect_subscription:
+            self._disconnect_subscription = False
+            self._prove_initial_receipt()
+            self._events.append(
+                f"subscription_disconnect:{self._connection_generation}"
+            )
+            return
+        if self._disconnect_preopen:
+            self._disconnect_preopen = False
+            self._events.append(
+                f"preopen_disconnect:{self._connection_generation}"
+            )
+            yield _notice(ParticipantNoticeKind.PREPARE, 1)
+            return
         yield _notice(
             ParticipantNoticeKind.OPEN,
             2 if self._target_open else 1,
@@ -323,6 +353,15 @@ class ClaudeSessionControlFake:
     def disconnect_initial_once(self) -> None:
         """Drop generation one before projecting its first binding."""
         self._disconnect_initial = True
+
+    def disconnect_initial_subscription_once(self) -> None:
+        """Drop bootstrap subscription and one pre-OPEN retry."""
+        self._disconnect_subscription = True
+        self._disconnect_preopen = True
+
+    def fail_registration_once(self, failure: BaseException) -> None:
+        """Fail one attachment before its binding reporter can finish."""
+        self._registration_failure = failure
 
     def prepare_reconnect(self, connection_generation: int) -> None:
         """Prepare one strictly newer fake supervisor attachment."""
@@ -352,7 +391,8 @@ class ClaudeSessionControlFake:
         """Project the target only after PREPARE."""
         self._selection_started = True
         endpoint = self._require_endpoint()
-        _receive(endpoint)
+        if not self._initial_receipt_proven:
+            self._prove_initial_receipt()
         self._notices.put(_notice(ParticipantNoticeKind.PREPARE, 2))
         if not self._prepare_applied.wait(timeout=2):
             raise AssertionError("Claude preparation was not applied.")
@@ -388,7 +428,11 @@ class ClaudeSessionControlFake:
 
     def ready(self, proof: ParticipantReadyProof) -> None:
         """Open only the exactly installed target."""
-        if proof.epoch != self._target.epoch:
+        if proof != ParticipantReadyProof(
+            account_id=self._target.account_id,
+            generation=self._target.generation,
+            epoch=self._target.epoch,
+        ):
             raise AssertionError("Unexpected Claude readiness proof.")
         self._events.append("ready")
         self._target_open = True
@@ -396,7 +440,13 @@ class ClaudeSessionControlFake:
 
     def adopted(self, proof: ParticipantAdoptionProof) -> None:
         """Record adoption before transmission."""
-        if proof.turn_id != SESSION_TURN:
+        binding = self._target if self._selection_started else self._initial
+        if proof != ParticipantAdoptionProof(
+            turn_id=SESSION_TURN,
+            account_id=binding.account_id,
+            generation=binding.generation,
+            epoch=binding.epoch,
+        ):
             raise AssertionError("Unexpected Claude adoption proof.")
         self._events.append("adoption")
 
@@ -415,7 +465,13 @@ class ClaudeSessionControlFake:
             self._endpoint.close()
 
     def _finish_install(self) -> None:
-        _receive(self._require_endpoint())
+        _receive_receipt(
+            self._require_endpoint(),
+            self._target,
+            _NONCE_B,
+            self._connection_generation,
+            SESSION_REQUESTS[2],
+        )
         self._events.append("receipt")
         self._notices.put(
             ParticipantNotice(
@@ -428,6 +484,16 @@ class ClaudeSessionControlFake:
                 target_generation=self._target.generation,
             )
         )
+
+    def _prove_initial_receipt(self) -> None:
+        _receive_receipt(
+            self._require_endpoint(),
+            self._initial,
+            _NONCE_A,
+            self._connection_generation,
+            SESSION_REQUESTS[0],
+        )
+        self._initial_receipt_proven = True
 
     def _require_endpoint(self) -> socket.socket:
         if self._endpoint is None:
@@ -505,11 +571,30 @@ def _query(
             )
 
 
-def _receive(endpoint: socket.socket) -> None:
+def _receive_receipt(
+    endpoint: socket.socket,
+    binding: ClaudeStructuredBinding,
+    nonce: RequestId,
+    connection_generation: int,
+    structured_request_id: RequestId,
+) -> None:
     decoder = BoundedFrameDecoder(MAX_CLAUDE_PROTECTED_FRAME_BYTES)
     while True:
         chunk = endpoint.recv(64 * 1024)
         if not chunk:
             raise AssertionError("Protected endpoint closed before receipt.")
-        if decoder.feed(chunk):
+        if frames := decoder.feed(chunk):
+            if len(frames) != 1 or decoder.pending:
+                raise AssertionError(
+                    "Protected install receipt was malformed."
+                )
+            receipt = require_protected_install_receipt(
+                frames[0],
+                binding,
+                nonce,
+                SESSION_PARTICIPANT,
+                connection_generation,
+            )
+            if receipt.request_id != structured_request_id:
+                raise AssertionError("Structured install receipt mismatched.")
             return

@@ -12,6 +12,7 @@ from sidekick_usages.cli.session.control import ParticipantControl
 from sidekick_usages.core.selection.types import ParticipantId, TurnId
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.daemon.control.client import ControlClient
+from sidekick_usages.daemon.control.protocol import ConnectionClosedError
 from sidekick_usages.daemon.selection.models import (
     ParticipantAdoptionProof,
     ParticipantClientKind,
@@ -43,6 +44,18 @@ def claude_participant_manifest(
         capability_version=1,
         connection_generation=connection_generation,
     )
+
+
+def require_first_claude_notice(
+    notices: Iterator[ParticipantNotice],
+) -> ParticipantNotice:
+    """Return the first notice or one typed transport closure."""
+    try:
+        return next(notices)
+    except StopIteration:
+        raise ConnectionClosedError(
+            "The Claude participant subscription closed."
+        ) from None
 
 
 class ClaudeParticipantControl:
@@ -139,19 +152,15 @@ class ClaudeCoordination:
                 manifest,
                 self.registration_endpoint,
             )
+            _join_binding_reporter(reporter)
+            error = result.get_nowait()
+            if error is not None:
+                raise error
         except BaseException:
             channel.close()
             self.registration_endpoint.close()
-            reporter.join(timeout=_REPORTER_JOIN_SECONDS)
+            _join_binding_reporter(reporter)
             raise
-        reporter.join(timeout=_REPORTER_JOIN_SECONDS)
-        if reporter.is_alive():
-            channel.close()
-            raise RuntimeError("Claude binding report did not complete.")
-        error = result.get_nowait()
-        if error is not None:
-            channel.close()
-            raise error
         return channel, registration
 
 
@@ -212,3 +221,9 @@ def _report_binding(
         result.put(error)
     else:
         result.put(None)
+
+
+def _join_binding_reporter(reporter: Thread) -> None:
+    reporter.join(timeout=_REPORTER_JOIN_SECONDS)
+    if reporter.is_alive():
+        raise RuntimeError("Claude binding report did not complete.")

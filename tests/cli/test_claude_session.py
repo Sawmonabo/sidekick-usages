@@ -1,6 +1,7 @@
 """Load-bearing public journey for one coordinated Claude session."""
 
 import socket
+import threading
 
 import pytest
 
@@ -15,6 +16,9 @@ from sidekick_usages.cli.session.claude.terminal import (
     ClaudeTerminalSession,
 )
 from sidekick_usages.core.selection.types import ParticipantId, SelectionCode
+from sidekick_usages.providers.claude.structured.codec import (
+    ClaudeProtectedChannelError,
+)
 from sidekick_usages.providers.claude.structured.models import (
     ClaudeStructuredDialogRequest,
     ClaudeStructuredElicitationRequest,
@@ -199,6 +203,7 @@ def test_claude_session_keeps_one_engine_across_a_queued_switch() -> None:
     )
     control = ClaudeSessionControlFake(events)
     control.disconnect_initial_once()
+    control.disconnect_initial_subscription_once()
     host, supervisor = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
     runtime = ClaudeSessionRuntime(
         engine,
@@ -223,6 +228,7 @@ def test_claude_session_keeps_one_engine_across_a_queued_switch() -> None:
         str(runtime.conversation_id),
         terminal.rendered,
         engine.user_turn_count,
+        engine.event_consumer_count,
     ) == (
         0,
         True,
@@ -233,12 +239,17 @@ def test_claude_session_keeps_one_engine_across_a_queued_switch() -> None:
             "Claude could not complete the request.",
         ],
         1,
+        1,
     )
     assert events == [
         "bootstrap_disconnect:1",
         "reattach:2",
         f"install:{SESSION_REQUESTS[0]}",
         "initialize",
+        "subscription_disconnect:2",
+        "reattach:3",
+        "preopen_disconnect:3",
+        "reattach:4",
         "terminal_failure",
         f"status:{SelectionCode.SELECTION_RECOVERY_REQUIRED.value}",
         f"install:{SESSION_REQUESTS[2]}",
@@ -246,7 +257,7 @@ def test_claude_session_keeps_one_engine_across_a_queued_switch() -> None:
         "ready",
         "adoption",
         "prompt",
-        "reattach:3",
+        "reattach:5",
         (
             "presentation:Sidekick recovered the terminal; Claude remained "
             "active."
@@ -276,6 +287,47 @@ def test_claude_session_keeps_one_engine_across_a_queued_switch() -> None:
         "close_input",
         "wait",
     ]
+
+
+def test_claude_session_fails_closed_on_invalid_reattachment() -> None:
+    """Surface a safety failure without retrying its attachment."""
+    events: list[str] = []
+    engine = ClaudeSessionEngineFake(
+        (StructuredResponseCase.SUCCESS,) * 2,
+        (),
+        events,
+    )
+    control = ClaudeSessionControlFake(events)
+    host, supervisor = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+    runtime = ClaudeSessionRuntime(
+        engine,
+        control,
+        host,
+        supervisor,
+        participant_id=SESSION_PARTICIPANT,
+        coordination_factory=lambda participant_id, connection_generation: (
+            _reconnect(control, participant_id, connection_generation)
+        ),
+        request_id_factory=iter(SESSION_REQUESTS).__next__,
+    )
+    failure = ClaudeProtectedChannelError(
+        "Synthetic invalid protected registration."
+    )
+    reporters_before = _binding_reporter_count()
+
+    runtime.open()
+    control.fail_registration_once(failure)
+    control.disconnect()
+    observed: BaseException | None = None
+    try:
+        runtime.receive_event()
+    except BaseException as error:
+        observed = error
+    finally:
+        runtime.close()
+
+    assert observed is failure
+    assert _binding_reporter_count() == reporters_before
 
 
 def test_claude_session_gates_an_active_postcommit_projection() -> None:
@@ -331,6 +383,13 @@ def _reconnect(
     control.prepare_reconnect(connection_generation)
     host, supervisor = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
     return ClaudeCoordination(control, host, supervisor)
+
+
+def _binding_reporter_count() -> int:
+    return sum(
+        thread.name == "claude-binding-report"
+        for thread in threading.enumerate()
+    )
 
 
 def _stream_events() -> tuple[bytes, ...]:

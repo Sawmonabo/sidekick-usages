@@ -16,6 +16,7 @@ from sidekick_usages.cli.session.claude.coordination import (
     ClaudeCoordinationFactory,
     ClaudeSupervisorCoordinationFactory,
     claude_participant_manifest,
+    require_first_claude_notice,
 )
 from sidekick_usages.core.accounts.types import RequestId
 from sidekick_usages.core.selection.types import (
@@ -91,7 +92,6 @@ _ATTACHMENT_RETRY_ERRORS = (
     ConnectionRefusedError, ConnectionResetError,
     FileNotFoundError, TimeoutError,
 )
-_OPEN_RETRY_ERRORS = (*_ATTACHMENT_RETRY_ERRORS, StopIteration)
 
 
 def _new_turn_id() -> TurnId:
@@ -241,17 +241,22 @@ class ClaudeSessionRuntime:
             try:
                 channel.acknowledge(receipt)
                 notices = self._control.notices()
-                first = next(notices)
+                first = require_first_claude_notice(notices)
                 self._apply_notice(first)
-            except _OPEN_RETRY_ERRORS:
+            except _ATTACHMENT_RETRY_ERRORS:
                 with self._condition:
-                    self._gate_code = (
-                        SelectionCode.SELECTION_RECOVERY_REQUIRED
-                    )
+                    self._gate_code = SelectionCode.SELECTION_RECOVERY_REQUIRED
                     self._reattaching = True
-                self._reattach(start_events=True)
+                self._reattach()
+                self._raise_failure()
             else:
                 self._start_threads(notices, self._connection_generation)
+            events = Thread(
+                target=self._consume_events,
+                daemon=True, name="claude-structured-events",
+            )
+            events.start()
+            self._event_thread = events
             self._enrolled = True
         except BaseException:
             if self._channel is not None:
@@ -364,8 +369,8 @@ class ClaudeSessionRuntime:
             if self._control_is_available():
                 try:
                     self._control.adopted(proof)
-                except BaseException:
-                    self._control_lost(self._connection_generation)
+                except _ATTACHMENT_RETRY_ERRORS:
+                    self._control_lost(self._connection_generation, True)
                     self._raise_gate()
             with self._engine_lock:
                 self._engine.send_interactive(
@@ -527,8 +532,8 @@ class ClaudeSessionRuntime:
         if self._control_is_available():
             try:
                 self._control.end(turn_id)
-            except BaseException:
-                self._control_lost(self._connection_generation)
+            except _ATTACHMENT_RETRY_ERRORS:
+                self._control_lost(self._connection_generation, True)
 
     def finish_engine(self) -> int:
         """Close engine input and await only its ordinary exit."""
@@ -580,8 +585,6 @@ class ClaudeSessionRuntime:
         self,
         notices: Iterator[ParticipantNotice],
         connection_generation: int,
-        *,
-        start_events: bool = True,
     ) -> None:
         channel = self._channel
         if channel is None:
@@ -602,14 +605,6 @@ class ClaudeSessionRuntime:
         notice.start()
         self._protected_thread = protected
         self._notice_thread = notice
-        if start_events:
-            events = Thread(
-                target=self._consume_events,
-                daemon=True,
-                name="claude-structured-events",
-            )
-            events.start()
-            self._event_thread = events
 
     def _consume_protected(
         self,
@@ -629,12 +624,15 @@ class ClaudeSessionRuntime:
                     with self._session_lock:
                         self._require_session().discard_uninstalled_target()
                     channel.close()
-                    self._control_lost(connection_generation)
+                    self._control_lost(connection_generation, False)
                     return
                 channel.acknowledge(receipt)
-        except BaseException:
+        except _ATTACHMENT_RETRY_ERRORS:
             if not self._closing.is_set():
-                self._control_lost(connection_generation)
+                self._control_lost(connection_generation, True)
+        except BaseException as error:
+            if not self._closing.is_set():
+                self._publish_failure(error)
 
     def _consume_events(self) -> None:
         try:
@@ -665,8 +663,7 @@ class ClaudeSessionRuntime:
                 self._events.put(event)
         except BaseException as error:
             if not self._closing.is_set() and not self._finished:
-                self._record_failure(error)
-                self._events.put(error)
+                self._publish_failure(error)
 
     def _observe_terminal_event(
         self,
@@ -734,10 +731,13 @@ class ClaudeSessionRuntime:
             for notice in notices:
                 self._apply_notice(notice)
             if not self._closing.is_set():
-                self._control_lost(connection_generation)
-        except BaseException:
+                raise ConnectionClosedError("Claude notices closed.")
+        except _ATTACHMENT_RETRY_ERRORS:
             if not self._closing.is_set():
-                self._control_lost(connection_generation)
+                self._control_lost(connection_generation, True)
+        except BaseException as error:
+            if not self._closing.is_set():
+                self._publish_failure(error)
 
     def _apply_notice(self, notice: ParticipantNotice) -> None:
         if (
@@ -799,8 +799,8 @@ class ClaudeSessionRuntime:
                 revision = self._open_revision
             try:
                 admission = self._control.begin(turn_id)
-            except BaseException:
-                self._control_lost(self._connection_generation)
+            except _ATTACHMENT_RETRY_ERRORS:
+                self._control_lost(self._connection_generation, True)
                 continue
             if admission.state is TurnAdmissionState.ADMITTED:
                 return admission
@@ -848,7 +848,11 @@ class ClaudeSessionRuntime:
                 self._failure = error
             self._condition.notify_all()
 
-    def _control_lost(self, connection_generation: int) -> None:
+    def _publish_failure(self, error: BaseException) -> None:
+        self._record_failure(error)
+        self._events.put(error)
+
+    def _control_lost(self, connection_generation: int, retry: bool) -> None:
         report_unavailable = False
         with self._condition:
             if (
@@ -862,7 +866,7 @@ class ClaudeSessionRuntime:
             self._control_available = False
             self._gate_code = SelectionCode.SELECTION_RECOVERY_REQUIRED
             factory = self._coordination_factory
-            if factory is not None and not self._reattaching:
+            if factory is not None and retry and not self._reattaching:
                 self._reattaching = True
                 thread = Thread(
                     target=self._reattach,
@@ -871,7 +875,7 @@ class ClaudeSessionRuntime:
                 )
                 thread.start()
                 self._reattach_thread = thread
-            elif factory is None:
+            elif factory is None or not retry:
                 report_unavailable = True
             self._condition.notify_all()
         if report_unavailable:
@@ -883,10 +887,10 @@ class ClaudeSessionRuntime:
                 )
             )
 
-    def _reattach(self, *, start_events: bool = False) -> None:
+    def _reattach(self) -> None:
         factory = self._coordination_factory
         if factory is None:
-            return
+            self._fail(ClaudeStructuredFailure.PROCESS_UNAVAILABLE)
         old_channel = self._channel
         if old_channel is not None:
             old_channel.close()
@@ -900,9 +904,13 @@ class ClaudeSessionRuntime:
             ]
             if self._closing.wait(delay):
                 return
-            if self._reattach_once(factory, start_events=start_events):
+            try:
+                if self._reattach_once(factory):
+                    return
+            except BaseException as error:
+                self._publish_failure(error)
                 return
-            if not reported:
+            if not reported and self._enrolled:
                 reported = True
                 self._events.put(
                     ClaudeStructuredTerminalEvent(
@@ -916,8 +924,6 @@ class ClaudeSessionRuntime:
     def _reattach_once(
         self,
         factory: ClaudeCoordinationFactory,
-        *,
-        start_events: bool = False,
     ) -> bool:
         with self._condition:
             self._connection_generation += 1
@@ -935,23 +941,22 @@ class ClaudeSessionRuntime:
             )
             channel, _registration = coordination.register(manifest, binding)
             notices = coordination.control.notices()
-            first = next(notices)
+            first = require_first_claude_notice(notices)
             with self._condition:
                 self._control = coordination.control
                 self._channel = channel
             self._apply_notice(first)
-            self._start_threads(
-                notices,
-                generation,
-                start_events=start_events,
-            )
+            self._start_threads(notices, generation)
             if not self._control_is_available():
                 self._coordination_changed.wait()
             if self._control_is_available() or self._closing.is_set():
                 return True
-        except BaseException:
+        except _ATTACHMENT_RETRY_ERRORS:
             self._close_coordination(coordination, channel)
             return False
+        except BaseException:
+            self._close_coordination(coordination, channel)
+            raise
         self._close_coordination(coordination, channel)
         return False
 
