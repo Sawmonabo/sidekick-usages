@@ -361,7 +361,7 @@ def test_filters_are_composable(tmp_path: Path) -> None:
     )
 
     claude_payload = json.loads(claude_output.getvalue())
-    assert claude_result.exit_code == ExitCode.MANUAL_ACTION
+    assert claude_result.exit_code == ExitCode.SUCCESS
     assert claude_payload["service"]["broker"] == "not_required"
     assert (
         claude_payload["service"]["broker_failure_code"],
@@ -371,8 +371,9 @@ def test_filters_are_composable(tmp_path: Path) -> None:
         result["provider"]
         for result in claude_payload["provider_capabilities"]
     ] == ["claude"]
-    assert claude_payload["accounts"][0]["manual_action"] == [
-        "sidekick-usages",
-        "migrate",
-        "managed-auth",
-    ]
+    claude_account = claude_payload["accounts"][0]
+    assert (
+        claude_account["identity_state"],
+        claude_account["manual_action"],
+        claude_account["authorities"]["subscription"],
+    ) == ("unavailable", None, None)

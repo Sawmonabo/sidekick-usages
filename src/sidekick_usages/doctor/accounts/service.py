@@ -317,7 +317,10 @@ def _manual_action(
 ) -> tuple[str, ...] | None:
     """Return one exact command for the highest-priority account repair."""
     label = str(account.label)
-    if not account.has_managed_authority:
+    if (
+        not account.has_managed_authority
+        and not _is_claude_setup_only(account)
+    ):
         return ("sidekick-usages", "migrate", "managed-auth")
     if identity_state is IdentityState.ASSOCIATION_REQUIRED:
         return (
@@ -595,7 +598,11 @@ def _identity_state(account: SavedAccount) -> IdentityState:
     if isinstance(authority, ClaudeAccountAuthority):
         subscription = authority.subscription
         if subscription is None:
-            return IdentityState.ASSOCIATION_REQUIRED
+            return (
+                IdentityState.UNAVAILABLE
+                if _is_claude_setup_only(account)
+                else IdentityState.ASSOCIATION_REQUIRED
+            )
         return (
             IdentityState.KNOWN
             if subscription.provider_identity is not None
@@ -608,6 +615,16 @@ def _identity_state(account: SavedAccount) -> IdentityState:
             else IdentityState.UNAVAILABLE
         )
     assert_never(authority)
+
+
+def _is_claude_setup_only(account: SavedAccount) -> bool:
+    """Return whether Claude has only its inference-scoped authority."""
+    authority = account.authority
+    return (
+        isinstance(authority, ClaudeAccountAuthority)
+        and authority.setup_token is not None
+        and authority.subscription is None
+    )
 
 
 def _classify_time(
