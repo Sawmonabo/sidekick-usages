@@ -39,6 +39,7 @@ class ParticipantRecord:
     process_identity: ProcessIdentity
     registered_epoch: SelectionEpoch
     connected: bool = False
+    prebootstrap_reachable: bool = False
     confirmed_dead: bool = False
     attachment_ready_epoch: SelectionEpoch | None = None
     ready_epoch: SelectionEpoch | None = None
@@ -264,7 +265,12 @@ def project_snapshot(
         for participant_id in registered
         if (participant := provider_participants.get(participant_id))
         is not None
-        and participant.connected
+        and (
+            participant.connected
+            or (
+                finalized is None and participant.prebootstrap_reachable
+            )
+        )
         and not participant.confirmed_dead
     }
     ready = {

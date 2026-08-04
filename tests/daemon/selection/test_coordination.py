@@ -3,7 +3,6 @@
 import socket
 from collections.abc import Generator
 from dataclasses import dataclass, replace
-from datetime import datetime
 from functools import partial
 from pathlib import Path
 from threading import Event, Thread
@@ -97,6 +96,7 @@ REPLAY_OPERATION_ID = OperationId("25c10782-ae80-4f9b-a6fa-65bd029a4934")
 CONFLICT_OPERATION_ID = OperationId("cc6af35a-20b1-43e3-8f61-69521210de6a")
 TARGET_ACCOUNT_ID = SidekickAccountId("32b53411-10ef-4689-a5ea-6ec9daec4e2b")
 TARGET_GENERATION = AuthorityGeneration("generation-target-8")
+_TARGET_EPOCH = SelectionEpoch(8)
 CONFLICT_ACCOUNT_ID = SidekickAccountId("e45c490a-18cd-45a6-aee6-6de58cbc7b5a")
 PARTICIPANT_A = ParticipantId("521d4f0d-f92a-4d67-a5fa-f5ec86131337")
 PARTICIPANT_B = ParticipantId("b3348405-3d31-410c-9afc-9af6761976dc")
@@ -104,8 +104,7 @@ PARTICIPANT_C = ParticipantId("e9b1b25c-fae6-4998-a135-719ad3257972")
 PARTICIPANT_D = ParticipantId("ed416c76-24b3-4934-9486-f910376e3a71")
 TURN_A = TurnId("a99915d0-5d3a-497a-9696-c227d0903709")
 TURN_B = TurnId("0168fe43-5c83-46f4-b8ef-6cc047293957")
-INITIAL_COUNT = 2
-TEST_SELECTION_TIMEOUT_SECONDS = 0.05
+INITIAL_COUNT, TEST_SELECTION_TIMEOUT_SECONDS = 2, 0.05
 
 
 def _baseline_selection() -> FinalizedSelection:
@@ -150,9 +149,7 @@ class _SelectionAdapter:
         self.committed = Event()
         self.crash_after_install = False
         if channels is None:
-            assert registry is None
-            assert protected_hosts is None
-            assert scheduler is None
+            assert registry is protected_hosts is scheduler is None
             self._protected = None
         else:
             assert registry is not None
@@ -168,15 +165,12 @@ class _SelectionAdapter:
         self.prevalidation_started.set()
         if not self.allow_prevalidation.wait(1):
             raise RuntimeError("Synthetic prevalidation gate timed out.")
+        suffix = "target-8" if self.crash_after_install else "source-8"
         return PreparedSelection(
             operation_id=operation.operation_id,
             provider_id=operation.provider_id,
             target_account_id=operation.target_account_id,
-            target_generation=AuthorityGeneration(
-                "generation-target-8"
-                if self.crash_after_install
-                else "generation-source-8"
-            ),
+            target_generation=AuthorityGeneration(f"generation-{suffix}"),
             baseline_epoch=operation.baseline_epoch,
             pending_epoch=operation.pending_epoch,
         )
@@ -192,12 +186,8 @@ class _SelectionAdapter:
             generation=proof.generation,
             epoch=proof.epoch,
         )
-        self._install(
-            binding,
-            self._protected[1]
-            .snapshot(prepared.provider_id)
-            .required_participant_ids,
-        )
+        snapshot = self._protected[1].snapshot(prepared.provider_id)
+        self._install(binding, snapshot.required_participant_ids)
         self.committed.set()
         if self.crash_after_install:
             raise RuntimeError("Synthetic crash after protected install.")
@@ -234,22 +224,15 @@ class _SelectionAdapter:
     ) -> None:
         assert self._protected is not None
         channels, _registry, protected_hosts, _scheduler = self._protected
-        targets = (
-            tuple(protected_hosts)
-            if participant_ids is None
-            else participant_ids
-        )
+        available = tuple(protected_hosts)
+        targets = available if participant_ids is None else participant_ids
         receivers: list[Thread] = []
         for participant_id in targets:
+            host = ClaudeProtectedHostChannel(
+                protected_hosts[participant_id], participant_id, 1)
             receiver = Thread(
                 target=self._acknowledge_projection,
-                args=(
-                    ClaudeProtectedHostChannel(
-                        protected_hosts[participant_id], participant_id, 1
-                    ),
-                    binding,
-                ),
-                daemon=True,
+                args=(host, binding), daemon=True,
             )
             receiver.start()
             receivers.append(receiver)
@@ -351,23 +334,6 @@ class _ObservedOperationStore(SelectionOperationStore):
             raise RuntimeError("Synthetic crash after durable completion.")
         return completed
 
-    def add_required(
-        self,
-        provider_id: ProviderId,
-        operation_id: OperationId,
-        pending_epoch: SelectionEpoch,
-        participant_id: ParticipantId,
-        *,
-        updated_at: datetime,
-    ) -> OpenSelectionOperation:
-        return super().add_required(
-            provider_id,
-            operation_id,
-            pending_epoch,
-            participant_id,
-            updated_at=updated_at,
-        )
-
     def _observe_phase(self, operation: OpenSelectionOperation) -> None:
         if operation.phase is SelectionPhase.PREPARING:
             self.preparing.set()
@@ -404,6 +370,7 @@ def _build_journey(
     *,
     include_participants: bool = True,
     participant_required: bool = True,
+    baseline_exists: bool = True,
 ) -> _Journey:
     paths = make_application_paths(tmp_path)
     baseline = _baseline_selection()
@@ -414,7 +381,8 @@ def _build_journey(
         generation=AuthorityGeneration("generation-codex-4"),
         finalized_at=REFERENCE_TIME,
     )
-    seed_finalized_selections(paths, baseline, other)
+    states = (baseline, other) if baseline_exists else (other,)
+    seed_finalized_selections(paths, *states)
     selected = SelectedStateStore(paths.selected_state)
     operations = _ObservedOperationStore(paths.selection_journals)
     channels = ClaudeParticipantChannelRegistry(lambda _: participant_required)
@@ -512,13 +480,16 @@ def _process(index: int) -> ProcessIdentity:
     return ProcessIdentity(1000 + index, index)
 
 
-def _ready_request(participant_id: ParticipantId) -> ParticipantReadyRequest:
+def _ready_request(
+    participant_id: ParticipantId,
+    epoch: SelectionEpoch = _TARGET_EPOCH,
+) -> ParticipantReadyRequest:
     return ParticipantReadyRequest(
         participant_id=participant_id, connection_generation=1,
         proof=ParticipantReadyProof(
             account_id=TARGET_ACCOUNT_ID,
             generation=TARGET_GENERATION,
-            epoch=SelectionEpoch(8),
+            epoch=epoch,
         ),
     )
 
@@ -630,7 +601,7 @@ def _register_late(journey: _Journey) -> ParticipantRegistration:
 
 
 def test_setup_requires_a_participant_before_commit(tmp_path: Path) -> None:
-    """Setup refuses on the old epoch while native authority needs no host."""
+    """Require a host or its exact unbound prebootstrap endpoint proof."""
     setup = _build_journey(tmp_path / "setup", include_participants=False)
     setup.adapter.allow_prevalidation.set()
     with pytest.raises(SelectionRequestError) as refused:
@@ -647,11 +618,40 @@ def test_setup_requires_a_participant_before_commit(tmp_path: Path) -> None:
     )
     native.adapter.allow_prevalidation.set()
     result = native.coordinator.select(
-        REPLAY_OPERATION_ID, PROVIDER_ID, TARGET_ACCOUNT_ID
-    )
+        REPLAY_OPERATION_ID, PROVIDER_ID, TARGET_ACCOUNT_ID)
     assert result.outcome is SelectionOutcome.READY
     assert (selected := native.selected.load(PROVIDER_ID)) is not None
-    assert selected.epoch == SelectionEpoch(8)
+    assert selected.epoch == _TARGET_EPOCH
+    bootstrap = _build_journey(
+        tmp_path / "bootstrap", include_participants=False,
+        baseline_exists=False,
+    )
+    host, supervisor = socket.socketpair(socket.AF_UNIX)
+    bootstrap.protected_hosts[PARTICIPANT_A] = host
+    process = _process(1)
+    start_claude_binding_reporter(host, PARTICIPANT_A, 1, None)
+    registration = bootstrap.coordinator.register(
+        _manifest(PARTICIPANT_A), process, protected_endpoint=supervisor)
+    snapshot = bootstrap.registry.snapshot(PROVIDER_ID)
+    assert registration.registered_epoch == SelectionEpoch(0)
+    assert snapshot.registered_count == snapshot.reachable_count == 1
+    assert not snapshot.unreachable_participant_ids
+    bootstrap.adapter.allow_prevalidation.set()
+    _canonical_id, stream = bootstrap.coordinator.select_events(
+        REPLAY_OPERATION_ID, PROVIDER_ID, TARGET_ACCOUNT_ID)
+    for _index in range(4):
+        next(stream)
+    assert bootstrap.registry.snapshot(PROVIDER_ID).reachable_count == 0
+    notices = bootstrap.coordinator.subscribe(new_request_id(),
+        ParticipantConnectionRequest(PARTICIPANT_A, 1), process)
+    assert next(notices).kind is ParticipantNoticeKind.READY
+    ready = _ready_request(PARTICIPANT_A, SelectionEpoch(1))
+    bootstrap.coordinator.ready_request(ready, process)
+    assert isinstance(result := next(stream), SelectionResult)
+    assert result.outcome is SelectionOutcome.READY
+    assert next(notices).kind is ParticipantNoticeKind.OPEN
+    notices.close()
+    host.close()
 
 
 def _arm_postcommit_loss(

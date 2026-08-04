@@ -150,9 +150,7 @@ class SelectionCoordinator:
             with self._registration_lock:
                 try:
                     transaction = self._participants.stage_attachment(
-                        manifest,
-                        peer,
-                        protected_endpoint,
+                        manifest, peer, protected_endpoint
                     )
                 except Exception:
                     raise ParticipantRequestError(
@@ -168,17 +166,17 @@ class SelectionCoordinator:
                 except BaseException:
                     transaction.rollback()
                     raise
-            attachments = self._participants.attachment_registry(
+            member_id = manifest.participant_id
+            generation = manifest.connection_generation
+            owner = self._participants.attachment_registry(
                 manifest.provider_id
             )
-            if attachments is None:
+            if owner is None:
                 raise ParticipantRequestError(_AUTHORITY_PROOF_FAILED)
             try:
-                attachments.refresh_binding(
-                    manifest.participant_id,
-                    manifest.connection_generation,
-                    peer,
-                )
+                unbound = owner.refresh_binding(member_id, generation, peer)
+                self._participants.record_prebootstrap_proof(
+                    member_id, generation, peer, unbound)
             except Exception:
                 raise ParticipantRequestError(
                     _AUTHORITY_PROOF_FAILED

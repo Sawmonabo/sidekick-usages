@@ -91,8 +91,8 @@ class ParticipantAttachmentRegistry(Protocol):
         participant_id: ParticipantId,
         connection_generation: int,
         peer: ProcessIdentity,
-    ) -> None:
-        """Refresh one nonce-correlated secret-free attachment binding."""
+    ) -> bool:
+        """Return whether one refreshed exact attachment is unbound."""
 
     def matches_target(
         self,

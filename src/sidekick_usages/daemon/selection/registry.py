@@ -66,6 +66,10 @@ from sidekick_usages.daemon.selection.projection import (
 from sidekick_usages.platform.models import ProcessIdentity
 
 MAX_RETAINED_PARTICIPANT_NOTICES = 256
+_ACTIVE_OPERATION_TIMEOUT = SelectionCode.ACTIVE_OPERATION_TIMEOUT
+_AUTHORITY_PROOF_FAILED = SelectionCode.AUTHORITY_PROOF_FAILED
+_PARTICIPANT_UNREACHABLE = SelectionCode.PARTICIPANT_UNREACHABLE
+_SELECTION_RECOVERY_REQUIRED = SelectionCode.SELECTION_RECOVERY_REQUIRED
 
 
 class ParticipantRegistry:
@@ -124,7 +128,9 @@ class ParticipantRegistry:
         )
 
     def target_available(
-        self, provider_id: ProviderId, account_id: SidekickAccountId,
+        self,
+        provider_id: ProviderId,
+        account_id: SidekickAccountId,
     ) -> bool:
         """Return whether required integrated membership exists now."""
         with self._condition:
@@ -146,7 +152,7 @@ class ParticipantRegistry:
         attachments = self.attachment_registry(manifest.provider_id)
         if attachments is None:
             endpoint.close()
-            raise ParticipantRequestError(SelectionCode.AUTHORITY_PROOF_FAILED)
+            raise ParticipantRequestError(_AUTHORITY_PROOF_FAILED)
         return attachments.stage(
             manifest.participant_id,
             manifest.connection_generation,
@@ -219,6 +225,7 @@ class ParticipantRegistry:
                 if current is not None:
                     current.manifest = manifest
                     current.confirmed_dead = False
+                    current.prebootstrap_reachable = False
                     current.attachment_ready_epoch = attachment_ready_epoch
                     current.ready_epoch = None
                 else:
@@ -255,9 +262,7 @@ class ParticipantRegistry:
             existing = self._turns.get(request.turn_id)
             if existing is not None:
                 if existing.participant_id != request.participant_id:
-                    raise ParticipantRequestError(
-                        SelectionCode.AUTHORITY_PROOF_FAILED
-                    )
+                    raise ParticipantRequestError(_AUTHORITY_PROOF_FAILED)
                 return existing
             provider_id = participant.manifest.provider_id
             gate = self._gates.get(provider_id)
@@ -267,16 +272,12 @@ class ParticipantRegistry:
                     existing_request is not None
                     and existing_request != request
                 ):
-                    raise ParticipantRequestError(
-                        SelectionCode.AUTHORITY_PROOF_FAILED
-                    )
+                    raise ParticipantRequestError(_AUTHORITY_PROOF_FAILED)
                 if (
                     existing_request is None
                     and len(gate.queued) >= MAX_PENDING_BEGINS_PER_PROVIDER
                 ):
-                    raise ParticipantRequestError(
-                        SelectionCode.ACTIVE_OPERATION_TIMEOUT
-                    )
+                    raise ParticipantRequestError(_ACTIVE_OPERATION_TIMEOUT)
                 gate.queued[request.turn_id] = request
                 return TurnAdmission(
                     participant_id=request.participant_id,
@@ -290,16 +291,12 @@ class ParticipantRegistry:
             if self.requires_attachment(provider_id) and (
                 participant.attachment_ready_epoch != selected.epoch
             ):
-                raise ParticipantRequestError(
-                    SelectionCode.SELECTION_RECOVERY_REQUIRED
-                )
+                raise ParticipantRequestError(_SELECTION_RECOVERY_REQUIRED)
             if (
                 self._active_turn_count(provider_id)
                 >= MAX_ACTIVE_TURNS_PER_PROVIDER
             ):
-                raise ParticipantRequestError(
-                    SelectionCode.ACTIVE_OPERATION_TIMEOUT
-                )
+                raise ParticipantRequestError(_ACTIVE_OPERATION_TIMEOUT)
             admission = TurnAdmission(
                 participant_id=request.participant_id,
                 turn_id=request.turn_id,
@@ -324,10 +321,26 @@ class ParticipantRegistry:
                 connection_generation,
             )
             if participant.process_identity != peer:
-                raise ParticipantRequestError(
-                    SelectionCode.PARTICIPANT_UNREACHABLE
-                )
+                raise ParticipantRequestError(_PARTICIPANT_UNREACHABLE)
             return participant.manifest.provider_id
+
+    def record_prebootstrap_proof(
+        self,
+        participant_id: ParticipantId,
+        generation: int,
+        peer: ProcessIdentity,
+        unbound: bool,
+    ) -> None:
+        """Record whether one exact refreshed endpoint proved unbound."""
+        with self._condition:
+            participant = self._require_connection(participant_id, generation)
+            if participant.process_identity != peer:
+                raise ParticipantRequestError(_PARTICIPANT_UNREACHABLE)
+            if unbound and self._selected.load(
+                participant.manifest.provider_id
+            ) is None:
+                participant.prebootstrap_reachable = True
+                self._condition.notify_all()
 
     def end_turn(self, request: TurnEndRequest) -> None:
         """End only the exact participant-owned admitted turn."""
@@ -341,9 +354,7 @@ class ParticipantRegistry:
                 admission is None
                 or admission.participant_id != request.participant_id
             ):
-                raise ParticipantRequestError(
-                    SelectionCode.AUTHORITY_PROOF_FAILED
-                )
+                raise ParticipantRequestError(_AUTHORITY_PROOF_FAILED)
             self._turns.pop(request.turn_id)
             self._condition.notify_all()
 
@@ -356,9 +367,7 @@ class ParticipantRegistry:
         """Close new-turn admission and capture live required clients."""
         with self._condition:
             if provider_id in self._gates:
-                raise ParticipantRequestError(
-                    SelectionCode.SELECTION_RECOVERY_REQUIRED
-                )
+                raise ParticipantRequestError(_SELECTION_RECOVERY_REQUIRED)
             require_gate_epoch(self._selected.load(provider_id), pending_epoch)
             required = {
                 participant_id
@@ -409,6 +418,7 @@ class ParticipantRegistry:
             gate.membership_sealed = membership_sealed
             self._gates[provider_id] = gate
             return self._snapshot(provider_id)
+
     def prepare_target(
         self, operation_id: OperationId, proof: AuthorityReadyProof
     ) -> bool:
@@ -454,9 +464,7 @@ class ParticipantRegistry:
                 or gate.generation != proof.generation
                 or gate.pending_epoch != proof.epoch
             ):
-                raise ParticipantRequestError(
-                    SelectionCode.AUTHORITY_PROOF_FAILED
-                )
+                raise ParticipantRequestError(_AUTHORITY_PROOF_FAILED)
             participant.ready_epoch = proof.epoch
             self._condition.notify_all()
 
@@ -480,9 +488,7 @@ class ParticipantRegistry:
                 or admission.account_id != proof.account_id
                 or admission.generation != proof.generation
             ):
-                raise ParticipantRequestError(
-                    SelectionCode.AUTHORITY_PROOF_FAILED
-                )
+                raise ParticipantRequestError(_AUTHORITY_PROOF_FAILED)
             participant.adopted_epoch = proof.epoch
 
     def ready_request(self, request: ParticipantReadyRequest) -> None:
@@ -514,6 +520,7 @@ class ParticipantRegistry:
                 connection_generation,
             )
             participant.connected = False
+            participant.prebootstrap_reachable = False
             participant.ready_epoch = None
             self._condition.notify_all()
 
@@ -527,9 +534,7 @@ class ParticipantRegistry:
             self._wait_unsealed_for_participant(participant_id)
             participant = self._participants.get(participant_id)
             if participant is None or participant.process_identity != peer:
-                raise ParticipantRequestError(
-                    SelectionCode.AUTHORITY_PROOF_FAILED
-                )
+                raise ParticipantRequestError(_AUTHORITY_PROOF_FAILED)
             attachments = self.attachment_registry(
                 participant.manifest.provider_id
             )
@@ -559,7 +564,8 @@ class ParticipantRegistry:
             return self._snapshot(provider_id)
 
     def unreachable_processes(
-        self, provider_id: ProviderId,
+        self,
+        provider_id: ProviderId,
     ) -> tuple[tuple[ParticipantId, ProcessIdentity], ...]:
         """Return exact disconnected process identities for inspection."""
         with self._condition:
@@ -572,7 +578,8 @@ class ParticipantRegistry:
             )
 
     def unresolved_processes(
-        self, provider_id: ProviderId,
+        self,
+        provider_id: ProviderId,
     ) -> tuple[tuple[ParticipantId, ProcessIdentity], ...]:
         """Return exact identities for unresolved required participants."""
         with self._condition:
@@ -619,12 +626,11 @@ class ParticipantRegistry:
                 request.connection_generation,
             )
             if participant.connected:
-                raise ParticipantRequestError(
-                    SelectionCode.PARTICIPANT_UNREACHABLE
-                )
+                raise ParticipantRequestError(_PARTICIPANT_UNREACHABLE)
             cursor = self._notice_sequence
             initial = current_notice()
             participant.connected = True
+            participant.prebootstrap_reachable = False
             self._condition.notify_all()
         try:
             yield initial
@@ -703,9 +709,7 @@ class ParticipantRegistry:
                     or participant.manifest.provider_id is not provider_id
                     or not participant.confirmed_dead
                 ):
-                    raise ParticipantRequestError(
-                        SelectionCode.AUTHORITY_PROOF_FAILED
-                    )
+                    raise ParticipantRequestError(_AUTHORITY_PROOF_FAILED)
                 self._participants.pop(participant_id)
                 if gate is not None:
                     gate.required.discard(participant_id)
@@ -767,9 +771,7 @@ class ParticipantRegistry:
         """Open only participants that installed exact finalized authority."""
         with self._condition:
             if self._selected.load(finalized.provider_id) != finalized:
-                raise ParticipantRequestError(
-                    SelectionCode.AUTHORITY_PROOF_FAILED
-                )
+                raise ParticipantRequestError(_AUTHORITY_PROOF_FAILED)
             if not self.requires_finalized_attachment(finalized.provider_id):
                 return
             records = self._participants
@@ -791,9 +793,7 @@ class ParticipantRegistry:
         with self._condition:
             gate = require_gate(self._gates, provider_id)
             if not self._all_required_resolved(provider_id):
-                raise ParticipantRequestError(
-                    SelectionCode.SELECTION_RECOVERY_REQUIRED
-                )
+                raise ParticipantRequestError(_SELECTION_RECOVERY_REQUIRED)
             gate.sealed = True
             return self._snapshot(provider_id)
 
@@ -805,9 +805,7 @@ class ParticipantRegistry:
             if snapshot.active_turn_count or (
                 snapshot.unreachable_participant_ids
             ):
-                raise ParticipantRequestError(
-                    SelectionCode.PARTICIPANT_UNREACHABLE
-                )
+                raise ParticipantRequestError(_PARTICIPANT_UNREACHABLE)
             gate.membership_sealed = True
             return snapshot
 
@@ -818,6 +816,7 @@ class ParticipantRegistry:
             gate.membership_sealed = False
             gate.sealed = False
             self._condition.notify_all()
+
     def open_admission(
         self,
         provider_id: ProviderId,
@@ -829,9 +828,7 @@ class ParticipantRegistry:
             if gate.pending_epoch != epoch or not self._all_required_resolved(
                 provider_id
             ):
-                raise ParticipantRequestError(
-                    SelectionCode.SELECTION_RECOVERY_REQUIRED
-                )
+                raise ParticipantRequestError(_SELECTION_RECOVERY_REQUIRED)
             participants = gate.queued.values()
             released = tuple(sorted({p.participant_id for p in participants}))
             self._open_participants(gate.required, epoch)
@@ -931,6 +928,7 @@ class ParticipantRegistry:
                 else attachments.matches_finalized(*arguments, authority)
             )
             if matched:
+                participant.prebootstrap_reachable = False
                 participant.attachment_ready_epoch = authority.epoch
                 installed.append(participant_id)
         return tuple(installed)
@@ -943,6 +941,7 @@ class ParticipantRegistry:
             if attachments.requires_endpoint(provider_id):
                 return attachments
         return None
+
     def _open_participants(
         self,
         participant_ids: Iterable[ParticipantId],
