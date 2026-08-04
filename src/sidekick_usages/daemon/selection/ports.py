@@ -34,6 +34,7 @@ from sidekick_usages.daemon.selection.models import (
     TurnAdmission,
     TurnBeginRequest,
     TurnEndRequest,
+    TurnResumeRequest,
 )
 from sidekick_usages.persistence.models.selection import (
     SelectionOperationDocument,
@@ -245,10 +246,10 @@ class ParticipantControlPort(Protocol):
 
     def begin_turn(
         self,
-        request: TurnBeginRequest,
+        request: TurnBeginRequest | TurnResumeRequest,
         peer: ProcessIdentity,
     ) -> TurnAdmission:
-        """Admit or queue one exact participant turn."""
+        """Admit, queue, or reconstruct one participant turn."""
 
     def end_turn(
         self,

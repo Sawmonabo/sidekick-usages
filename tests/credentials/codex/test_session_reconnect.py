@@ -17,10 +17,12 @@ from tests.fakes.codex.broker.supervisor import FakeCodexSupervisor
 from tests.support.platform import REQUIRES_MANAGED_RUNTIME
 
 pytestmark = REQUIRES_MANAGED_RUNTIME
+_ACTIVE_TURN_REQUEST_ID = 2
 _QUEUED_TURN_REQUEST_ID = 3
+_RECONNECTED_TURN_COUNT = 2
 
 
-def test_session_reattaches_and_releases_one_queued_turn(
+def test_session_reattaches_active_turn_and_releases_queued_turn(
     tmp_path: Path,
     short_socket_root: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -65,7 +67,13 @@ def test_session_reattaches_and_releases_one_queued_turn(
                 {"threadId": "thread-reconnect"},
             )
             assert tui.receive().get("id") == 1
-            tui.assert_turn_completed(2, "thread-reconnect")
+            daemon.pause_next_turn()
+            tui.send_request(
+                _ACTIVE_TURN_REQUEST_ID,
+                "turn/start",
+                {"input": [], "threadId": "thread-reconnect"},
+            )
+            daemon.wait_for_paused_turn()
             starts_before = daemon.relay_start_request_ids
 
         tui.send_request(
@@ -83,20 +91,29 @@ def test_session_reattaches_and_releases_one_queued_turn(
             real_worker_executable(),
         ) as restarted:
             restarted.wait_until_ready()
-            response_seen = False
-            completion_seen = False
-            while not (response_seen and completion_seen):
+            restarted.wait_for_codex_participants(1, 2)
+            daemon.resume_turn()
+            responses: set[int] = set()
+            completions = 0
+            while (
+                len(responses) < _RECONNECTED_TURN_COUNT
+                or completions < _RECONNECTED_TURN_COUNT
+            ):
                 message = tui.receive()
-                response_seen = response_seen or (
-                    message.get("id") == _QUEUED_TURN_REQUEST_ID
-                )
-                completion_seen = completion_seen or (
-                    message.get("method") == "turn/completed"
-                )
+                request_id = message.get("id")
+                if request_id in {
+                    _ACTIVE_TURN_REQUEST_ID,
+                    _QUEUED_TURN_REQUEST_ID,
+                }:
+                    assert isinstance(request_id, int)
+                    responses.add(request_id)
+                if message.get("method") == "turn/completed":
+                    completions += 1
             assert daemon.relay_start_request_ids == (
                 *starts_before,
                 _QUEUED_TURN_REQUEST_ID,
             )
+            restarted.wait_for_codex_participants(1, 0)
 
         tui.close()
         session.close()

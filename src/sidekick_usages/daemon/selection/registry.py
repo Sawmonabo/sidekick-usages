@@ -19,12 +19,9 @@ from sidekick_usages.core.selection.models import (
 from sidekick_usages.core.selection.types import (
     ParticipantId,
     SelectionCode,
-    TurnId,
 )
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.daemon.selection.models import (
-    MAX_ACTIVE_TURNS_PER_PROVIDER,
-    MAX_PENDING_BEGINS_PER_PROVIDER,
     ParticipantAdoptionProof,
     ParticipantAdoptionRequest,
     ParticipantConnectionRequest,
@@ -37,9 +34,9 @@ from sidekick_usages.daemon.selection.models import (
     ParticipantRequestError,
     ParticipantSnapshot,
     TurnAdmission,
-    TurnAdmissionState,
     TurnBeginRequest,
     TurnEndRequest,
+    TurnResumeRequest,
 )
 from sidekick_usages.daemon.selection.ports import (
     FinalizedSelectionStore,
@@ -62,15 +59,14 @@ from sidekick_usages.daemon.selection.projection import (
     require_membership_bound,
     require_prunable_dead,
     require_reconnect,
-    require_selected,
     required_target_prepared,
     restored_gate_membership,
     snapshot_ready_resolved,
 )
+from sidekick_usages.daemon.selection.turns import ParticipantTurnRegistry
 from sidekick_usages.platform.models import ProcessIdentity
 
 MAX_RETAINED_PARTICIPANT_NOTICES = 256
-_ACTIVE_OPERATION_TIMEOUT = SelectionCode.ACTIVE_OPERATION_TIMEOUT
 _AUTHORITY_PROOF_FAILED = SelectionCode.AUTHORITY_PROOF_FAILED
 _PARTICIPANT_UNREACHABLE = SelectionCode.PARTICIPANT_UNREACHABLE
 _SELECTION_RECOVERY_REQUIRED = SelectionCode.SELECTION_RECOVERY_REQUIRED
@@ -90,7 +86,7 @@ class ParticipantRegistry:
         self._condition = Condition()
         self._participants: dict[ParticipantId, ParticipantRecord] = {}
         self._gates: dict[ProviderId, ProviderGate] = {}
-        self._turns: dict[TurnId, TurnAdmission] = {}
+        self._turns = ParticipantTurnRegistry()
         self._monotonic = monotonic
         self._notice_sequence = 0
         self._notices: deque[tuple[int, ParticipantNotice]] = deque(
@@ -229,6 +225,9 @@ class ParticipantRegistry:
                 if current is not None:
                     current.manifest = manifest
                     current.confirmed_dead = False
+                    current.reattachment_pending = (
+                        manifest.connection_generation > 1
+                    )
                     current.prebootstrap_reachable = False
                     current.attachment_ready_epoch = attachment_ready_epoch
                     current.ready_epoch = None
@@ -237,6 +236,9 @@ class ParticipantRegistry:
                         manifest,
                         peer,
                         registered_epoch,
+                        reattachment_pending=(
+                            manifest.connection_generation > 1
+                        ),
                         attachment_ready_epoch=attachment_ready_epoch,
                     )
                     self._participants[manifest.participant_id] = current
@@ -263,54 +265,23 @@ class ParticipantRegistry:
                 request.participant_id,
                 request.connection_generation,
             )
-            existing = self._turns.get(request.turn_id)
-            if existing is not None:
-                if existing.participant_id != request.participant_id:
-                    raise ParticipantRequestError(_AUTHORITY_PROOF_FAILED)
-                return existing
             provider_id = participant.manifest.provider_id
             gate = self._gates.get(provider_id)
-            if gate is not None:
-                existing_request = gate.queued.get(request.turn_id)
-                if (
-                    existing_request is not None
-                    and existing_request != request
-                ):
-                    raise ParticipantRequestError(_AUTHORITY_PROOF_FAILED)
-                if (
-                    existing_request is None
-                    and len(gate.queued) >= MAX_PENDING_BEGINS_PER_PROVIDER
-                ):
-                    raise ParticipantRequestError(_ACTIVE_OPERATION_TIMEOUT)
-                gate.queued[request.turn_id] = request
-                return TurnAdmission(
-                    participant_id=request.participant_id,
-                    turn_id=request.turn_id,
-                    state=TurnAdmissionState.QUEUED,
-                    epoch=None,
-                    account_id=None,
-                    generation=None,
-                )
-            selected = require_selected(self._selected.load(provider_id))
-            if self.requires_attachment(provider_id) and (
-                participant.attachment_ready_epoch != selected.epoch
-            ):
-                raise ParticipantRequestError(_SELECTION_RECOVERY_REQUIRED)
-            if (
-                self._snapshot(provider_id).active_turn_count
-                >= MAX_ACTIVE_TURNS_PER_PROVIDER
-            ):
-                raise ParticipantRequestError(_ACTIVE_OPERATION_TIMEOUT)
-            admission = TurnAdmission(
-                participant_id=request.participant_id,
-                turn_id=request.turn_id,
-                state=TurnAdmissionState.ADMITTED,
-                epoch=selected.epoch,
-                account_id=selected.account_id,
-                generation=selected.generation,
+            selected = self._selected.load(provider_id)
+            return self._turns.begin(
+                request,
+                gate,
+                selected,
+                attachment_ready=(
+                    not self.requires_attachment(provider_id)
+                    or participant.attachment_ready_epoch == selected.epoch
+                    if selected is not None
+                    else False
+                ),
+                active_turn_count=self._snapshot(
+                    provider_id
+                ).active_turn_count,
             )
-            self._turns[request.turn_id] = admission
-            return admission
 
     def require_peer(
         self,
@@ -327,6 +298,22 @@ class ParticipantRegistry:
             if participant.process_identity != peer:
                 raise ParticipantRequestError(_PARTICIPANT_UNREACHABLE)
             return participant.manifest.provider_id
+
+    def resume_turn(self, request: TurnResumeRequest) -> TurnAdmission:
+        """Reconstruct one exact old turn after participant reconnect."""
+        with self._condition:
+            participant = self._require_connection(
+                request.participant_id,
+                request.connection_generation,
+            )
+            provider_id = participant.manifest.provider_id
+            admission = self._turns.resume(
+                request,
+                self._selected.load(provider_id),
+                self._snapshot(provider_id).active_turn_count,
+            )
+            self._condition.notify_all()
+            return admission
 
     def record_prebootstrap_proof(
         self,
@@ -351,12 +338,7 @@ class ParticipantRegistry:
                 request.participant_id,
                 request.connection_generation,
             )
-            admission = self._turns.get(request.turn_id)
-            if admission is None:
-                return
-            if admission.participant_id != request.participant_id:
-                raise ParticipantRequestError(_AUTHORITY_PROOF_FAILED)
-            self._turns.pop(request.turn_id)
+            self._turns.end(request)
             self._condition.notify_all()
 
     def close_admission(
@@ -558,11 +540,7 @@ class ParticipantRegistry:
             participant.attachment_ready_epoch = None
             participant.confirmed_dead = True
             participant.ready_epoch = None
-            self._turns = {
-                turn_id: admission
-                for turn_id, admission in self._turns.items()
-                if admission.participant_id != participant_id
-            }
+            self._turns.remove_participant(participant_id)
             gate = self._gates.get(participant.manifest.provider_id)
             if gate is None or participant_id not in gate.required:
                 self._participants.pop(participant_id)
@@ -640,6 +618,7 @@ class ParticipantRegistry:
             cursor = self._notice_sequence
             initial = current_notice()
             participant.connected = True
+            participant.reattachment_pending = False
             participant.prebootstrap_reachable = False
             self._condition.notify_all()
         try:
@@ -740,9 +719,14 @@ class ParticipantRegistry:
         """Wait without polling until every admitted provider turn ends."""
         with self._condition:
             return self._wait_until(
-                lambda: self._snapshot(provider_id).active_turn_count == 0,
+                lambda: self._old_turns_resolved(provider_id),
                 timeout_seconds,
             )
+
+    def old_turns_resolved(self, provider_id: ProviderId) -> bool:
+        """Return whether admitted and reconnecting old work is resolved."""
+        with self._condition:
+            return self._old_turns_resolved(provider_id)
 
     def wait_for_ready(
         self,
@@ -862,9 +846,17 @@ class ParticipantRegistry:
         return project_snapshot(
             provider_id,
             self._participants,
-            self._turns,
+            self._turns.values(),
             gate,
             self._selected.load(provider_id),
+        )
+
+    def _old_turns_resolved(self, provider_id: ProviderId) -> bool:
+        return self._snapshot(provider_id).active_turn_count == 0 and not any(
+            participant.manifest.provider_id is provider_id
+            and participant.reattachment_pending
+            and not participant.confirmed_dead
+            for participant in self._participants.values()
         )
 
     def _wait_unsealed(self, provider_id: ProviderId) -> None:

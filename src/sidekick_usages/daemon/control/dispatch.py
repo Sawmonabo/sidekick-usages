@@ -48,6 +48,7 @@ from sidekick_usages.daemon.selection.models import (
     SelectionStatus,
     TurnBeginRequest,
     TurnEndRequest,
+    TurnResumeRequest,
 )
 from sidekick_usages.daemon.selection.ports import SelectionSupervisorPort
 from sidekick_usages.daemon.types.control import ControlFailurePhase
@@ -76,6 +77,7 @@ _PARTICIPANT_REQUEST_KINDS = frozenset(
         RequestKind.PARTICIPANT_SUBSCRIBE,
         RequestKind.TURN_BEGIN,
         RequestKind.TURN_END,
+        RequestKind.TURN_RESUME,
         RequestKind.PARTICIPANT_READY,
         RequestKind.PARTICIPANT_ADOPT,
     }
@@ -286,6 +288,7 @@ class SupervisorDispatcher:
             RequestKind.PARTICIPANT_SUBSCRIBE,
             RequestKind.TURN_BEGIN,
             RequestKind.TURN_END,
+            RequestKind.TURN_RESUME,
             RequestKind.PARTICIPANT_READY,
             RequestKind.PARTICIPANT_ADOPT,
             RequestKind.SELECT_ACCOUNT,
@@ -461,7 +464,7 @@ class SupervisorDispatcher:
         peer: ProcessIdentity,
     ) -> ControlEvent:
         payload = request.payload
-        if isinstance(payload, TurnBeginRequest):
+        if isinstance(payload, (TurnBeginRequest, TurnResumeRequest)):
             return self._event(
                 request,
                 EventKind.TURN_ADMISSION,

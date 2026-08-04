@@ -1,5 +1,6 @@
 """Pure validation and projection for participant registry state."""
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 
@@ -42,6 +43,7 @@ class ParticipantRecord:
     process_identity: ProcessIdentity
     registered_epoch: SelectionEpoch
     connected: bool = False
+    reattachment_pending: bool = False
     prebootstrap_reachable: bool = False
     confirmed_dead: bool = False
     attachment_ready_epoch: SelectionEpoch | None = None
@@ -317,7 +319,7 @@ def require_reconnect(
 def project_snapshot(
     provider_id: ProviderId,
     participants: dict[ParticipantId, ParticipantRecord],
-    turns: dict[TurnId, TurnAdmission],
+    turns: Iterable[TurnAdmission],
     gate: ProviderGate | None,
     finalized: FinalizedSelection | None,
 ) -> ParticipantSnapshot:
@@ -377,7 +379,7 @@ def project_snapshot(
     }
     active_turn_count = sum(
         participants[turn.participant_id].manifest.provider_id is provider_id
-        for turn in turns.values()
+        for turn in turns
     )
     return ParticipantSnapshot(
         provider_id=provider_id,

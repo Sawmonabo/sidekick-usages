@@ -22,6 +22,7 @@ from sidekick_usages.providers.codex.broker.responder import (
     CODEX_CALLBACK_RESPONSE_SECONDS,
 )
 from sidekick_usages.serialization.json import JsonObject, decode_json_object
+from tests.fakes.codex.app_server.barrier import FakeCodexBarrier
 from tests.fakes.codex.app_server.models import FakeCodexRefreshResponse
 from tests.fakes.codex.app_server.session import (
     FakeCodexSession,
@@ -90,10 +91,14 @@ class FakeCodexDaemon:
         self._refresh_event: Event | None = None
         self._refresh_request_id: int | None = None
         self._refresh_response: FakeCodexRefreshResponse | None = None
-        self._pause_install = False
-        self._install_paused = Event()
-        self._resume_install = Event()
-        self._install_resumed = Event()
+        self._install_barrier = FakeCodexBarrier(
+            "install",
+            _INSTALL_HANDSHAKE_TIMEOUT_SECONDS,
+        )
+        self._turn_barrier = FakeCodexBarrier(
+            "turn",
+            _INSTALL_HANDSHAKE_TIMEOUT_SECONDS,
+        )
         self._failures: list[BaseException] = []
         self._mcp_reload_count = 0
         self._suppress_next_mcp_reload_status = False
@@ -225,24 +230,27 @@ class FakeCodexDaemon:
 
     def pause_next_install(self) -> None:
         """Pause once after official mutation and before account read."""
-        with self._lock:
-            if self._pause_install:
-                raise AssertionError("Fake Codex install is already paused.")
-            self._pause_install = True
-            self._install_paused.clear()
-            self._resume_install.clear()
-            self._install_resumed.clear()
+        self._install_barrier.arm()
 
     def wait_for_paused_install(self) -> None:
         """Wait until the one-shot install boundary is reached."""
-        if not self._install_paused.wait(_INSTALL_HANDSHAKE_TIMEOUT_SECONDS):
-            raise AssertionError("Fake Codex install did not pause.")
+        self._install_barrier.wait()
 
     def resume_install(self) -> None:
         """Release the one-shot install boundary."""
-        self._resume_install.set()
-        if not self._install_resumed.wait(_INSTALL_HANDSHAKE_TIMEOUT_SECONDS):
-            raise AssertionError("Fake Codex install did not resume.")
+        self._install_barrier.release()
+
+    def pause_next_turn(self) -> None:
+        """Pause one provider turn before its response."""
+        self._turn_barrier.arm()
+
+    def wait_for_paused_turn(self) -> None:
+        """Wait until the one-shot turn boundary is reached."""
+        self._turn_barrier.wait()
+
+    def resume_turn(self) -> None:
+        """Release the one-shot provider turn boundary."""
+        self._turn_barrier.release()
 
     def perform_external_login(
         self,
@@ -410,6 +418,8 @@ class FakeCodexDaemon:
         thread.start()
 
     def _stop(self) -> None:
+        self._install_barrier.cancel()
+        self._turn_barrier.cancel()
         server = self._server
         thread = self._thread
         if server is None:
@@ -543,6 +553,7 @@ class FakeCodexDaemon:
         with self._lock:
             self._relay_start_request_ids.append(request_id)
             self._loaded_threads.setdefault(connection, set()).add(thread_id)
+        self._turn_barrier.arrive()
         if realtime:
             send_fake_codex_message(
                 connection,
@@ -831,16 +842,7 @@ class FakeCodexDaemon:
                 },
             }
         )
-        with self._lock:
-            pause_install = self._pause_install
-            self._pause_install = False
-        if pause_install:
-            self._install_paused.set()
-            if not self._resume_install.wait(
-                _INSTALL_HANDSHAKE_TIMEOUT_SECONDS
-            ):
-                raise AssertionError("Fake Codex install was not resumed.")
-            self._install_resumed.set()
+        self._install_barrier.arrive()
 
     def _record_external_auth(
         self,

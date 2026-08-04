@@ -154,6 +154,22 @@ class ParticipantControl:
             )
             self._completed(events)
 
+    def resume(self, admission: TurnAdmission) -> TurnAdmission:
+        """Reconstruct one exact admission after control reconnect."""
+        if admission.participant_id != self._manifest.participant_id:
+            self._fail(SelectionCode.AUTHORITY_PROOF_FAILED)
+        with self._lock:
+            payload = self._payload(
+                self._action_client.resume_turn(
+                    self._manifest.connection_generation,
+                    admission,
+                ),
+                EventKind.TURN_ADMISSION,
+            )
+        if not isinstance(payload, TurnAdmission) or payload != admission:
+            self._fail(SelectionCode.AUTHORITY_PROOF_FAILED)
+        return payload
+
     def ready(self, proof: ParticipantReadyProof) -> None:
         """Publish readiness after provider-local installation."""
         with self._lock:

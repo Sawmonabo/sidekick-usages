@@ -23,6 +23,7 @@ from sidekick_usages.daemon.selection.models import (
     TurnAdmission,
     TurnBeginRequest,
     TurnEndRequest,
+    TurnResumeRequest,
 )
 from sidekick_usages.daemon.types.protocol import (
     MAX_PROTOCOL_VERSION,
@@ -46,6 +47,7 @@ type RequestPayload = (
     | ParticipantConnectionRequest
     | TurnBeginRequest
     | TurnEndRequest
+    | TurnResumeRequest
     | ParticipantReadyRequest
     | ParticipantAdoptionRequest
 )
@@ -239,6 +241,7 @@ def _require_request_payload(
         RequestKind.PARTICIPANT_SUBSCRIBE: ParticipantConnectionRequest,
         RequestKind.TURN_BEGIN: TurnBeginRequest,
         RequestKind.TURN_END: TurnEndRequest,
+        RequestKind.TURN_RESUME: TurnResumeRequest,
         RequestKind.PARTICIPANT_READY: ParticipantReadyRequest,
         RequestKind.PARTICIPANT_ADOPT: ParticipantAdoptionRequest,
         RequestKind.SELECT_ACCOUNT: AccountPayload,

@@ -43,6 +43,7 @@ from sidekick_usages.daemon.selection.models import (
     TurnAdmission,
     TurnBeginRequest,
     TurnEndRequest,
+    TurnResumeRequest,
 )
 from sidekick_usages.daemon.selection.ports import (
     FinalizedSelectionStore,
@@ -150,15 +151,17 @@ class SelectionCoordinator:
 
     def begin_turn(
         self,
-        request: TurnBeginRequest,
+        request: TurnBeginRequest | TurnResumeRequest,
         peer: ProcessIdentity,
     ) -> TurnAdmission:
-        """Admit or queue one turn for its exact registered process."""
+        """Admit, queue, or reconstruct one exact participant turn."""
         self._participants.require_peer(
             request.participant_id,
             request.connection_generation,
             peer,
         )
+        if isinstance(request, TurnResumeRequest):
+            return self._participants.resume_turn(request)
         return self._participants.begin_turn(request)
 
     def end_turn(
@@ -671,7 +674,7 @@ class SelectionCoordinator:
             self._old_turn_timeout,
         ):
             self._reconcile_unresolved(provider_id)
-            if self._participants.snapshot(provider_id).active_turn_count:
+            if not self._participants.old_turns_resolved(provider_id):
                 return self._fail_old_epoch(operation)
         self.reconcile_disconnected(provider_id)
         if self._participants.snapshot(

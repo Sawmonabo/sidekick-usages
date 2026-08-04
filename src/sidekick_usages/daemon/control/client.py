@@ -53,8 +53,10 @@ from sidekick_usages.daemon.selection.models import (
     ParticipantReadyProof,
     ParticipantReadyRequest,
     SelectionStatus,
+    TurnAdmission,
     TurnBeginRequest,
     TurnEndRequest,
+    TurnResumeRequest,
 )
 from sidekick_usages.daemon.types.lifecycle import ServiceComponentState
 from sidekick_usages.daemon.types.protocol import (
@@ -378,6 +380,64 @@ def _terminal_payload(
     )
 
 
+class ControlConnectionAttempt:
+    """Own one cancellable Unix connection before client publication."""
+
+    def __init__(self) -> None:
+        if sys.platform == "win32" or not hasattr(socket, "AF_UNIX"):
+            raise ServiceCompatibilityError(ProtocolErrorCode.FEATURE_DISABLED)
+        self._connection: socket.socket | None = socket.socket(
+            socket.AF_UNIX,
+            socket.SOCK_STREAM,
+        )
+
+    def connect(
+        self,
+        socket_path: Path,
+        *,
+        package_version: str = __version__,
+        connect_timeout_seconds: float = _LOCAL_RESPONSE_TIMEOUT_SECONDS,
+        response_timeout_seconds: float = _LOCAL_RESPONSE_TIMEOUT_SECONDS,
+        action_timeout_seconds: float | None = (
+            CONTROL_ACTION_TIMEOUT_SECONDS
+        ),
+    ) -> ControlClient:
+        """Connect the retained socket and return its control client."""
+        connection = self._connection
+        if connection is None:
+            raise ConnectionError("The control connection attempt is closed.")
+        endpoint_state = control_endpoint_state(
+            socket_path.parent,
+            socket_path,
+        )
+        if endpoint_state is ServiceComponentState.ABSENT:
+            raise FileNotFoundError(socket_path)
+        if endpoint_state is not ServiceComponentState.HEALTHY:
+            raise PermissionError("unsafe_control_endpoint")
+        connection.settimeout(connect_timeout_seconds)
+        connection.connect(str(socket_path))
+        OperatingSystemPeerVerifier().verify(connection)
+        return ControlClient(
+            connection,
+            package_version=package_version,
+            response_timeout_seconds=response_timeout_seconds,
+            action_timeout_seconds=action_timeout_seconds,
+        )
+
+    def release(self) -> None:
+        """Transfer the connected socket into its published client."""
+        if self._connection is None:
+            raise RuntimeError("The control connection is not owned.")
+        self._connection = None
+
+    def close(self) -> None:
+        """Cancel a pending connect or close an unpublished client socket."""
+        connection = self._connection
+        self._connection = None
+        if connection is not None:
+            connection.close()
+
+
 class ControlClient:
     """One phase-bounded connection to the resident per-user supervisor."""
 
@@ -421,30 +481,19 @@ class ControlClient:
         :raises ServiceCompatibilityError: On native Windows.
         :raises OSError: If the local service cannot be reached.
         """
-        if sys.platform == "win32" or not hasattr(socket, "AF_UNIX"):
-            raise ServiceCompatibilityError(ProtocolErrorCode.FEATURE_DISABLED)
-        connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        attempt = ControlConnectionAttempt()
         try:
-            endpoint_state = control_endpoint_state(
-                socket_path.parent,
+            client = attempt.connect(
                 socket_path,
-            )
-            if endpoint_state is ServiceComponentState.ABSENT:
-                raise FileNotFoundError(socket_path)
-            if endpoint_state is not ServiceComponentState.HEALTHY:
-                raise PermissionError("unsafe_control_endpoint")
-            connection.settimeout(connect_timeout_seconds)
-            connection.connect(str(socket_path))
-            OperatingSystemPeerVerifier().verify(connection)
-            return cls(
-                connection,
                 package_version=package_version,
+                connect_timeout_seconds=connect_timeout_seconds,
                 response_timeout_seconds=response_timeout_seconds,
                 action_timeout_seconds=action_timeout_seconds,
             )
-        except OSError, ValueError:
-            connection.close()
-            raise
+            attempt.release()
+            return client
+        finally:
+            attempt.close()
 
     def handshake(self) -> AcceptedPayload:
         """Negotiate exact protocol and package compatibility once."""
@@ -568,6 +617,21 @@ class ControlClient:
                 participant_id,
                 connection_generation,
                 turn_id,
+            ),
+        )
+
+    def resume_turn(
+        self,
+        connection_generation: int,
+        admission: TurnAdmission,
+    ) -> Generator[ControlEvent]:
+        """Reconstruct one admitted turn after participant reconnect."""
+        return self.request(
+            RequestKind.TURN_RESUME,
+            TurnResumeRequest(
+                participant_id=admission.participant_id,
+                connection_generation=connection_generation,
+                admission=admission,
             ),
         )
 

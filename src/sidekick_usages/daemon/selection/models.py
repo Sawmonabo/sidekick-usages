@@ -172,6 +172,34 @@ class TurnAdmission:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class TurnResumeRequest:
+    """Reconstruct one exact admitted turn after control reconnect."""
+
+    participant_id: ParticipantId
+    connection_generation: int
+    admission: TurnAdmission
+
+    def __post_init__(self) -> None:
+        """Require a newer connection and exact admitted ownership."""
+        _require_generation(self.connection_generation)
+        if self.connection_generation <= 1:
+            raise ValueError("Turn resume requires a newer connection.")
+        if (
+            self.admission.state is not TurnAdmissionState.ADMITTED
+            or self.admission.participant_id != self.participant_id
+            or any(
+                value is None
+                for value in (
+                    self.admission.account_id,
+                    self.admission.generation,
+                    self.admission.epoch,
+                )
+            )
+        ):
+            raise ValueError("Turn resume requires exact admitted authority.")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class ParticipantReadyProof:
     """Proof that one participant can bind its next turn to an epoch."""
 

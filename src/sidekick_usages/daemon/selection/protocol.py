@@ -34,6 +34,7 @@ from sidekick_usages.daemon.selection.models import (
     TurnAdmissionState,
     TurnBeginRequest,
     TurnEndRequest,
+    TurnResumeRequest,
 )
 from sidekick_usages.daemon.types.protocol import EventKind, RequestKind
 from sidekick_usages.persistence.errors import InvalidSchemaError
@@ -62,6 +63,16 @@ def encode_selection_request(payload: RequestPayload) -> JsonValue:
         }
     if isinstance(payload, ParticipantConnectionRequest):
         return _connection_json(payload)
+    if isinstance(payload, TurnResumeRequest):
+        admission = payload.admission
+        return {
+            **_connection_json(payload),
+            "account_id": _optional_account(admission.account_id),
+            "authority_generation": _optional_authority(admission.generation),
+            "epoch": _optional_epoch(admission.epoch),
+            "state": admission.state.value,
+            "turn_id": str(admission.turn_id),
+        }
     if isinstance(payload, (TurnBeginRequest, TurnEndRequest)):
         return {
             **_connection_json(payload),
@@ -127,19 +138,12 @@ def _decode_selection_request(
             _participant(root),
             _generation(root),
         )
-    if kind in {RequestKind.TURN_BEGIN, RequestKind.TURN_END}:
-        require_exact_keys(
-            root,
-            {"connection_generation", "participant_id", "turn_id"},
-        )
-        values = (
-            _participant(root),
-            _generation(root),
-            TurnId(require_string(root["turn_id"])),
-        )
-        if kind is RequestKind.TURN_BEGIN:
-            return TurnBeginRequest(*values)
-        return TurnEndRequest(*values)
+    if kind in {
+        RequestKind.TURN_BEGIN,
+        RequestKind.TURN_END,
+        RequestKind.TURN_RESUME,
+    }:
+        return _decode_turn_request(kind, root)
     if kind is RequestKind.PARTICIPANT_READY:
         require_exact_keys(
             root,
@@ -183,6 +187,50 @@ def _decode_selection_request(
             ),
         )
     raise TypeError("Request kind is not selection-owned.")
+
+
+def _decode_turn_request(
+    kind: RequestKind,
+    root: JsonObject,
+) -> TurnBeginRequest | TurnEndRequest | TurnResumeRequest:
+    if kind is RequestKind.TURN_RESUME:
+        require_exact_keys(
+            root,
+            {
+                "account_id",
+                "authority_generation",
+                "connection_generation",
+                "epoch",
+                "participant_id",
+                "state",
+                "turn_id",
+            },
+        )
+        participant_id = _participant(root)
+        return TurnResumeRequest(
+            participant_id=participant_id,
+            connection_generation=_generation(root),
+            admission=TurnAdmission(
+                participant_id=participant_id,
+                turn_id=TurnId(require_string(root["turn_id"])),
+                state=TurnAdmissionState(require_string(root["state"])),
+                epoch=SelectionEpoch(require_integer(root["epoch"])),
+                account_id=_account(root["account_id"]),
+                generation=_authority(root["authority_generation"]),
+            ),
+        )
+    require_exact_keys(
+        root,
+        {"connection_generation", "participant_id", "turn_id"},
+    )
+    values = (
+        _participant(root),
+        _generation(root),
+        TurnId(require_string(root["turn_id"])),
+    )
+    if kind is RequestKind.TURN_BEGIN:
+        return TurnBeginRequest(*values)
+    return TurnEndRequest(*values)
 
 
 def encode_selection_event(payload: EventPayload) -> JsonValue:
@@ -460,6 +508,7 @@ def _connection_json(
         ParticipantConnectionRequest
         | TurnBeginRequest
         | TurnEndRequest
+        | TurnResumeRequest
         | ParticipantReadyRequest
         | ParticipantAdoptionRequest
     ),

@@ -207,10 +207,11 @@ class _RelayControl:
             authority=authority,
         )
 
-    def recheck(self, admission: CodexRelayAdmission) -> None:
+    def recheck(self, admission: CodexRelayAdmission) -> bool:
         with self._condition:
             if not self._open or admission.authority != self._authority:
                 raise AssertionError("Relay admission was not rechecked.")
+        return True
 
     def end(self, turn_id: TurnId) -> None:
         with self._condition:

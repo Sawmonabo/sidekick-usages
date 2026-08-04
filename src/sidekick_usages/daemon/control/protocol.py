@@ -457,6 +457,7 @@ def _decode_request_payload(
         RequestKind.PARTICIPANT_SUBSCRIBE,
         RequestKind.TURN_BEGIN,
         RequestKind.TURN_END,
+        RequestKind.TURN_RESUME,
         RequestKind.PARTICIPANT_READY,
         RequestKind.PARTICIPANT_ADOPT,
     }:

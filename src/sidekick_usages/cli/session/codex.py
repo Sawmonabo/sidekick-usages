@@ -1,5 +1,6 @@
 """Complete CLI ownership of one coordinated stock Codex TUI."""
 
+import errno
 import os
 import socket
 import stat
@@ -23,6 +24,9 @@ from sidekick_usages.core.selection.types import (
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.daemon.control.client import (
     ControlClient,
+    ControlConnectionAttempt,
+    ServiceCompatibilityError,
+    UnexpectedServiceEventError,
 )
 from sidekick_usages.daemon.control.protocol import (
     ConnectionClosedError,
@@ -52,20 +56,83 @@ from sidekick_usages.providers.codex.session.models import (
 )
 from sidekick_usages.providers.codex.session.quiescence import (
     CodexParticipantProofChannel,
-    CodexParticipantProofError,
 )
 from sidekick_usages.providers.codex.session.relay import CodexAdmissionRelay
 
 _CONNECTION_GENERATION = 1
 _NOTICE_THREAD_JOIN_SECONDS = 1.0
 _PRIVATE_DIRECTORY_MODE = 0o700
-_CODEX_REATTACH_ERRORS = (
-    CodexParticipantProofError,
-    CodexRelayError,
-    ConnectionClosedError,
-    OSError,
-    SessionParticipantError,
+_REATTACH_CONNECT_TIMEOUT_SECONDS = 0.5
+_CODEX_UNAVAILABLE_ERRNOS = frozenset(
+    {
+        errno.ECONNABORTED,
+        errno.ECONNREFUSED,
+        errno.ECONNRESET,
+        errno.ENOENT,
+        errno.ENOTCONN,
+        errno.EPIPE,
+        errno.ETIMEDOUT,
+    }
 )
+_CODEX_CONNECTION_ERRORS = (
+    BrokenPipeError,
+    ConnectionAbortedError,
+    ConnectionClosedError,
+    ConnectionRefusedError,
+    ConnectionResetError,
+    FileNotFoundError,
+    TimeoutError,
+)
+
+
+def _codex_control_unavailable(error: BaseException) -> bool:
+    """Return whether one failure proves only local control absence."""
+    if isinstance(
+        error,
+        (ServiceCompatibilityError, UnexpectedServiceEventError),
+    ):
+        return False
+    if isinstance(error, _CODEX_CONNECTION_ERRORS):
+        return True
+    return (
+        isinstance(error, OSError) and error.errno in _CODEX_UNAVAILABLE_ERRNOS
+    )
+
+
+class _CodexAttachmentAttempt:
+    """Own one unpublished reconnect attempt for cancellable shutdown."""
+
+    def __init__(self) -> None:
+        self.action_attempt: ControlConnectionAttempt | None = None
+        self.action_client: ControlClient | None = None
+        self.control: ParticipantControl | None = None
+        self.proof_channel: CodexParticipantProofChannel | None = None
+        self.subscription_attempt: ControlConnectionAttempt | None = None
+        self.subscription_client: ControlClient | None = None
+        self.supervisor_endpoint: socket.socket | None = None
+
+    def close(self) -> None:
+        """Close every resource not transferred to the live runtime."""
+        resources = (
+            self.supervisor_endpoint,
+            self.proof_channel,
+            self.control,
+            self.subscription_client,
+            self.subscription_attempt,
+            self.action_client,
+            self.action_attempt,
+        )
+        self.action_attempt = None
+        self.action_client = None
+        self.supervisor_endpoint = None
+        self.proof_channel = None
+        self.subscription_attempt = None
+        self.subscription_client = None
+        self.control = None
+        for resource in resources:
+            if resource is not None:
+                with suppress(Exception):
+                    resource.close()
 
 
 class _CodexParticipantControl:
@@ -79,7 +146,9 @@ class _CodexParticipantControl:
         self._lock = RLock()
         self._control: ParticipantControl | None = control
         self._connection_generation = connection_generation
-        self._turn_generations: dict[TurnId, int] = {}
+        self._turn_admissions: dict[TurnId, TurnAdmission] = {}
+        self._active_turns: set[TurnId] = set()
+        self._completed_turns: set[TurnId] = set()
 
     def replace(
         self,
@@ -90,12 +159,24 @@ class _CodexParticipantControl:
         with self._lock:
             if connection_generation <= self._connection_generation:
                 raise CodexRelayError(SelectionCode.AUTHORITY_PROOF_FAILED)
+            self._resume_turns(control)
             previous = self._control
             self._control = control
             self._connection_generation = connection_generation
         if previous is not None:
             with suppress(Exception):
                 previous.close()
+
+    def prepare_replacement(
+        self,
+        control: ParticipantControl,
+        connection_generation: int,
+    ) -> None:
+        """Reconstruct old leases before publishing a new subscription."""
+        with self._lock:
+            if connection_generation <= self._connection_generation:
+                raise CodexRelayError(SelectionCode.AUTHORITY_PROOF_FAILED)
+            self._resume_turns(control)
 
     def disconnect(self, connection_generation: int) -> None:
         """Detach only the failed connection generation."""
@@ -104,52 +185,84 @@ class _CodexParticipantControl:
                 return
             previous = self._control
             self._control = None
+            staged = set(self._turn_admissions).difference(
+                self._active_turns,
+                self._completed_turns,
+            )
+            for turn_id in staged:
+                self._turn_admissions.pop(turn_id)
         if previous is not None:
             with suppress(Exception):
                 previous.close()
 
     def begin(self, turn_id: TurnId) -> CodexRelayAdmission:
         """Translate one exact supervisor turn admission."""
+        failed: ParticipantControl | None = None
         with self._lock:
             control = self._control
             if control is None:
-                return CodexRelayAdmission(
-                    turn_id=turn_id,
-                    state=CodexRelayAdmissionState.QUEUED,
-                    authority=None,
-                )
+                return self._queued_admission(turn_id)
             try:
                 admission = control.begin(turn_id)
             except SessionParticipantError as error:
                 raise CodexRelayError(error.code) from None
-            translated = self._translate_admission(turn_id, admission)
-            if translated.state is CodexRelayAdmissionState.ADMITTED:
-                self._turn_generations[turn_id] = self._connection_generation
-            return translated
+            except BaseException as error:
+                if not _codex_control_unavailable(error):
+                    raise
+                if self._control is control:
+                    self._control = None
+                    failed = control
+                admission = None
+            if admission is None:
+                translated = self._queued_admission(turn_id)
+            else:
+                translated = self._translate_admission(turn_id, admission)
+                if translated.state is CodexRelayAdmissionState.ADMITTED:
+                    self._turn_admissions[turn_id] = admission
+        if failed is not None:
+            with suppress(Exception):
+                failed.close()
+        return translated
 
-    def recheck(self, admission: CodexRelayAdmission) -> None:
+    def recheck(self, admission: CodexRelayAdmission) -> bool:
         """Require an idempotent admission immediately before transmission."""
-        if self.begin(admission.turn_id) != admission:
+        rechecked = self.begin(admission.turn_id)
+        if rechecked.state is CodexRelayAdmissionState.QUEUED:
+            with self._lock:
+                self._turn_admissions.pop(admission.turn_id, None)
+            return False
+        if rechecked != admission:
             raise CodexRelayError(SelectionCode.AUTHORITY_PROOF_FAILED)
+        with self._lock:
+            self._active_turns.add(admission.turn_id)
+        return True
 
     def end(self, turn_id: TurnId) -> None:
         """Close one naturally terminal exact turn lease."""
+        failed: ParticipantControl | None = None
         with self._lock:
-            turn_generation = self._turn_generations.get(turn_id)
-            if turn_generation is None:
+            if turn_id not in self._active_turns:
                 raise CodexRelayError(SelectionCode.AUTHORITY_PROOF_FAILED)
+            self._active_turns.remove(turn_id)
+            self._completed_turns.add(turn_id)
             control = self._control
-            if (
-                control is None
-                or turn_generation != self._connection_generation
-            ):
-                self._turn_generations.pop(turn_id)
+            if control is None:
                 return
             try:
                 control.end(turn_id)
             except SessionParticipantError as error:
                 raise CodexRelayError(error.code) from None
-            self._turn_generations.pop(turn_id)
+            except BaseException as error:
+                if not _codex_control_unavailable(error):
+                    raise
+                if self._control is control:
+                    self._control = None
+                    failed = control
+            else:
+                self._forget_turn(turn_id)
+        if failed is not None:
+            with suppress(Exception):
+                failed.close()
 
     def ready(self, target: CodexRelayAuthority) -> None:
         """Acknowledge one target only after provider-local readiness."""
@@ -189,8 +302,32 @@ class _CodexParticipantControl:
         with self._lock:
             control = self._control
             self._control = None
+            self._turn_admissions.clear()
+            self._active_turns.clear()
+            self._completed_turns.clear()
         if control is not None:
             control.close()
+
+    def _resume_turns(self, control: ParticipantControl) -> None:
+        for turn_id in tuple(sorted(self._turn_admissions.keys())):
+            admission = self._turn_admissions[turn_id]
+            try:
+                resumed = control.resume(admission)
+            except SessionParticipantError as error:
+                raise CodexRelayError(error.code) from None
+            if resumed != admission:
+                raise CodexRelayError(SelectionCode.AUTHORITY_PROOF_FAILED)
+            if turn_id in self._completed_turns:
+                try:
+                    control.end(turn_id)
+                except SessionParticipantError as error:
+                    raise CodexRelayError(error.code) from None
+                self._forget_turn(turn_id)
+
+    def _forget_turn(self, turn_id: TurnId) -> None:
+        self._turn_admissions.pop(turn_id, None)
+        self._active_turns.discard(turn_id)
+        self._completed_turns.discard(turn_id)
 
     def _require_control(self) -> ParticipantControl:
         control = self._control
@@ -225,6 +362,14 @@ class _CodexParticipantControl:
             ),
         )
 
+    @staticmethod
+    def _queued_admission(turn_id: TurnId) -> CodexRelayAdmission:
+        return CodexRelayAdmission(
+            turn_id=turn_id,
+            state=CodexRelayAdmissionState.QUEUED,
+            authority=None,
+        )
+
 
 class CodexSessionRuntime:
     """Own one qualified relay and registered participant lifetime."""
@@ -247,6 +392,7 @@ class CodexSessionRuntime:
         self._connection_generation = _CONNECTION_GENERATION
         self._closing = Event()
         self._state_lock = RLock()
+        self._attachment_attempt: _CodexAttachmentAttempt | None = None
         self._relay: CodexAdmissionRelay | None = None
         self._readiness_session: CodexDaemonSession | None = None
         self._participant: _CodexParticipantControl | None = None
@@ -366,6 +512,7 @@ class CodexSessionRuntime:
         failures: list[BaseException] = []
         with self._state_lock:
             resources = (
+                self._attachment_attempt,
                 self._participant,
                 self._proof_channel,
                 self._relay,
@@ -376,6 +523,7 @@ class CodexSessionRuntime:
             self._readiness_session = None
             self._participant = None
             self._proof_channel = None
+            self._attachment_attempt = None
             self._notice_thread = None
         for resource in resources:
             if resource is None:
@@ -413,22 +561,20 @@ class CodexSessionRuntime:
             try:
                 for notice in notices:
                     self._apply_notice(relay, proof_channel, notice)
-            except _CODEX_REATTACH_ERRORS:
-                pass
             except BaseException as error:
-                relay.refuse_admission(
-                    error.code
-                    if isinstance(error, CodexRelayError)
-                    else SelectionCode.SELECTION_RECOVERY_REQUIRED
-                )
-                relay.discard_quiescence()
-                return
+                if not _codex_control_unavailable(error):
+                    self._fail_reconnect(relay, error)
+                    return
             if self._closing.is_set():
                 return
             participant.disconnect(generation)
             proof_channel.close()
             relay.discard_quiescence()
-            replacement = self._reattach(participant, relay)
+            try:
+                replacement = self._reattach(participant, relay)
+            except BaseException as error:
+                self._fail_reconnect(relay, error)
+                return
             if replacement is None:
                 return
             notices, proof_channel, generation = replacement
@@ -449,7 +595,9 @@ class CodexSessionRuntime:
         while not self._closing.wait(participant_reattach_delay(attempt)):
             try:
                 return self._reattach_once(participant, relay)
-            except _CODEX_REATTACH_ERRORS:
+            except BaseException as error:
+                if not _codex_control_unavailable(error):
+                    raise
                 attempt += 1
         return None
 
@@ -463,30 +611,31 @@ class CodexSessionRuntime:
         int,
     ]:
         with self._state_lock:
+            if self._closing.is_set():
+                raise ConnectionClosedError(
+                    "The Codex participant is closing."
+                )
             self._connection_generation += 1
             generation = self._connection_generation
-        control: ParticipantControl | None = None
-        proof_channel: CodexParticipantProofChannel | None = None
-        supervisor_endpoint: socket.socket | None = None
+            if self._attachment_attempt is not None:
+                raise CodexRelayError(SelectionCode.AUTHORITY_PROOF_FAILED)
+            attempt = _CodexAttachmentAttempt()
+            self._attachment_attempt = attempt
         try:
-            control = self._connect_control(generation)
-            proof_channel, supervisor_endpoint = (
-                CodexParticipantProofChannel.create(FramedTransport)
+            control, proof_channel, notices, initial = self._connect_attempt(
+                attempt,
+                participant,
+                generation,
             )
-            self._register_control(control, supervisor_endpoint)
-            supervisor_endpoint = None
-            notices, initial = self._prepare_notices(control)
+            participant.replace(control, generation)
             with self._state_lock:
-                if self._closing.is_set():
-                    raise ConnectionClosedError(
-                        "The Codex participant is closing."
-                    )
+                self._retain_attempt(attempt)
                 previous_channel = self._proof_channel
-                participant.replace(control, generation)
-                control = None
                 self._proof_channel = proof_channel
+                attempt.control = None
+                attempt.proof_channel = None
+                self._attachment_attempt = None
                 active_channel = proof_channel
-                proof_channel = None
             if previous_channel is not None:
                 with suppress(Exception):
                     previous_channel.close()
@@ -501,12 +650,106 @@ class CodexSessionRuntime:
                 raise
             return notices, active_channel, generation
         finally:
-            if supervisor_endpoint is not None:
-                supervisor_endpoint.close()
-            if proof_channel is not None:
-                proof_channel.close()
-            if control is not None:
-                control.close()
+            with self._state_lock:
+                if self._attachment_attempt is attempt:
+                    self._attachment_attempt = None
+            attempt.close()
+
+    def _connect_attempt(
+        self,
+        attempt: _CodexAttachmentAttempt,
+        participant: _CodexParticipantControl,
+        generation: int,
+    ) -> tuple[
+        ParticipantControl,
+        CodexParticipantProofChannel,
+        Iterator[ParticipantNotice],
+        ParticipantNotice,
+    ]:
+        control = self._connect_replacement_control(attempt, generation)
+        proof_channel, supervisor_endpoint = (
+            CodexParticipantProofChannel.create(FramedTransport)
+        )
+        with self._state_lock:
+            attempt.proof_channel = proof_channel
+            attempt.supervisor_endpoint = supervisor_endpoint
+            self._retain_attempt(attempt)
+        self._register_control(control, supervisor_endpoint)
+        with self._state_lock:
+            self._retain_attempt(attempt)
+            attempt.supervisor_endpoint = None
+        participant.prepare_replacement(control, generation)
+        notices, initial = self._prepare_notices(control)
+        return control, proof_channel, notices, initial
+
+    def _connect_replacement_control(
+        self,
+        attempt: _CodexAttachmentAttempt,
+        generation: int,
+    ) -> ParticipantControl:
+        action = self._connect_attempt_client(attempt, subscription=False)
+        subscription = self._connect_attempt_client(
+            attempt,
+            subscription=True,
+        )
+        control = ParticipantControl(
+            action,
+            subscription,
+            self._participant_manifest(generation),
+        )
+        with self._state_lock:
+            attempt.control = control
+            self._retain_attempt(attempt)
+            attempt.action_client = None
+            attempt.subscription_client = None
+        return control
+
+    def _connect_attempt_client(
+        self,
+        attempt: _CodexAttachmentAttempt,
+        *,
+        subscription: bool,
+    ) -> ControlClient:
+        pending = ControlConnectionAttempt()
+        with self._state_lock:
+            if subscription:
+                attempt.subscription_attempt = pending
+            else:
+                attempt.action_attempt = pending
+            self._retain_attempt(attempt)
+        client = pending.connect(
+            self._supervisor_socket,
+            connect_timeout_seconds=_REATTACH_CONNECT_TIMEOUT_SECONDS,
+        )
+        with self._state_lock:
+            if subscription:
+                attempt.subscription_client = client
+            else:
+                attempt.action_client = client
+            self._retain_attempt(attempt)
+            pending.release()
+            if subscription:
+                attempt.subscription_attempt = None
+            else:
+                attempt.action_attempt = None
+        return client
+
+    def _retain_attempt(self, attempt: _CodexAttachmentAttempt) -> None:
+        if self._closing.is_set() or self._attachment_attempt is not attempt:
+            raise ConnectionClosedError("The Codex participant is closing.")
+
+    @staticmethod
+    def _fail_reconnect(
+        relay: CodexAdmissionRelay,
+        error: BaseException,
+    ) -> None:
+        code = (
+            error.code
+            if isinstance(error, (CodexRelayError, SessionParticipantError))
+            else SelectionCode.SELECTION_RECOVERY_REQUIRED
+        )
+        relay.refuse_admission(code)
+        relay.discard_quiescence()
 
     @staticmethod
     def _apply_notice(
@@ -568,21 +811,36 @@ class CodexSessionRuntime:
         self,
         connection_generation: int,
     ) -> ParticipantControl:
-        action = ControlClient.connect(self._supervisor_socket)
+        action = ControlClient.connect(
+            self._supervisor_socket,
+            connect_timeout_seconds=_REATTACH_CONNECT_TIMEOUT_SECONDS,
+        )
         subscription: ControlClient | None = None
         try:
-            subscription = ControlClient.connect(self._supervisor_socket)
+            subscription = ControlClient.connect(
+                self._supervisor_socket,
+                connect_timeout_seconds=_REATTACH_CONNECT_TIMEOUT_SECONDS,
+            )
         except BaseException:
             action.close()
             raise
-        manifest = ParticipantManifest(
+        return ParticipantControl(
+            action,
+            subscription,
+            self._participant_manifest(connection_generation),
+        )
+
+    def _participant_manifest(
+        self,
+        connection_generation: int,
+    ) -> ParticipantManifest:
+        return ParticipantManifest(
             participant_id=self._participant_id,
             provider_id=ProviderId.CODEX,
             client_kind=ParticipantClientKind.CODEX_CLI,
             capability_version=1,
             connection_generation=connection_generation,
         )
-        return ParticipantControl(action, subscription, manifest)
 
     @staticmethod
     def _register_control(

@@ -455,6 +455,7 @@ class FakeCodexSupervisor:
         )
         self._selection_journals = selection_journals
         participants = ParticipantRegistry(selected)
+        self._participants = participants
         selection_workers = SelectionWorkerGateway(
             queue,
             clock,
@@ -628,6 +629,24 @@ class FakeCodexSupervisor:
             if remaining <= 0:
                 raise AssertionError("Selection worker was not collected.")
             self._stop.wait(min(_WAIT_INTERVAL_SECONDS, remaining))
+
+    def wait_for_codex_participants(
+        self,
+        registered: int,
+        active_turns: int,
+    ) -> None:
+        """Wait for exact safe Codex participant counts."""
+        deadline = time.monotonic() + _READINESS_TIMEOUT_SECONDS
+        while time.monotonic() < deadline:
+            snapshot = self._participants.snapshot(ProviderId.CODEX)
+            if (
+                snapshot.registered_count == registered
+                and snapshot.active_turn_count == active_turns
+            ):
+                return
+            self._raise_failure()
+            self._stop.wait(_WAIT_INTERVAL_SECONDS)
+        raise AssertionError("Codex participant counts did not converge.")
 
     def wait_until_callback_workers_collected(self) -> None:
         """Drive scheduler collection through the last callback child."""

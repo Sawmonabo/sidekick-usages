@@ -71,8 +71,8 @@ class CodexRelayAdmissionPort(Protocol):
     def begin(self, turn_id: TurnId) -> CodexRelayAdmission:
         """Admit or queue one stable provider operation."""
 
-    def recheck(self, admission: CodexRelayAdmission) -> None:
-        """Recheck finalized authority before the first upstream byte."""
+    def recheck(self, admission: CodexRelayAdmission) -> bool:
+        """Return whether authority remains admitted before transmission."""
 
     def end(self, turn_id: TurnId) -> None:
         """End one exact naturally terminal admitted operation."""
@@ -211,10 +211,7 @@ class CodexAdmissionRelay:
         with self._lock:
             self._raise_if_unusable()
             current = self._loaded_threads_snapshot_locked()
-            quiescent = (
-                not self._active
-                and current == snapshot
-            )
+            quiescent = not self._active and current == snapshot
             if quiescent:
                 proof = CodexMcpRefreshProof(
                     refresh_required=refresh_required,
@@ -750,9 +747,12 @@ class CodexAdmissionRelay:
         ):
             raise CodexRelayError(SelectionCode.AUTHORITY_PROOF_FAILED)
         try:
-            self._admission.recheck(admission)
+            admitted = self._admission.recheck(admission)
         except Exception as error:
             self._refuse_control_locked(error, queued.lease.request_id)
+            return
+        if not admitted:
+            self._queue.appendleft(queued)
             return
         if queued.lease.request_id in self._pending_requests:
             raise CodexRelayError(SelectionCode.AUTHORITY_PROOF_FAILED)

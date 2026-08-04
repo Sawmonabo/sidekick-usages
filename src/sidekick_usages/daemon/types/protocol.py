@@ -21,6 +21,7 @@ class RequestKind(StrEnum):
     PARTICIPANT_REGISTER = "participant_register"
     PARTICIPANT_SUBSCRIBE = "participant_subscribe"
     TURN_BEGIN = "turn_begin"
+    TURN_RESUME = "turn_resume"
     TURN_END = "turn_end"
     PARTICIPANT_READY = "participant_ready"
     PARTICIPANT_ADOPT = "participant_adopt"
