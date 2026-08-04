@@ -116,9 +116,7 @@ class _JourneyTerminal(ClaudeTerminal):
             message = (
                 "Sidekick cannot run an undeclared Claude hook."
                 if isinstance(control, ClaudeStructuredHookCallbackRequest)
-                else (
-                    "Sidekick cannot route an undeclared SDK MCP server."
-                )
+                else ("Sidekick cannot route an undeclared SDK MCP server.")
             )
             self._events.append(f"presentation:{message}")
             session.refuse_unsupported_control(control)
@@ -182,6 +180,8 @@ class _FailingTerminal(ClaudeTerminal):
 
     def run(self, session: ClaudeTerminalSession) -> None:
         """Fail one terminal owner without touching its live session."""
+        for _index in range(3):
+            session.receive_event()
         session.stop_terminal_events()
         self._events.append("terminal_failure")
         raise RuntimeError("synthetic terminal failure")
@@ -195,6 +195,7 @@ def test_claude_session_keeps_one_engine_across_a_queued_switch() -> None:
         _stream_events(),
         events,
         fail_control_once=True,
+        initial_event_count=3,
     )
     control = ClaudeSessionControlFake(events)
     host, supervisor = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -332,22 +333,21 @@ def _reconnect(
 def _stream_events() -> tuple[bytes, ...]:
     session = _CONVERSATION.encode()
     return (
+        (
+            b'{"type":"system","subtype":"task_notification",'
+            b'"task_id":"unbookended-task"}'
+        ),
+        (
+            b'{"type":"system","subtype":"session_state_changed",'
+            b'"state":"idle","session_id":"' + session + b'"}'
+        ),
+        (b'{"type":"system","subtype":"background_tasks_changed","tasks":[]}'),
         b'{"type":"system","subtype":"init","session_id":"' + session + b'"}',
         (
             b'{"type":"system","subtype":"task_started",'
             b'"session_id":"'
             + session
             + b'","task_id":"agent-1","task_type":"local_agent"}'
-        ),
-        (
-            b'{"type":"system","subtype":"task_started",'
-            b'"session_id":"'
-            + session
-            + b'","task_id":"agent-1","task_type":"local_agent"}'
-        ),
-        (
-            b'{"type":"system","subtype":"task_notification",'
-            b'"task_id":"unbookended-task"}'
         ),
         (
             b'{"type":"system","subtype":"hook_started",'

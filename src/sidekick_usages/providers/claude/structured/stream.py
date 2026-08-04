@@ -11,6 +11,9 @@ from sidekick_usages.errors import InvalidPayloadError
 from sidekick_usages.providers.claude.process import (
     MAX_CLAUDE_CONTROL_FRAME_BYTES,
 )
+from sidekick_usages.providers.claude.structured.activity import (
+    ClaudeStructuredActivityObserver,
+)
 from sidekick_usages.providers.claude.structured.codec import (
     clear_secret_buffer,
 )
@@ -76,7 +79,6 @@ _PERMISSION_OPTIONAL_KEYS = frozenset(
     }
 )
 _TERMINAL_TASK_STATES = frozenset({"completed", "failed", "killed", "stopped"})
-_IGNORED_TASK_TYPES = frozenset({"monitor_mcp", "monitor_ws"})
 _MINIMUM_QUESTIONS = 1
 _MAXIMUM_QUESTIONS = 4
 _MINIMUM_OPTIONS = 2
@@ -207,8 +209,7 @@ def encode_claude_dialog_unsupported(
 
 def encode_claude_unsupported_control(
     request: (
-        ClaudeStructuredHookCallbackRequest
-        | ClaudeStructuredMcpMessageRequest
+        ClaudeStructuredHookCallbackRequest | ClaudeStructuredMcpMessageRequest
     ),
 ) -> bytearray:
     """Refuse one capability the host did not declare at initialization."""
@@ -231,8 +232,8 @@ class ClaudeStructuredStreamDecoder:
     """Decode exact stream frames while retaining task lifecycle kinds."""
 
     def __init__(self) -> None:
-        self._tasks: dict[str, ClaudeStructuredActivityKind] = {}
-        self._ignored_tasks: set[str] = set()
+        self._activity = ClaudeStructuredActivityObserver()
+        self._idle_update: bool | None = None
         self._stream_message_id: str | None = None
         self._streamed_blocks: set[tuple[str, int]] = set()
 
@@ -242,6 +243,7 @@ class ClaudeStructuredStreamDecoder:
 
     def _decode(self, payload: bytes) -> ClaudeStructuredTerminalEvent:
         """Decode one frame after retaining cross-frame task state."""
+        self._idle_update = None
         if not payload or len(payload) > MAX_CLAUDE_CONTROL_FRAME_BYTES:
             _malformed()
         try:
@@ -272,6 +274,7 @@ class ClaudeStructuredStreamDecoder:
             control=control,
             cancelled_request_id=cancelled_request_id,
             turn_complete=turn_complete,
+            authoritative_idle=self._idle_update,
         )
 
     def _event_content(
@@ -341,12 +344,7 @@ class ClaudeStructuredStreamDecoder:
                 None,
                 False,
                 status,
-                _system(
-                    root,
-                    conversation_id,
-                    self._tasks,
-                    self._ignored_tasks,
-                ),
+                self._system(root, conversation_id),
                 None,
                 None,
                 False,
@@ -373,6 +371,56 @@ class ClaudeStructuredStreamDecoder:
             )
         text, status = _presentation(root, message_type)
         return text, None, False, status, (), None, None, False
+
+    def _system(
+        self,
+        root: JsonObject,
+        conversation_id: ClaudeStructuredConversationId | None,
+    ) -> tuple[ClaudeStructuredStreamEvent, ...]:
+        subtype = _text(root, "subtype")
+        if subtype == "session_state_changed":
+            state = _bounded_text(root, "state")
+            if state not in {"idle", "running", "requires_action"}:
+                _malformed()
+            self._idle_update = self._activity.session_state(state)
+            return ()
+        if subtype == "background_tasks_changed":
+            try:
+                events, self._idle_update = (
+                    self._activity.replace_background_tasks(
+                        _background_task_values(root),
+                        conversation_id,
+                    )
+                )
+            except ValueError:
+                _malformed()
+            return events
+        if subtype.startswith("task_"):
+            events = _task_event(
+                root,
+                conversation_id,
+                self._activity,
+                subtype,
+            )
+            self._idle_update = False
+            return events
+        if subtype == "hook_progress":
+            _bounded_text(root, "hook_id")
+            return ()
+        if subtype in {"hook_started", "hook_response"}:
+            return (
+                _activity(
+                    conversation_id,
+                    ClaudeStructuredActivityKind.HOOK,
+                    _hook_id(root),
+                    (
+                        ClaudeStructuredActivityState.STARTED
+                        if subtype == "hook_started"
+                        else ClaudeStructuredActivityState.FINISHED
+                    ),
+                ),
+            )
+        return ()
 
     def _stream_content(
         self,
@@ -665,85 +713,40 @@ def _user(
     return tuple(activities)
 
 
-def _system(
-    root: JsonObject,
-    conversation_id: ClaudeStructuredConversationId | None,
-    tasks: dict[str, ClaudeStructuredActivityKind],
-    ignored_tasks: set[str],
-) -> tuple[ClaudeStructuredStreamEvent, ...]:
-    subtype = _text(root, "subtype")
-    if subtype.startswith("task_"):
-        return _task_event(
-            root,
-            conversation_id,
-            tasks,
-            ignored_tasks,
-            subtype,
-        )
-    if subtype == "hook_progress":
-        _bounded_text(root, "hook_id")
-        return ()
-    if subtype in {"hook_started", "hook_response"}:
-        return (
-            _activity(
-                conversation_id,
-                ClaudeStructuredActivityKind.HOOK,
-                _hook_id(root),
-                (
-                    ClaudeStructuredActivityState.STARTED
-                    if subtype == "hook_started"
-                    else ClaudeStructuredActivityState.FINISHED
-                ),
-            ),
-        )
-    return ()
-
-
 def _task_event(
     root: JsonObject,
     conversation_id: ClaudeStructuredConversationId | None,
-    tasks: dict[str, ClaudeStructuredActivityKind],
-    ignored_tasks: set[str],
+    observer: ClaudeStructuredActivityObserver,
     subtype: str,
 ) -> tuple[ClaudeStructuredStreamEvent, ...]:
-    events: tuple[ClaudeStructuredStreamEvent, ...] = ()
     if subtype == "task_started":
-        task_id = _bounded_text(root, "task_id")
-        task_type = _optional_text(root, "task_type")
-        if task_type in _IGNORED_TASK_TYPES:
-            ignored_tasks.add(task_id)
-        elif task_id not in tasks:
-            kind = _task_kind(task_type)
-            tasks[task_id] = kind
-            events = (
-                _activity(
-                    conversation_id,
-                    kind,
-                    task_id,
-                    ClaudeStructuredActivityState.STARTED,
-                ),
-            )
-    elif subtype in {"task_notification", "task_updated"}:
-        task_id = _bounded_text(root, "task_id")
-        if task_id in ignored_tasks:
-            if subtype == "task_notification" or _task_update_terminal(root):
-                ignored_tasks.discard(task_id)
-        else:
-            kind = tasks.get(task_id)
-            terminal = subtype == "task_notification"
-            if subtype == "task_updated":
-                terminal = _task_update_terminal(root)
-            if kind is not None and terminal:
-                del tasks[task_id]
-                events = (
-                    _activity(
-                        conversation_id,
-                        kind,
-                        task_id,
-                        ClaudeStructuredActivityState.FINISHED,
-                    ),
-                )
-    return events
+        return observer.start_task(
+            _bounded_text(root, "task_id"),
+            _optional_text(root, "task_type"),
+            conversation_id,
+        )
+    if subtype not in {"task_notification", "task_updated"}:
+        return ()
+    return observer.update_task(
+        _bounded_text(root, "task_id"),
+        subtype == "task_notification" or _task_update_terminal(root),
+        conversation_id,
+    )
+
+
+def _background_task_values(
+    root: JsonObject,
+) -> tuple[tuple[str, str], ...]:
+    tasks: list[tuple[str, str]] = []
+    for value in _list(root, "tasks"):
+        task = _require_object(value)
+        if set(task) != {"task_id", "task_type", "description"}:
+            _malformed()
+        task_id = _bounded_text(task, "task_id")
+        task_type = _bounded_text(task, "task_type")
+        _bounded_text(task, "description")
+        tasks.append((task_id, task_type))
+    return tuple(tasks)
 
 
 def _task_update_terminal(root: JsonObject) -> bool:
@@ -873,14 +876,6 @@ def _activity(
 
 def _hook_id(root: JsonObject) -> str:
     return _bounded_text(root, "hook_id")
-
-
-def _task_kind(task_type: str | None) -> ClaudeStructuredActivityKind:
-    if task_type == "local_agent":
-        return ClaudeStructuredActivityKind.BACKGROUND_AGENT
-    if task_type == "local_bash":
-        return ClaudeStructuredActivityKind.TERMINAL
-    return ClaudeStructuredActivityKind.BACKGROUND_TASK
 
 
 def _optional_conversation(

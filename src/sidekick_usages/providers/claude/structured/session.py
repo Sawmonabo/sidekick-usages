@@ -30,6 +30,7 @@ from sidekick_usages.providers.claude.structured.models import (
     ClaudeStructuredInstallReceipt,
     ClaudeStructuredProtectedFrame,
     ClaudeStructuredStreamEvent,
+    ClaudeStructuredTerminalEvent,
     ClaudeStructuredTurnTransmitter,
 )
 
@@ -59,6 +60,7 @@ class ClaudeStructuredSession:
         self._turns: dict[TurnId, ClaudeStructuredBinding] = {}
         self._consumed_request_ids: set[RequestId] = set()
         self._issued_request_ids: set[RequestId] = set()
+        self._authoritative_idle = False
 
     @classmethod
     def bootstrap(
@@ -126,6 +128,7 @@ class ClaudeStructuredSession:
         """Track one visible admitted turn under its exact binding."""
         if binding != self._binding or turn_id in self._turns:
             self._activity_invalid()
+        self._authoritative_idle = False
         self._turns[turn_id] = binding
 
     def end_turn(self, turn_id: TurnId) -> None:
@@ -143,6 +146,17 @@ class ClaudeStructuredSession:
             event.activity_state,
         )
 
+    def observe_terminal_event(
+        self,
+        event: ClaudeStructuredTerminalEvent,
+    ) -> None:
+        """Apply one complete decoded terminal observation."""
+        if event.conversation_id is not None:
+            self.observe_conversation(event.conversation_id)
+        self.observe_idle_boundary(event.authoritative_idle)
+        for activity in event.activities:
+            self.observe_event(activity)
+
     def observe_activity(
         self,
         kind: ClaudeStructuredActivityKind,
@@ -153,6 +167,7 @@ class ClaudeStructuredSession:
         self._require_activity_id(activity_id)
         activity = (kind, activity_id)
         if state is ClaudeStructuredActivityState.STARTED:
+            self._authoritative_idle = False
             if activity in self._activities:
                 self._activity_invalid()
             self._activities.add(activity)
@@ -160,6 +175,11 @@ class ClaudeStructuredSession:
         if activity not in self._activities:
             self._activity_invalid()
         self._activities.remove(activity)
+
+    def observe_idle_boundary(self, authoritative_idle: bool | None) -> None:
+        """Apply one exact-build provider idle-proof transition."""
+        if authoritative_idle is not None:
+            self._authoritative_idle = authoritative_idle
 
     def observe_conversation(
         self,
@@ -182,7 +202,7 @@ class ClaudeStructuredSession:
         if pending is None:
             frame.close_protected_frame()
             self._authority_mismatch()
-        if self._turns or self._activities:
+        if not self._authoritative_idle or self._turns or self._activities:
             frame.close_protected_frame()
             raise ClaudeStructuredError(
                 ClaudeStructuredFailure.ACTIVITY_ACTIVE
@@ -197,6 +217,7 @@ class ClaudeStructuredSession:
         )
         self._binding = pending
         self._pending = None
+        self._authoritative_idle = False
         return receipt
 
     def route_turn(

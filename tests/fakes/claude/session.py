@@ -104,11 +104,13 @@ class ClaudeSessionEngineFake(ClaudeStructuredEngineFake):
         journey_events: list[str],
         *,
         fail_control_once: bool = False,
+        initial_event_count: int = 0,
     ) -> None:
         super().__init__(responses, SESSION_OAUTH)
         self._interactive_events = list(interactive_events)
         self._journey_events = journey_events
         self._fail_control_once = fail_control_once
+        self._initial_event_count = initial_event_count
         self.interactive_frames: list[JsonObject] = []
 
     def exchange(
@@ -208,6 +210,9 @@ class ClaudeSessionEngineFake(ClaudeStructuredEngineFake):
     def receive_event(self, timeout_seconds: float) -> bytes:
         """Return available events or one typed polling boundary."""
         del timeout_seconds
+        if self._initial_event_count:
+            self._initial_event_count -= 1
+            return self._interactive_events.pop(0)
         if not self.user_turn_count or not self._interactive_events:
             failure = (
                 ClaudeStructuredFailure.PROTOCOL_EOF

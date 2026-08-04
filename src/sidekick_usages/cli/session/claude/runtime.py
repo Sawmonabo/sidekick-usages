@@ -622,10 +622,7 @@ class ClaudeSessionRuntime:
     ) -> None:
         with self._session_lock:
             session = self._require_session()
-            if event.conversation_id is not None:
-                session.observe_conversation(event.conversation_id)
-            for activity in event.activities:
-                session.observe_event(activity)
+            session.observe_terminal_event(event)
             control = event.control
             if control is not None:
                 request_id, kind = self._control_activity(control)

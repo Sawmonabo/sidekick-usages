@@ -209,6 +209,7 @@ class ClaudeStructuredTerminalEvent:
     control: ClaudeStructuredControlRequest | None = None
     cancelled_request_id: str | None = None
     turn_complete: bool = False
+    authoritative_idle: bool | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
