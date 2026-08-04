@@ -558,12 +558,18 @@ def test_interrupted_setup_association_recovers_profile_and_metrics(
                     None,
                     token_suffix="recover-new",
                     access_expires_at=_NEW_ACCESS_EXPIRY,
+                    refresh_expires_at=(
+                        REFERENCE_TIME + timedelta(days=30)
+                    ),
                 ),
                 credential_payload(
                     None,
                     None,
                     token_suffix="recover-resumed",
                     access_expires_at=_NEW_ACCESS_EXPIRY + timedelta(hours=1),
+                    refresh_expires_at=(
+                        REFERENCE_TIME + timedelta(days=30)
+                    ),
                 ),
             )
         },
@@ -701,6 +707,7 @@ def test_interrupted_setup_association_recovers_profile_and_metrics(
             None,
             token_suffix="recover-provider-ahead",
             access_expires_at=_NEW_ACCESS_EXPIRY + timedelta(hours=2),
+            refresh_expires_at=REFERENCE_TIME + timedelta(days=20),
         ),
         status,
     )

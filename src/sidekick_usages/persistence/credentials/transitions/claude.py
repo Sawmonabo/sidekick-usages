@@ -55,11 +55,7 @@ def managed_claude_transition_matches(
         > candidate_subscription.verified_at
         and (
             current_subscription.refresh_expires_at is None
-            or (
-                candidate_subscription.refresh_expires_at is not None
-                and candidate_subscription.refresh_expires_at
-                >= current_subscription.refresh_expires_at
-            )
+            or candidate_subscription.refresh_expires_at is not None
         )
         and (
             candidate_subscription.refresh_expires_at is None
