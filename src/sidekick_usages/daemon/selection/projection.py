@@ -1,6 +1,7 @@
 """Pure validation and projection for participant registry state."""
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from datetime import datetime
 
 from sidekick_usages.core.accounts.types import (
     AuthorityGeneration,
@@ -10,11 +11,13 @@ from sidekick_usages.core.accounts.types import (
 from sidekick_usages.core.selection.models import (
     AuthorityReadyProof,
     FinalizedSelection,
+    OpenSelectionOperation,
     SelectionEpoch,
 )
 from sidekick_usages.core.selection.types import (
     ParticipantId,
     SelectionCode,
+    SelectionPhase,
     TurnId,
 )
 from sidekick_usages.core.types import ProviderId
@@ -307,6 +310,31 @@ def project_snapshot(
         reachable_count=len(reachable),
         adopted_count=len(adopted),
         queued_turn_count=0 if gate is None else len(gate.queued),
+    )
+
+
+def project_operation_snapshot(
+    operation: OpenSelectionOperation,
+    snapshot: ParticipantSnapshot,
+    updated_at: datetime,
+) -> OpenSelectionOperation:
+    """Project exact participant truth into one postcommit operation."""
+    recovering = operation.phase is SelectionPhase.COMMITTING
+    lost = snapshot.confirmed_dead_participant_ids
+    return replace(
+        operation,
+        phase=(SelectionPhase.RECOVERING if recovering else operation.phase),
+        required_participant_ids=snapshot.required_participant_ids,
+        ready_participant_ids=snapshot.ready_participant_ids,
+        lost_after_commit_participant_ids=lost,
+        outcome_code=(
+            SelectionCode.SELECTION_RECOVERY_REQUIRED
+            if recovering
+            else None
+            if not lost
+            else SelectionCode.PARTICIPANT_LOST_AFTER_COMMIT
+        ),
+        updated_at=updated_at,
     )
 
 

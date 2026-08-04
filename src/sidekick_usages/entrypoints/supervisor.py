@@ -173,20 +173,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     ).load()
     selection_journals = SelectionOperationStore(paths.selection_journals)
     exchanges = WorkerExchangeRegistry(time.monotonic)
-    protected_channels = (
-        ClaudeParticipantChannelRegistry(
+    participants = ParticipantRegistry(selected)
+    protected_channels = None
+    if protected_selection_enabled(ProviderId.CLAUDE):
+        protected_channels = ClaudeParticipantChannelRegistry(
             partial(
                 claude_participant_ack_required,
                 AccountIndexReader(paths.accounts).load,
-            )
+            ),
+            partial(participants.disconnect, attachment_failure=True),
         )
-        if protected_selection_enabled(ProviderId.CLAUDE)
-        else None
-    )
-    participants = ParticipantRegistry(
-        selected,
-        attachments=protected_channels,
-    )
+        participants.add_attachment_registry(protected_channels)
     protected_relay = (
         ClaudeProtectedCommitRelay(exchanges, protected_channels)
         if protected_channels is not None

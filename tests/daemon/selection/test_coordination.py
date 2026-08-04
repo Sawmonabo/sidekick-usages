@@ -1,7 +1,7 @@
 """Concurrent participant selection coordination tests."""
 
 import socket
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from dataclasses import dataclass, replace
 from functools import partial
 from pathlib import Path
@@ -71,7 +71,6 @@ from sidekick_usages.persistence.supervisor.selection import (
     SelectionOperationStore,
 )
 from sidekick_usages.platform.models import ProcessIdentity
-from sidekick_usages.platform.types import ProcessLiveness
 from sidekick_usages.providers.claude.structured.codec import (
     clear_secret_buffer,
 )
@@ -84,6 +83,7 @@ from sidekick_usages.providers.claude.structured.models import (
     ClaudeStructuredInstallReceipt,
 )
 from tests.fakes.claude.session import start_claude_binding_reporter
+from tests.fakes.daemon.control import ExactProcessInspectorFake
 from tests.support.persistence import (
     make_application_paths,
     seed_finalized_selections,
@@ -143,11 +143,13 @@ class _SelectionAdapter:
         registry: ParticipantRegistry | None = None,
         protected_hosts: dict[ParticipantId, socket.socket] | None = None,
         scheduler: SelectionSchedulerSink | None = None,
+        prove_commit: Callable[[SchedulerCompletion], None] | None = None,
     ) -> None:
         self.prevalidation_started = Event()
         self.allow_prevalidation = Event()
         self.committed = Event()
         self.crash_after_install = False
+        self._prove_commit = prove_commit
         if channels is None:
             assert registry is protected_hosts is scheduler is None
             self._protected = None
@@ -155,6 +157,7 @@ class _SelectionAdapter:
             assert registry is not None
             assert protected_hosts is not None
             assert scheduler is not None
+            assert prove_commit is not None
             self._protected = channels, registry, protected_hosts, scheduler
 
     def prevalidate(
@@ -187,6 +190,12 @@ class _SelectionAdapter:
             epoch=proof.epoch,
         )
         snapshot = self._protected[1].snapshot(prepared.provider_id)
+        if set(snapshot.required_participant_ids) - set(self._protected[2]):
+            assert self._prove_commit is not None
+            self._prove_commit(_completion(
+                prepared.operation_id, OperationKind.SELECTION_COMMIT,
+                proof.account_id, proof.generation, proof.epoch,
+            ))
         self._install(binding, snapshot.required_participant_ids)
         self.committed.set()
         if self.crash_after_install:
@@ -226,6 +235,7 @@ class _SelectionAdapter:
         channels, _registry, protected_hosts, _scheduler = self._protected
         available = tuple(protected_hosts)
         targets = available if participant_ids is None else participant_ids
+        targets = tuple(item for item in targets if item in protected_hosts)
         receivers: list[Thread] = []
         for participant_id in targets:
             host = ClaudeProtectedHostChannel(
@@ -341,16 +351,6 @@ class _ObservedOperationStore(SelectionOperationStore):
             self.awaiting_ready.set()
 
 
-class _ProcessInspector:
-    def __init__(self) -> None:
-        self.dead: set[ProcessIdentity] = set()
-
-    def inspect(self, identity: ProcessIdentity) -> ProcessLiveness:
-        if identity in self.dead:
-            return ProcessLiveness.DEAD
-        return ProcessLiveness.UNKNOWN
-
-
 @dataclass(frozen=True, slots=True)
 class _Journey:
     other: FinalizedSelection
@@ -358,7 +358,7 @@ class _Journey:
     operations: _ObservedOperationStore
     registry: ParticipantRegistry
     adapter: _SelectionAdapter
-    process_inspector: _ProcessInspector
+    process_inspector: ExactProcessInspectorFake
     recovery_handoffs: list[ProviderId]
     coordinator: SelectionCoordinator
     subscriptions: tuple[Generator[ParticipantNotice], ...]
@@ -385,8 +385,11 @@ def _build_journey(
     seed_finalized_selections(paths, *states)
     selected = SelectedStateStore(paths.selected_state)
     operations = _ObservedOperationStore(paths.selection_journals)
-    channels = ClaudeParticipantChannelRegistry(lambda _: participant_required)
-    registry = ParticipantRegistry(selected, attachments=channels)
+    registry = ParticipantRegistry(selected)
+    failed = partial(registry.disconnect, attachment_failure=True)
+    channels = ClaudeParticipantChannelRegistry(
+        lambda _: participant_required, failed)
+    registry.add_attachment_registry(channels)
     protected_hosts: dict[ParticipantId, socket.socket] = {}
     queue = OperationQueueStore(paths.durable_operations)
     gateway = SelectionWorkerGateway(queue, FixedClock(), lambda: None)
@@ -394,8 +397,9 @@ def _build_journey(
         selected, operations, registry, gateway, FixedClock()
     )
     scheduler = SelectionSchedulerSink(OperationEventHub(), gateway, recovery)
-    adapter = _SelectionAdapter(channels, registry, protected_hosts, scheduler)
-    process_inspector = _ProcessInspector()
+    adapter = _SelectionAdapter(
+        channels, registry, protected_hosts, scheduler, recovery.prove_commit)
+    process_inspector = ExactProcessInspectorFake()
     recovery_handoffs: list[ProviderId] = []
     coordinator = SelectionCoordinator(
         selected,
@@ -636,22 +640,17 @@ def test_setup_requires_a_participant_before_commit(tmp_path: Path) -> None:
     assert registration.registered_epoch == SelectionEpoch(0)
     assert snapshot.registered_count == snapshot.reachable_count == 1
     assert not snapshot.unreachable_participant_ids
-    bootstrap.adapter.allow_prevalidation.set()
-    _canonical_id, stream = bootstrap.coordinator.select_events(
-        REPLAY_OPERATION_ID, PROVIDER_ID, TARGET_ACCOUNT_ID)
-    for _index in range(4):
-        next(stream)
-    assert bootstrap.registry.snapshot(PROVIDER_ID).reachable_count == 0
-    notices = bootstrap.coordinator.subscribe(new_request_id(),
-        ParticipantConnectionRequest(PARTICIPANT_A, 1), process)
-    assert next(notices).kind is ParticipantNoticeKind.READY
-    ready = _ready_request(PARTICIPANT_A, SelectionEpoch(1))
-    bootstrap.coordinator.ready_request(ready, process)
-    assert isinstance(result := next(stream), SelectionResult)
-    assert result.outcome is SelectionOutcome.READY
-    assert next(notices).kind is ParticipantNoticeKind.OPEN
-    notices.close()
     host.close()
+    bootstrap.protected_hosts.pop(PARTICIPANT_A)
+    bootstrap.process_inspector.dead_after_first.add(process)
+    bootstrap.adapter.allow_prevalidation.set()
+    result = bootstrap.coordinator.select(
+        REPLAY_OPERATION_ID, PROVIDER_ID, TARGET_ACCOUNT_ID)
+    assert result.outcome is SelectionOutcome.RECOVERY_REQUIRED
+    assert bootstrap.process_inspector.inspected == [process, process]
+    operation = bootstrap.operations.load(PROVIDER_ID).active
+    assert operation is not None
+    assert operation.lost_after_commit_participant_ids == (PARTICIPANT_A,)
 
 
 def _arm_postcommit_loss(

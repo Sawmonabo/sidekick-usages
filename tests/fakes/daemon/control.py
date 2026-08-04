@@ -224,6 +224,24 @@ class FailingProcessInspector:
         raise RuntimeError("synthetic cancellation failure")
 
 
+class ExactProcessInspectorFake:
+    """Return configured liveness for exact process-start identities."""
+
+    def __init__(self) -> None:
+        self.dead: set[ProcessIdentity] = set()
+        self.dead_after_first: set[ProcessIdentity] = set()
+        self.inspected: list[ProcessIdentity] = []
+
+    def inspect(self, identity: ProcessIdentity) -> ProcessLiveness:
+        """Return death immediately or after one unknown observation."""
+        self.inspected.append(identity)
+        later_dead = identity in self.dead_after_first and (
+            self.inspected.count(identity) > 1)
+        if identity in self.dead or later_dead:
+            return ProcessLiveness.DEAD
+        return ProcessLiveness.UNKNOWN
+
+
 class FailingControlReporter:
     """Raise after an optional sanitized diagnostic projection."""
 

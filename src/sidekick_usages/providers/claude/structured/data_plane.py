@@ -48,6 +48,7 @@ from sidekick_usages.providers.claude.structured.codec import (
     encode_protected_exchange_instruction,
     encode_protected_install_receipt,
     encode_protected_projection,
+    receive_protected_socket_frame,
     require_protected_ack,
     require_protected_binding_query,
     require_protected_binding_report,
@@ -58,7 +59,6 @@ from sidekick_usages.providers.claude.structured.models import (
     ClaudeStructuredInstallReceipt,
 )
 from sidekick_usages.serialization.framing import (
-    BoundedFrameDecoder,
     clear_mutable_buffer,
     encode_bounded_frame,
 )
@@ -66,7 +66,6 @@ from sidekick_usages.serialization.framing import (
 MAX_CLAUDE_PARTICIPANT_CHANNELS = 16
 CLAUDE_PROTECTED_RESPONSE_SECONDS = 8.0
 CLAUDE_PROTECTED_COMPLETION_SECONDS = 120.0
-_SOCKET_READ_BYTES = 64 * 1024
 _CLAUDE_PROJECTION_KINDS = frozenset({
     OperationKind.SELECTION_COMMIT,
     OperationKind.CLAUDE_PARTICIPANT_BIND,
@@ -239,11 +238,13 @@ class ClaudeParticipantChannelRegistry:
     def __init__(
         self,
         participant_required: Callable[[SidekickAccountId], bool],
+        participant_failed: Callable[[ParticipantId, int], None] | None = None,
     ) -> None:
         self._lock = Lock()
         self._distribution_lock = Lock()
         self._channels: dict[ParticipantId, _ClaudeParticipantChannel] = {}
         self._participant_required = participant_required
+        self._participant_failed = participant_failed
 
     @staticmethod
     def requires_endpoint(provider_id: ProviderId) -> bool:
@@ -422,7 +423,7 @@ class ClaudeParticipantChannelRegistry:
                 channel.endpoint.settimeout(CLAUDE_PROTECTED_RESPONSE_SECONDS)
                 channel.endpoint.sendall(frame)
                 report = require_protected_binding_report(
-                    _receive_socket_frame(channel.endpoint),
+                    receive_protected_socket_frame(channel.endpoint),
                     nonce, participant_id, connection_generation,
                 )
                 with self._lock:
@@ -497,7 +498,7 @@ class ClaudeParticipantChannelRegistry:
             )
             channel.endpoint.settimeout(CLAUDE_PROTECTED_RESPONSE_SECONDS)
             channel.endpoint.sendall(frame)
-            receipt = _receive_socket_frame(channel.endpoint)
+            receipt = receive_protected_socket_frame(channel.endpoint)
             install_receipt = require_protected_install_receipt(
                 receipt,
                 binding,
@@ -512,7 +513,8 @@ class ClaudeParticipantChannelRegistry:
                         "The protected participant reconnected during install."
                     )
                 current.binding = install_receipt.binding
-        except OSError, ValueError:
+        except ClaudeProtectedChannelError, OSError, ValueError:
+            self._discard_failed(participant_id, channel)
             raise ClaudeProtectedChannelError(
                 "The protected Claude install was not acknowledged."
             ) from None
@@ -520,6 +522,20 @@ class ClaudeParticipantChannelRegistry:
             clear_mutable_buffer(payload)
             if frame is not None:
                 clear_mutable_buffer(frame)
+
+    def _discard_failed(
+        self,
+        participant_id: ParticipantId,
+        channel: _ClaudeParticipantChannel,
+    ) -> None:
+        with self._lock:
+            if self._channels.get(participant_id) is not channel:
+                return
+            self._channels.pop(participant_id)
+        channel.endpoint.close()
+        if self._participant_failed is not None:
+            self._participant_failed(
+                participant_id, channel.connection_generation)
 
     def _commit(
         self,
@@ -602,7 +618,7 @@ class ClaudeProtectedHostChannel:
             raise ClaudeProtectedChannelError(
                 "The protected host channel is not ready."
             )
-        payload = _receive_socket_frame(self._endpoint)
+        payload = receive_protected_socket_frame(self._endpoint)
         oauth: bytearray | None = None
         try:
             metadata, oauth = decode_protected_projection(payload)
@@ -662,7 +678,7 @@ class ClaudeProtectedHostChannel:
                 "The protected host channel is not ready."
             )
         nonce = require_protected_binding_query(
-            _receive_socket_frame(self._endpoint),
+            receive_protected_socket_frame(self._endpoint),
             self._participant_id,
             self._connection_generation,
         )
@@ -978,23 +994,3 @@ class ClaudeProtectedProjectionWriter:
             self._child_operation_id,
             self._nonce,
         )
-
-
-def _receive_socket_frame(endpoint: socket.socket) -> bytearray:
-    decoder = BoundedFrameDecoder(MAX_CLAUDE_PROTECTED_FRAME_BYTES)
-    while True:
-        chunk = endpoint.recv(_SOCKET_READ_BYTES)
-        if not chunk:
-            decoder.finish()
-            raise ClaudeProtectedChannelClosedError(
-                "The protected participant channel closed."
-            )
-        frames = decoder.feed(chunk)
-        if len(frames) > 1 or (frames and decoder.pending):
-            for frame in frames:
-                clear_mutable_buffer(frame)
-            raise ClaudeProtectedChannelError(
-                "The protected participant receipt is malformed."
-            )
-        if frames:
-            return frames[0]

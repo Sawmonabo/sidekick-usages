@@ -510,11 +510,12 @@ class ParticipantRegistry:
     def disconnect(
         self,
         participant_id: ParticipantId,
-        connection_generation: int,
+        connection_generation: int, *, attachment_failure: bool = False,
     ) -> None:
         """Mark one exact connection unreachable without assuming death."""
         with self._condition:
-            self._wait_unsealed_for_participant(participant_id)
+            if not attachment_failure:
+                self._wait_unsealed_for_participant(participant_id)
             participant = self._require_connection(
                 participant_id,
                 connection_generation,

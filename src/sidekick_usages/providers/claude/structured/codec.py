@@ -1,5 +1,6 @@
-"""Bounded exact JSON-lines codec for structured Claude control."""
+"""Bounded framing and exact JSON codec for structured Claude control."""
 
+import socket
 from dataclasses import dataclass
 from typing import NoReturn
 
@@ -25,6 +26,10 @@ from sidekick_usages.providers.claude.structured.models import (
     ClaudeStructuredFailure,
     ClaudeStructuredInstallReceipt,
 )
+from sidekick_usages.serialization.framing import (
+    BoundedFrameDecoder,
+    clear_mutable_buffer,
+)
 from sidekick_usages.serialization.json import (
     JsonEncodeError,
     JsonObject,
@@ -46,6 +51,7 @@ _EXPECTED_REJECTION_ERROR = (
     "values"
 )
 _PROJECTION_PREFIX_BYTES = 4
+_SOCKET_READ_BYTES = 64 * 1024
 _PROJECTION_KEYS = frozenset(
     {"operation_id", "account_id", "generation", "epoch", "nonce"}
 )
@@ -681,6 +687,27 @@ def _valid_error(error: str) -> bool:
 def clear_secret_buffer(buffer: bytearray) -> None:
     """Overwrite and release one best-effort secret transport buffer."""
     buffer[:] = bytes(len(buffer))
+
+
+def receive_protected_socket_frame(endpoint: socket.socket) -> bytearray:
+    """Receive one bounded protected frame from an exact local endpoint."""
+    decoder = BoundedFrameDecoder(MAX_CLAUDE_PROTECTED_FRAME_BYTES)
+    while True:
+        chunk = endpoint.recv(_SOCKET_READ_BYTES)
+        if not chunk:
+            decoder.finish()
+            raise ClaudeProtectedChannelClosedError(
+                "The protected participant channel closed."
+            )
+        frames = decoder.feed(chunk)
+        if len(frames) > 1 or (frames and decoder.pending):
+            for frame in frames:
+                clear_mutable_buffer(frame)
+            raise ClaudeProtectedChannelError(
+                "The protected participant receipt is malformed."
+            )
+        if frames:
+            return frames[0]
 
 
 def _malformed() -> NoReturn:

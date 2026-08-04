@@ -38,7 +38,6 @@ from sidekick_usages.daemon.selection.models import (
     ParticipantReadyRequest,
     ParticipantRegistration,
     ParticipantRequestError,
-    ParticipantSnapshot,
     SelectionRequestError,
     SelectionStatus,
     TurnAdmission,
@@ -50,6 +49,9 @@ from sidekick_usages.daemon.selection.ports import (
     SelectionAuthorityAdapter,
     SelectionJournal,
     SelectionParticipantBinder,
+)
+from sidekick_usages.daemon.selection.projection import (
+    project_operation_snapshot,
 )
 from sidekick_usages.daemon.selection.registry import ParticipantRegistry
 from sidekick_usages.persistence.errors import PersistenceError
@@ -575,6 +577,7 @@ class SelectionCoordinator:
             proof = self._adapter.commit(prepared)
             self._require_proof(prepared, proof)
         except Exception:
+            self.reconcile_disconnected(provider_id)
             yield from self._terminal_events(self._recovering(operation))
             return
         operation = self._latest(operation)
@@ -714,7 +717,11 @@ class SelectionCoordinator:
             try:
                 operation = self._persist(
                     operation,
-                    self._snapshot_operation(operation, snapshot),
+                    project_operation_snapshot(
+                        operation,
+                        snapshot,
+                        self._clock.now(),
+                    ),
                 )
                 snapshot_persisted = True
             finally:
@@ -830,11 +837,18 @@ class SelectionCoordinator:
         operation: OpenSelectionOperation,
     ) -> SelectionResult:
         operation = self._latest(operation)
-        if operation.phase is SelectionPhase.AWAITING_READY:
+        if operation.phase in {
+            SelectionPhase.COMMITTING,
+            SelectionPhase.AWAITING_READY,
+        }:
             snapshot = self._participants.snapshot(operation.provider_id)
             operation = self._persist(
                 operation,
-                self._snapshot_operation(operation, snapshot),
+                project_operation_snapshot(
+                    operation,
+                    snapshot,
+                    self._clock.now(),
+                ),
             )
         result = self._result(operation, SelectionOutcome.RECOVERY_REQUIRED)
         try:
@@ -855,26 +869,6 @@ class SelectionCoordinator:
     def _completion_is_durable(self, result: SelectionResult) -> bool:
         document = self._journal.load(result.provider_id)
         return document.active is None and result in document.history
-
-    def _snapshot_operation(
-        self,
-        operation: OpenSelectionOperation,
-        snapshot: ParticipantSnapshot,
-    ) -> OpenSelectionOperation:
-        return replace(
-            operation,
-            required_participant_ids=snapshot.required_participant_ids,
-            ready_participant_ids=snapshot.ready_participant_ids,
-            lost_after_commit_participant_ids=(
-                snapshot.confirmed_dead_participant_ids
-            ),
-            outcome_code=(
-                None
-                if not snapshot.confirmed_dead_participant_ids
-                else SelectionCode.PARTICIPANT_LOST_AFTER_COMMIT
-            ),
-            updated_at=self._clock.now(),
-        )
 
     def _completed_replay(
         self,
