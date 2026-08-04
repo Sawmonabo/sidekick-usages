@@ -86,6 +86,10 @@ class ClaudeProtectedChannelError(RuntimeError):
     """Reject malformed or replayed protected channel data."""
 
 
+class ClaudeProtectedChannelClosedError(ClaudeProtectedChannelError):
+    """Report a retryable protected transport closure."""
+
+
 @dataclass(frozen=True, slots=True)
 class ClaudeProtectedProjectionMetadata:
     """Secret-free binding and route decoded from one projection."""

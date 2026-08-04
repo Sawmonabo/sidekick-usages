@@ -31,6 +31,20 @@ from sidekick_usages.providers.claude.structured.models import (
 _REPORTER_JOIN_SECONDS = 2.0
 
 
+def claude_participant_manifest(
+    participant_id: ParticipantId,
+    connection_generation: int,
+) -> ParticipantManifest:
+    """Return one exact Claude participant connection manifest."""
+    return ParticipantManifest(
+        participant_id=participant_id,
+        provider_id=ProviderId.CLAUDE,
+        client_kind=ParticipantClientKind.CLAUDE_CODE,
+        capability_version=1,
+        connection_generation=connection_generation,
+    )
+
+
 class ClaudeParticipantControl:
     """Participant operations consumed by one Claude runtime."""
 
@@ -127,6 +141,7 @@ class ClaudeCoordination:
             )
         except BaseException:
             channel.close()
+            self.registration_endpoint.close()
             reporter.join(timeout=_REPORTER_JOIN_SECONDS)
             raise
         reporter.join(timeout=_REPORTER_JOIN_SECONDS)
@@ -162,12 +177,9 @@ class ClaudeSupervisorCoordinationFactory:
         participant_id: ParticipantId,
         connection_generation: int,
     ) -> ClaudeCoordination:
-        manifest = ParticipantManifest(
-            participant_id=participant_id,
-            provider_id=ProviderId.CLAUDE,
-            client_kind=ParticipantClientKind.CLAUDE_CODE,
-            capability_version=1,
-            connection_generation=connection_generation,
+        manifest = claude_participant_manifest(
+            participant_id,
+            connection_generation,
         )
         action = ControlClient.connect(self._supervisor_socket)
         subscription: ControlClient | None = None

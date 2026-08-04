@@ -15,6 +15,7 @@ from sidekick_usages.cli.session.claude.coordination import (
     ClaudeCoordination,
     ClaudeCoordinationFactory,
     ClaudeSupervisorCoordinationFactory,
+    claude_participant_manifest,
 )
 from sidekick_usages.core.accounts.types import RequestId
 from sidekick_usages.core.selection.types import (
@@ -23,10 +24,9 @@ from sidekick_usages.core.selection.types import (
     TurnId,
 )
 from sidekick_usages.core.types import ProviderId
+from sidekick_usages.daemon.control.protocol import ConnectionClosedError
 from sidekick_usages.daemon.selection.models import (
     ParticipantAdoptionProof,
-    ParticipantClientKind,
-    ParticipantManifest,
     ParticipantNotice,
     ParticipantNoticeKind,
     ParticipantReadyProof,
@@ -34,6 +34,7 @@ from sidekick_usages.daemon.selection.models import (
     TurnAdmissionState,
 )
 from sidekick_usages.providers.claude.structured.codec import (
+    ClaudeProtectedChannelClosedError,
     clear_secret_buffer,
     decode_control_success,
 )
@@ -84,6 +85,13 @@ _ENGINE_EXIT_TIMEOUT_SECONDS = 30.0
 _THREAD_JOIN_SECONDS = 2.0
 _COMPLETED_CONTROL_LIMIT = 256
 _REATTACH_DELAYS_SECONDS = (0.0, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0)
+_ATTACHMENT_RETRY_ERRORS = (
+    BrokenPipeError, ClaudeProtectedChannelClosedError,
+    ConnectionAbortedError, ConnectionClosedError,
+    ConnectionRefusedError, ConnectionResetError,
+    FileNotFoundError, TimeoutError,
+)
+_OPEN_RETRY_ERRORS = (*_ATTACHMENT_RETRY_ERRORS, StopIteration)
 
 
 def _new_turn_id() -> TurnId:
@@ -218,40 +226,84 @@ class ClaudeSessionRuntime:
             self._fail(ClaudeStructuredFailure.PROCESS_UNAVAILABLE)
         self._registration_endpoint = None
         self._host_endpoint = None
-        manifest = ParticipantManifest(
-            participant_id=self._participant_id,
-            provider_id=ProviderId.CLAUDE,
-            client_kind=ParticipantClientKind.CLAUDE_CODE,
-            capability_version=1,
-            connection_generation=self._connection_generation,
-        )
         coordination = ClaudeCoordination(
             self._control,
             host_endpoint,
             registration_endpoint,
         )
         try:
-            channel, _registration = coordination.register(manifest, None)
+            channel, initial = self._initial_attachment(coordination)
             self._channel = channel
-            initial = channel.receive()
             with self._session_lock:
                 session, receipt = self._bootstrap(initial)
                 self._session = session
             self._initialize_engine()
-            channel.acknowledge(receipt)
-            notices = self._control.notices()
             try:
+                channel.acknowledge(receipt)
+                notices = self._control.notices()
                 first = next(notices)
-            except StopIteration:
-                self._fail(ClaudeStructuredFailure.PROTOCOL_EOF)
-            self._apply_notice(first)
-            self._start_threads(notices, self._connection_generation)
+                self._apply_notice(first)
+            except _OPEN_RETRY_ERRORS:
+                with self._condition:
+                    self._gate_code = (
+                        SelectionCode.SELECTION_RECOVERY_REQUIRED
+                    )
+                    self._reattaching = True
+                self._reattach(start_events=True)
+            else:
+                self._start_threads(notices, self._connection_generation)
             self._enrolled = True
         except BaseException:
             if self._channel is not None:
                 self._channel.close()
             self._channel = None
             raise
+
+    def _initial_attachment(
+        self,
+        coordination: ClaudeCoordination,
+    ) -> tuple[ClaudeProtectedHostChannel, ClaudeStructuredProtectedFrame]:
+        """Retain the engine while awaiting its first protected binding."""
+        factory = self._coordination_factory
+        attempt = 0
+        current: ClaudeCoordination | None = coordination
+        while True:
+            channel: ClaudeProtectedHostChannel | None = None
+            try:
+                if current is None:
+                    if factory is None:
+                        self._fail(ClaudeStructuredFailure.PROCESS_UNAVAILABLE)
+                    current = factory(
+                        self._participant_id,
+                        self._connection_generation,
+                    )
+                channel, _registration = current.register(
+                    claude_participant_manifest(
+                        self._participant_id,
+                        self._connection_generation,
+                    ),
+                    None,
+                )
+                initial = channel.receive()
+            except _ATTACHMENT_RETRY_ERRORS:
+                self._close_coordination(current, channel)
+                current = None
+                if factory is None:
+                    raise
+                delay = _REATTACH_DELAYS_SECONDS[
+                    min(attempt, len(_REATTACH_DELAYS_SECONDS) - 1)
+                ]
+                if self._closing.wait(delay):
+                    self._fail(ClaudeStructuredFailure.PROCESS_UNAVAILABLE)
+                with self._condition:
+                    self._connection_generation += 1
+                attempt += 1
+                continue
+            except BaseException:
+                self._close_coordination(current, channel)
+                raise
+            self._control = current.control
+            return channel, initial
 
     def dispose_unenrolled_engine(self) -> None:
         """Dispose the child only before participant enrollment finishes."""
@@ -831,7 +883,7 @@ class ClaudeSessionRuntime:
                 )
             )
 
-    def _reattach(self) -> None:
+    def _reattach(self, *, start_events: bool = False) -> None:
         factory = self._coordination_factory
         if factory is None:
             return
@@ -848,7 +900,7 @@ class ClaudeSessionRuntime:
             ]
             if self._closing.wait(delay):
                 return
-            if self._reattach_once(factory):
+            if self._reattach_once(factory, start_events=start_events):
                 return
             if not reported:
                 reported = True
@@ -861,7 +913,12 @@ class ClaudeSessionRuntime:
                 )
             attempt += 1
 
-    def _reattach_once(self, factory: ClaudeCoordinationFactory) -> bool:
+    def _reattach_once(
+        self,
+        factory: ClaudeCoordinationFactory,
+        *,
+        start_events: bool = False,
+    ) -> bool:
         with self._condition:
             self._connection_generation += 1
             generation = self._connection_generation
@@ -872,12 +929,9 @@ class ClaudeSessionRuntime:
             coordination = factory(self._participant_id, generation)
             with self._session_lock:
                 binding = self._require_session().binding
-            manifest = ParticipantManifest(
-                participant_id=self._participant_id,
-                provider_id=ProviderId.CLAUDE,
-                client_kind=ParticipantClientKind.CLAUDE_CODE,
-                capability_version=1,
-                connection_generation=generation,
+            manifest = claude_participant_manifest(
+                self._participant_id,
+                generation,
             )
             channel, _registration = coordination.register(manifest, binding)
             notices = coordination.control.notices()
@@ -886,7 +940,11 @@ class ClaudeSessionRuntime:
                 self._control = coordination.control
                 self._channel = channel
             self._apply_notice(first)
-            self._start_threads(notices, generation, start_events=False)
+            self._start_threads(
+                notices,
+                generation,
+                start_events=start_events,
+            )
             if not self._control_is_available():
                 self._coordination_changed.wait()
             if self._control_is_available() or self._closing.is_set():
@@ -905,6 +963,8 @@ class ClaudeSessionRuntime:
         if channel is not None:
             channel.close()
         if coordination is not None:
+            coordination.host_endpoint.close()
+            coordination.registration_endpoint.close()
             with suppress(BaseException):
                 coordination.control.close()
 

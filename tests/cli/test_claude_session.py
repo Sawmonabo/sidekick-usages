@@ -198,6 +198,7 @@ def test_claude_session_keeps_one_engine_across_a_queued_switch() -> None:
         initial_event_count=3,
     )
     control = ClaudeSessionControlFake(events)
+    control.disconnect_initial_once()
     host, supervisor = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
     runtime = ClaudeSessionRuntime(
         engine,
@@ -234,6 +235,8 @@ def test_claude_session_keeps_one_engine_across_a_queued_switch() -> None:
         1,
     )
     assert events == [
+        "bootstrap_disconnect:1",
+        "reattach:2",
         f"install:{SESSION_REQUESTS[0]}",
         "initialize",
         "terminal_failure",
@@ -243,7 +246,7 @@ def test_claude_session_keeps_one_engine_across_a_queued_switch() -> None:
         "ready",
         "adoption",
         "prompt",
-        "reattach:2",
+        "reattach:3",
         (
             "presentation:Sidekick recovered the terminal; Claude remained "
             "active."

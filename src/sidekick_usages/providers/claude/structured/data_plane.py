@@ -37,6 +37,7 @@ from sidekick_usages.core.types import ProviderId
 from sidekick_usages.platform.models import ProcessIdentity
 from sidekick_usages.providers.claude.structured.codec import (
     MAX_CLAUDE_PROTECTED_FRAME_BYTES,
+    ClaudeProtectedChannelClosedError,
     ClaudeProtectedChannelError,
     ClaudeProtectedExchangeInstruction,
     clear_secret_buffer,
@@ -648,7 +649,7 @@ class ClaudeProtectedHostChannel:
             self._endpoint.sendall(frame)
             self._pending = None
         except OSError:
-            raise ClaudeProtectedChannelError(
+            raise ClaudeProtectedChannelClosedError(
                 "The protected host acknowledgement failed."
             ) from None
         finally:
@@ -677,7 +678,7 @@ class ClaudeProtectedHostChannel:
         try:
             self._endpoint.sendall(frame)
         except OSError:
-            raise ClaudeProtectedChannelError(
+            raise ClaudeProtectedChannelClosedError(
                 "The protected host binding report failed."
             ) from None
         finally:
@@ -985,7 +986,7 @@ def _receive_socket_frame(endpoint: socket.socket) -> bytearray:
         chunk = endpoint.recv(_SOCKET_READ_BYTES)
         if not chunk:
             decoder.finish()
-            raise ClaudeProtectedChannelError(
+            raise ClaudeProtectedChannelClosedError(
                 "The protected participant channel closed."
             )
         frames = decoder.feed(chunk)

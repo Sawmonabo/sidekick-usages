@@ -247,6 +247,8 @@ class ClaudeSessionControlFake:
         self._selection_started = False
         self._target_open = False
         self._connection_generation = 1
+        self._disconnect_initial = False
+        self._initial_projected = False
         self._reconnected = Event()
         self._initial = _binding(_OPERATION_A, _ACCOUNT_A, SESSION_OAUTH[0], 1)
         self._target = _binding(_OPERATION_B, _ACCOUNT_B, SESSION_OAUTH[1], 2)
@@ -264,19 +266,28 @@ class ClaudeSessionControlFake:
         self._endpoint = protected_endpoint
         expected = (
             None
-            if self._connection_generation == 1
+            if not self._initial_projected
             else (self._target if self._target_open else self._initial)
         )
         if _query(protected_endpoint, self._connection_generation) != expected:
             raise AssertionError("Claude binding report did not match.")
-        if self._connection_generation == 1:
+        if self._disconnect_initial:
+            self._disconnect_initial = False
+            self._events.append(
+                f"bootstrap_disconnect:{self._connection_generation}"
+            )
+            protected_endpoint.close()
+            self._endpoint = None
+        elif not self._initial_projected:
             _send(
                 protected_endpoint,
                 self._initial,
                 SESSION_OAUTH[0],
                 _NONCE_A,
+                self._connection_generation,
             )
-        else:
+            self._initial_projected = True
+        if self._connection_generation > 1:
             self._events.append(f"reattach:{self._connection_generation}")
             self._reconnected.set()
         return ParticipantRegistration(
@@ -303,10 +314,15 @@ class ClaudeSessionControlFake:
 
     def disconnect(self) -> None:
         """Drop only the current fake supervisor attachment."""
+        self._reconnected.clear()
         self._notices.put(None)
         if self._endpoint is not None:
             self._endpoint.close()
             self._endpoint = None
+
+    def disconnect_initial_once(self) -> None:
+        """Drop generation one before projecting its first binding."""
+        self._disconnect_initial = True
 
     def prepare_reconnect(self, connection_generation: int) -> None:
         """Prepare one strictly newer fake supervisor attachment."""
@@ -340,7 +356,13 @@ class ClaudeSessionControlFake:
         self._notices.put(_notice(ParticipantNoticeKind.PREPARE, 2))
         if not self._prepare_applied.wait(timeout=2):
             raise AssertionError("Claude preparation was not applied.")
-        _send(endpoint, self._target, SESSION_OAUTH[1], _NONCE_B)
+        _send(
+            endpoint,
+            self._target,
+            SESSION_OAUTH[1],
+            _NONCE_B,
+            self._connection_generation,
+        )
         if expect_receipt:
             self._receipt = Thread(target=self._finish_install, daemon=True)
             self._receipt.start()
@@ -441,13 +463,14 @@ def _send(
     binding: ClaudeStructuredBinding,
     oauth: str,
     nonce: RequestId,
+    connection_generation: int,
 ) -> None:
     payload = encode_protected_projection(
         binding,
         bytearray(oauth, "utf-8"),
         nonce,
         participant_id=SESSION_PARTICIPANT,
-        connection_generation=1,
+        connection_generation=connection_generation,
     )
     endpoint.sendall(
         encode_bounded_frame(payload, MAX_CLAUDE_PROTECTED_FRAME_BYTES)
