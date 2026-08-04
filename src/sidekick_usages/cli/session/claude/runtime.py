@@ -483,7 +483,7 @@ class ClaudeSessionRuntime:
                     )
                 )
                 self._raise_failure()
-                if not self._control_available:
+                if self._closing.is_set() or not self._control_available:
                     self._raise_gate()
                     self._fail(ClaudeStructuredFailure.PROCESS_UNAVAILABLE)
             try:
