@@ -396,10 +396,12 @@ class ClaudeParticipantChannelRegistry:
             )
         )
 
-    def query_binding(
-        self, participant_id: ParticipantId, connection_generation: int,
+    def refresh_binding(
+        self,
+        participant_id: ParticipantId,
+        connection_generation: int,
         peer: ProcessIdentity,
-    ) -> ClaudeStructuredBinding | None:
+    ) -> None:
         """Refresh one exact channel's nonce-correlated current binding."""
         with self._distribution_lock:
             with self._lock:
@@ -432,7 +434,6 @@ class ClaudeParticipantChannelRegistry:
                             "The participant reconnected during query."
                         )
                     current.binding = report
-                return report
             except OSError, ValueError:
                 raise ClaudeProtectedChannelError(
                     "The protected Claude binding was not reported."

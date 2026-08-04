@@ -33,7 +33,12 @@ from sidekick_usages.providers.claude.auth.generation import (
 from sidekick_usages.providers.claude.structured.codec import (
     MAX_CLAUDE_PROTECTED_FRAME_BYTES,
     clear_secret_buffer,
+    encode_protected_binding_query,
     encode_protected_projection,
+    require_protected_binding_report,
+)
+from sidekick_usages.providers.claude.structured.data_plane import (
+    ClaudeProtectedHostChannel,
 )
 from sidekick_usages.providers.claude.structured.models import (
     ClaudeStructuredBinding,
@@ -65,11 +70,28 @@ _OPERATION_A = OperationId("44444444-4444-4444-8444-444444444444")
 _OPERATION_B = OperationId("55555555-5555-4555-8555-555555555555")
 _NONCE_A = RequestId("66666666-6666-4666-8666-666666666666")
 _NONCE_B = RequestId("77777777-7777-4777-8777-777777777777")
+_QUERY_NONCE = RequestId("14141414-1414-4414-8414-141414141414")
 _CONTROL_RESPONSE_SUBTYPES = {
     "dialog-1": "error",
     "hook-callback-1": "error",
     "mcp-message-1": "error",
 }
+
+
+def start_claude_binding_reporter(
+    endpoint: socket.socket,
+    participant_id: ParticipantId,
+    connection_generation: int,
+    binding: ClaudeStructuredBinding | None,
+) -> None:
+    """Serve one synchronous supervisor query from a fake host."""
+    Thread(
+        target=ClaudeProtectedHostChannel(
+            endpoint, participant_id, connection_generation
+        ).report_current_binding,
+        args=(binding,),
+        daemon=True,
+    ).start()
 
 
 class ClaudeSessionEngineFake(ClaudeStructuredEngineFake):
@@ -219,6 +241,8 @@ class ClaudeSessionControlFake:
         self._status_applied = Event()
         self._selection_started = False
         self._target_open = False
+        self._connection_generation = 1
+        self._reconnected = Event()
         self._initial = _binding(_OPERATION_A, _ACCOUNT_A, SESSION_OAUTH[0], 1)
         self._target = _binding(_OPERATION_B, _ACCOUNT_B, SESSION_OAUTH[1], 2)
 
@@ -230,25 +254,64 @@ class ClaudeSessionControlFake:
         """Register and project the exact baseline authority."""
         if manifest.participant_id != SESSION_PARTICIPANT:
             raise AssertionError("Unexpected Claude participant.")
+        if manifest.connection_generation != self._connection_generation:
+            raise AssertionError("Unexpected Claude connection generation.")
         self._endpoint = protected_endpoint
-        _send(protected_endpoint, self._initial, SESSION_OAUTH[0], _NONCE_A)
+        expected = (
+            None
+            if self._connection_generation == 1
+            else (self._target if self._target_open else self._initial)
+        )
+        if _query(protected_endpoint, self._connection_generation) != expected:
+            raise AssertionError("Claude binding report did not match.")
+        if self._connection_generation == 1:
+            _send(
+                protected_endpoint,
+                self._initial,
+                SESSION_OAUTH[0],
+                _NONCE_A,
+            )
+        else:
+            self._events.append(f"reattach:{self._connection_generation}")
+            self._reconnected.set()
         return ParticipantRegistration(
             participant_id=SESSION_PARTICIPANT,
             provider_id=ProviderId.CLAUDE,
-            connection_generation=1,
+            connection_generation=self._connection_generation,
             registered_epoch=SelectionEpoch(1),
             pending_epoch=None,
         )
 
     def notices(self) -> Iterator[ParticipantNotice]:
         """Yield the baseline and exact transition notices."""
-        yield _notice(ParticipantNoticeKind.OPEN, 1)
-        while (notice := self._notices.get()) is not None:
+        notices = self._notices
+        yield _notice(
+            ParticipantNoticeKind.OPEN,
+            2 if self._target_open else 1,
+        )
+        while (notice := notices.get()) is not None:
             yield notice
             if notice.kind is ParticipantNoticeKind.STATUS:
                 self._status_applied.set()
             elif notice.kind is ParticipantNoticeKind.PREPARE:
                 self._prepare_applied.set()
+
+    def disconnect(self) -> None:
+        """Drop only the current fake supervisor attachment."""
+        self._notices.put(None)
+        if self._endpoint is not None:
+            self._endpoint.close()
+            self._endpoint = None
+
+    def prepare_reconnect(self, connection_generation: int) -> None:
+        """Prepare one strictly newer fake supervisor attachment."""
+        self._connection_generation = connection_generation
+        self._notices = Queue()
+
+    def wait_reconnected(self) -> None:
+        """Wait for the exact binding re-registration proof."""
+        if not self._reconnected.wait(timeout=2):
+            raise AssertionError("Claude participant did not reattach.")
 
     def refuse_once(self) -> None:
         """Publish a recoverable precommit refusal for the live engine."""
@@ -385,6 +448,33 @@ def _send(
         encode_bounded_frame(payload, MAX_CLAUDE_PROTECTED_FRAME_BYTES)
     )
     clear_secret_buffer(payload)
+
+
+def _query(
+    endpoint: socket.socket,
+    connection_generation: int,
+) -> ClaudeStructuredBinding | None:
+    payload = encode_protected_binding_query(
+        _QUERY_NONCE,
+        SESSION_PARTICIPANT,
+        connection_generation,
+    )
+    endpoint.sendall(
+        encode_bounded_frame(payload, MAX_CLAUDE_PROTECTED_FRAME_BYTES)
+    )
+    decoder = BoundedFrameDecoder(MAX_CLAUDE_PROTECTED_FRAME_BYTES)
+    while True:
+        chunk = endpoint.recv(64 * 1024)
+        if not chunk:
+            raise AssertionError("Protected endpoint closed before report.")
+        reports = decoder.feed(chunk)
+        if reports:
+            return require_protected_binding_report(
+                reports[0],
+                _QUERY_NONCE,
+                SESSION_PARTICIPANT,
+                connection_generation,
+            )
 
 
 def _receive(endpoint: socket.socket) -> None:

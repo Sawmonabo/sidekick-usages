@@ -84,6 +84,7 @@ from sidekick_usages.providers.claude.structured.models import (
     ClaudeStructuredBinding,
     ClaudeStructuredInstallReceipt,
 )
+from tests.fakes.claude.session import start_claude_binding_reporter
 from tests.support.persistence import (
     make_application_paths,
     seed_finalized_selections,
@@ -449,6 +450,7 @@ def _build_journey(
         host.settimeout(1)
         protected_hosts[participant_id] = host
         process = _process(process_index)
+        start_claude_binding_reporter(host, participant_id, 1, None)
         coordinator.register(
             _manifest(participant_id),
             process,
@@ -502,8 +504,7 @@ def _manifest(participant_id: ParticipantId) -> ParticipantManifest:
         participant_id=participant_id,
         provider_id=PROVIDER_ID,
         client_kind=ParticipantClientKind.CLAUDE_CODE,
-        capability_version=1,
-        connection_generation=1,
+        capability_version=1, connection_generation=1,
     )
 
 
@@ -513,8 +514,7 @@ def _process(index: int) -> ProcessIdentity:
 
 def _ready_request(participant_id: ParticipantId) -> ParticipantReadyRequest:
     return ParticipantReadyRequest(
-        participant_id=participant_id,
-        connection_generation=1,
+        participant_id=participant_id, connection_generation=1,
         proof=ParticipantReadyProof(
             account_id=TARGET_ACCOUNT_ID,
             generation=TARGET_GENERATION,
@@ -613,6 +613,7 @@ def _register_late(journey: _Journey) -> ParticipantRegistration:
     host, supervisor = socket.socketpair(socket.AF_UNIX)
     journey.protected_hosts[PARTICIPANT_C] = host
     process = _process(3)
+    start_claude_binding_reporter(host, PARTICIPANT_C, 1, None)
     registration = journey.coordinator.register(
         _manifest(PARTICIPANT_C),
         process,
@@ -956,7 +957,6 @@ def test_recovery_finalizes_forward_from_target_provider_proof(
     )
     *_, result = stream
     assert isinstance(result, SelectionResult)
-
     (finalized,) = selected.load_all()
     provider_journal = journal.load(PROVIDER_ID)
     assert (

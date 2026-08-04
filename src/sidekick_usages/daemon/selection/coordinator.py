@@ -62,6 +62,7 @@ from sidekick_usages.platform.types import (
 
 OLD_TURN_DRAIN_TIMEOUT_SECONDS = 120.0
 PARTICIPANT_READY_TIMEOUT_SECONDS = 30.0
+_AUTHORITY_PROOF_FAILED = SelectionCode.AUTHORITY_PROOF_FAILED
 
 
 @dataclass(slots=True)
@@ -137,9 +138,7 @@ class SelectionCoordinator:
         if not requires_endpoint:
             if protected_endpoint is not None:
                 protected_endpoint.close()
-                raise ParticipantRequestError(
-                    SelectionCode.AUTHORITY_PROOF_FAILED
-                )
+                raise ParticipantRequestError(_AUTHORITY_PROOF_FAILED)
             registration = self._participants.register(
                 manifest,
                 peer,
@@ -147,9 +146,7 @@ class SelectionCoordinator:
             )
         else:
             if protected_endpoint is None:
-                raise ParticipantRequestError(
-                    SelectionCode.AUTHORITY_PROOF_FAILED
-                )
+                raise ParticipantRequestError(_AUTHORITY_PROOF_FAILED)
             with self._registration_lock:
                 try:
                     transaction = self._participants.stage_attachment(
@@ -159,7 +156,7 @@ class SelectionCoordinator:
                     )
                 except Exception:
                     raise ParticipantRequestError(
-                        SelectionCode.AUTHORITY_PROOF_FAILED
+                        _AUTHORITY_PROOF_FAILED
                     ) from None
                 try:
                     registration = self._participants.register(
@@ -171,10 +168,22 @@ class SelectionCoordinator:
                 except BaseException:
                     transaction.rollback()
                     raise
-        self._bind_registered_participant(
-            manifest.provider_id,
-            registration,
-        )
+            attachments = self._participants.attachment_registry(
+                manifest.provider_id
+            )
+            if attachments is None:
+                raise ParticipantRequestError(_AUTHORITY_PROOF_FAILED)
+            try:
+                attachments.refresh_binding(
+                    manifest.participant_id,
+                    manifest.connection_generation,
+                    peer,
+                )
+            except Exception:
+                raise ParticipantRequestError(
+                    _AUTHORITY_PROOF_FAILED
+                ) from None
+        self._bind_registered_participant(manifest.provider_id, registration)
         return registration
 
     def _bind_registered_participant(

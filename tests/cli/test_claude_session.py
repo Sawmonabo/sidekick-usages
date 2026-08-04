@@ -4,6 +4,7 @@ import socket
 
 import pytest
 
+from sidekick_usages.cli.session.claude.coordination import ClaudeCoordination
 from sidekick_usages.cli.session.claude.host import ClaudeCliSession
 from sidekick_usages.cli.session.claude.runtime import (
     ClaudeSessionGateError,
@@ -13,7 +14,7 @@ from sidekick_usages.cli.session.claude.terminal import (
     ClaudeTerminal,
     ClaudeTerminalSession,
 )
-from sidekick_usages.core.selection.types import SelectionCode
+from sidekick_usages.core.selection.types import ParticipantId, SelectionCode
 from sidekick_usages.providers.claude.structured.models import (
     ClaudeStructuredDialogRequest,
     ClaudeStructuredElicitationRequest,
@@ -62,6 +63,8 @@ class _JourneyTerminal(ClaudeTerminal):
             self.render_status(error.code)
         self._control.start_selection()
         turn_id = session.start_turn("queued prompt")
+        self._control.disconnect()
+        self._control.wait_reconnected()
         while True:
             event = session.receive_event()
             try:
@@ -201,6 +204,9 @@ def test_claude_session_keeps_one_engine_across_a_queued_switch() -> None:
         host,
         supervisor,
         participant_id=SESSION_PARTICIPANT,
+        coordination_factory=lambda participant_id, connection_generation: (
+            _reconnect(control, participant_id, connection_generation)
+        ),
         turn_id_factory=lambda: SESSION_TURN,
         request_id_factory=iter(SESSION_REQUESTS).__next__,
     )
@@ -236,6 +242,7 @@ def test_claude_session_keeps_one_engine_across_a_queued_switch() -> None:
         "ready",
         "adoption",
         "prompt",
+        "reattach:2",
         (
             "presentation:Sidekick recovered the terminal; Claude remained "
             "active."
@@ -308,6 +315,18 @@ def test_claude_session_gates_an_active_postcommit_projection() -> None:
     runtime.end_turn(turn_id)
     assert runtime.finish_engine() == 0
     runtime.close()
+
+
+def _reconnect(
+    control: ClaudeSessionControlFake,
+    participant_id: ParticipantId,
+    connection_generation: int,
+) -> ClaudeCoordination:
+    if participant_id != SESSION_PARTICIPANT:
+        raise AssertionError("Claude participant identity changed.")
+    control.prepare_reconnect(connection_generation)
+    host, supervisor = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+    return ClaudeCoordination(control, host, supervisor)
 
 
 def _stream_events() -> tuple[bytes, ...]:

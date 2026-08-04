@@ -3,13 +3,19 @@
 import socket
 from collections import deque
 from collections.abc import Callable, Iterator
+from contextlib import suppress
 from pathlib import Path
 from queue import Queue
 from threading import Condition, Event, RLock, Thread
-from typing import NoReturn, Protocol
+from typing import NoReturn
 from uuid import uuid4
 
-from sidekick_usages.cli.session.control import ParticipantControl
+from sidekick_usages.cli.session.claude.coordination import (
+    ClaudeControl,
+    ClaudeCoordination,
+    ClaudeCoordinationFactory,
+    ClaudeSupervisorCoordinationFactory,
+)
 from sidekick_usages.core.accounts.types import RequestId
 from sidekick_usages.core.selection.types import (
     ParticipantId,
@@ -17,7 +23,6 @@ from sidekick_usages.core.selection.types import (
     TurnId,
 )
 from sidekick_usages.core.types import ProviderId
-from sidekick_usages.daemon.control.client import ControlClient
 from sidekick_usages.daemon.selection.models import (
     ParticipantAdoptionProof,
     ParticipantClientKind,
@@ -25,7 +30,6 @@ from sidekick_usages.daemon.selection.models import (
     ParticipantNotice,
     ParticipantNoticeKind,
     ParticipantReadyProof,
-    ParticipantRegistration,
     TurnAdmission,
     TurnAdmissionState,
 )
@@ -79,6 +83,7 @@ _ENGINE_POLL_SECONDS = 0.1
 _ENGINE_EXIT_TIMEOUT_SECONDS = 30.0
 _THREAD_JOIN_SECONDS = 2.0
 _COMPLETED_CONTROL_LIMIT = 256
+_REATTACH_DELAYS_SECONDS = (0.0, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0)
 
 
 def _new_turn_id() -> TurnId:
@@ -111,86 +116,18 @@ class ClaudeProviderTerminatedError(RuntimeError):
     """Report the official engine's natural termination to its host."""
 
 
-class ClaudeParticipantControl(Protocol):
-    """Participant operations consumed by one Claude runtime."""
-
-    def register(
-        self,
-        manifest: ParticipantManifest,
-        protected_endpoint: socket.socket,
-    ) -> ParticipantRegistration:
-        """Register one exact participant and endpoint."""
-
-    def notices(self) -> Iterator[ParticipantNotice]:
-        """Yield authenticated admission notices."""
-
-    def begin(self, turn_id: TurnId) -> TurnAdmission:
-        """Admit or queue one exact turn."""
-
-    def end(self, turn_id: TurnId) -> None:
-        """End one naturally terminal turn."""
-
-    def ready(self, proof: ParticipantReadyProof) -> None:
-        """Publish exact provider-local readiness."""
-
-    def adopted(self, proof: ParticipantAdoptionProof) -> None:
-        """Publish first-real-turn adoption."""
-
-    def close(self) -> None:
-        """Close control resources owned by this participant."""
-
-
-class _ClaudeControlAdapter:
-    """Bind the provider-neutral control client to Claude's manifest."""
-
-    def __init__(self, control: ParticipantControl) -> None:
-        self._control = control
-
-    def register(
-        self,
-        manifest: ParticipantManifest,
-        protected_endpoint: socket.socket,
-    ) -> ParticipantRegistration:
-        """Register only the manifest composed with this control."""
-        del manifest
-        return self._control.register(protected_endpoint)
-
-    def notices(self) -> Iterator[ParticipantNotice]:
-        """Yield exact decoded Claude notices."""
-        return self._control.notices()
-
-    def begin(self, turn_id: TurnId) -> TurnAdmission:
-        """Return one exact turn boundary."""
-        return self._control.begin(turn_id)
-
-    def end(self, turn_id: TurnId) -> None:
-        """Close one exact turn boundary."""
-        self._control.end(turn_id)
-
-    def ready(self, proof: ParticipantReadyProof) -> None:
-        """Publish one exact readiness proof."""
-        self._control.ready(proof)
-
-    def adopted(self, proof: ParticipantAdoptionProof) -> None:
-        """Publish one exact adoption proof."""
-        self._control.adopted(proof)
-
-    def close(self) -> None:
-        """Close both supervisor clients."""
-        self._control.close()
-
-
 class ClaudeSessionRuntime:
     """Own one unchanged engine and protected participant lifetime."""
 
     def __init__(
         self,
         engine: ClaudeStructuredEngine,
-        control: ClaudeParticipantControl,
+        control: ClaudeControl,
         host_endpoint: socket.socket,
         registration_endpoint: socket.socket,
         *,
         participant_id: ParticipantId,
+        coordination_factory: ClaudeCoordinationFactory | None = None,
         turn_id_factory: Callable[[], TurnId] = _new_turn_id,
         request_id_factory: Callable[[], RequestId] | None = None,
     ) -> None:
@@ -203,17 +140,21 @@ class ClaudeSessionRuntime:
             registration_endpoint
         )
         self._participant_id = participant_id
+        self._coordination_factory = coordination_factory
+        self._connection_generation = _CONNECTION_GENERATION
         self._turn_id_factory = turn_id_factory
         self._request_id_factory = request_id_factory
         self._condition = Condition(RLock())
         self._engine_lock = RLock()
         self._session_lock = RLock()
         self._closing = Event()
+        self._coordination_changed = Event()
         self._session: ClaudeStructuredSession | None = None
         self._channel: ClaudeProtectedHostChannel | None = None
         self._notice_thread: Thread | None = None
         self._protected_thread: Thread | None = None
         self._event_thread: Thread | None = None
+        self._reattach_thread: Thread | None = None
         self._events: Queue[ClaudeStructuredTerminalEvent | BaseException] = (
             Queue()
         )
@@ -227,7 +168,8 @@ class ClaudeSessionRuntime:
         self._open_revision = 0
         self._gate_code: SelectionCode | None = None
         self._failure: BaseException | None = None
-        self._control_available = True
+        self._control_available = False
+        self._reattaching = False
         self._opened = False
         self._enrolled = False
         self._finished = False
@@ -242,46 +184,16 @@ class ClaudeSessionRuntime:
     ) -> ClaudeSessionRuntime:
         """Compose one AF_UNIX participant against the supervisor."""
         participant_id = ParticipantId(str(uuid4()))
-        manifest = ParticipantManifest(
+        factory = ClaudeSupervisorCoordinationFactory(supervisor_socket)
+        coordination = factory(participant_id, _CONNECTION_GENERATION)
+        return cls(
+            engine,
+            coordination.control,
+            coordination.host_endpoint,
+            coordination.registration_endpoint,
             participant_id=participant_id,
-            provider_id=ProviderId.CLAUDE,
-            client_kind=ParticipantClientKind.CLAUDE_CODE,
-            capability_version=1,
-            connection_generation=_CONNECTION_GENERATION,
+            coordination_factory=factory,
         )
-        action = ControlClient.connect(supervisor_socket)
-        subscription: ControlClient | None = None
-        host_endpoint: socket.socket | None = None
-        registration_endpoint: socket.socket | None = None
-        try:
-            subscription = ControlClient.connect(supervisor_socket)
-            host_endpoint, registration_endpoint = socket.socketpair(
-                socket.AF_UNIX,
-                socket.SOCK_STREAM,
-            )
-            control = _ClaudeControlAdapter(
-                ParticipantControl(action, subscription, manifest)
-            )
-            runtime = cls(
-                engine,
-                control,
-                host_endpoint,
-                registration_endpoint,
-                participant_id=participant_id,
-            )
-            host_endpoint = None
-            registration_endpoint = None
-            subscription = None
-            return runtime
-        except BaseException:
-            if registration_endpoint is not None:
-                registration_endpoint.close()
-            if host_endpoint is not None:
-                host_endpoint.close()
-            if subscription is not None:
-                subscription.close()
-            action.close()
-            raise
 
     @property
     def process_id(self) -> int:
@@ -311,16 +223,16 @@ class ClaudeSessionRuntime:
             provider_id=ProviderId.CLAUDE,
             client_kind=ParticipantClientKind.CLAUDE_CODE,
             capability_version=1,
-            connection_generation=_CONNECTION_GENERATION,
+            connection_generation=self._connection_generation,
         )
-        channel = ClaudeProtectedHostChannel(
+        coordination = ClaudeCoordination(
+            self._control,
             host_endpoint,
-            self._participant_id,
-            _CONNECTION_GENERATION,
+            registration_endpoint,
         )
-        self._channel = channel
         try:
-            self._control.register(manifest, registration_endpoint)
+            channel, _registration = coordination.register(manifest, None)
+            self._channel = channel
             initial = channel.receive()
             with self._session_lock:
                 session, receipt = self._bootstrap(initial)
@@ -333,10 +245,11 @@ class ClaudeSessionRuntime:
             except StopIteration:
                 self._fail(ClaudeStructuredFailure.PROTOCOL_EOF)
             self._apply_notice(first)
-            self._start_threads(notices)
+            self._start_threads(notices, self._connection_generation)
             self._enrolled = True
         except BaseException:
-            channel.close()
+            if self._channel is not None:
+                self._channel.close()
             self._channel = None
             raise
 
@@ -400,7 +313,7 @@ class ClaudeSessionRuntime:
                 try:
                     self._control.adopted(proof)
                 except BaseException:
-                    self._control_lost()
+                    self._control_lost(self._connection_generation)
                     self._raise_gate()
             with self._engine_lock:
                 self._engine.send_interactive(
@@ -563,7 +476,7 @@ class ClaudeSessionRuntime:
             try:
                 self._control.end(turn_id)
             except BaseException:
-                self._control_lost()
+                self._control_lost(self._connection_generation)
 
     def finish_engine(self) -> int:
         """Close engine input and await only its ordinary exit."""
@@ -578,6 +491,7 @@ class ClaudeSessionRuntime:
     def close(self) -> None:
         """Close only host and supervisor resources owned by this runtime."""
         self._closing.set()
+        self._coordination_changed.set()
         channel = self._channel
         if channel is not None:
             channel.close()
@@ -593,6 +507,7 @@ class ClaudeSessionRuntime:
             self._protected_thread,
             self._notice_thread,
             self._event_thread,
+            self._reattach_thread,
         ):
             if thread is None:
                 continue
@@ -609,34 +524,46 @@ class ClaudeSessionRuntime:
                 failures,
             )
 
-    def _start_threads(self, notices: Iterator[ParticipantNotice]) -> None:
+    def _start_threads(
+        self,
+        notices: Iterator[ParticipantNotice],
+        connection_generation: int,
+        *,
+        start_events: bool = True,
+    ) -> None:
+        channel = self._channel
+        if channel is None:
+            self._fail(ClaudeStructuredFailure.PROCESS_UNAVAILABLE)
         protected = Thread(
             target=self._consume_protected,
+            args=(channel, connection_generation),
             daemon=True,
             name="claude-protected-installs",
         )
         notice = Thread(
             target=self._consume_notices,
-            args=(notices,),
+            args=(notices, connection_generation),
             daemon=True,
             name="claude-participant-notices",
         )
-        events = Thread(
-            target=self._consume_events,
-            daemon=True,
-            name="claude-structured-events",
-        )
-        self._protected_thread = protected
-        self._notice_thread = notice
-        self._event_thread = events
         protected.start()
         notice.start()
-        events.start()
+        self._protected_thread = protected
+        self._notice_thread = notice
+        if start_events:
+            events = Thread(
+                target=self._consume_events,
+                daemon=True,
+                name="claude-structured-events",
+            )
+            events.start()
+            self._event_thread = events
 
-    def _consume_protected(self) -> None:
-        channel = self._channel
-        if channel is None:
-            return
+    def _consume_protected(
+        self,
+        channel: ClaudeProtectedHostChannel,
+        connection_generation: int,
+    ) -> None:
         try:
             while not self._closing.is_set():
                 frame = channel.receive()
@@ -650,13 +577,12 @@ class ClaudeSessionRuntime:
                     with self._session_lock:
                         self._require_session().discard_uninstalled_target()
                     channel.close()
-                    self._channel = None
-                    self._control_lost()
+                    self._control_lost(connection_generation)
                     return
                 channel.acknowledge(receipt)
         except BaseException:
             if not self._closing.is_set():
-                self._control_lost()
+                self._control_lost(connection_generation)
 
     def _consume_events(self) -> None:
         try:
@@ -753,15 +679,16 @@ class ClaudeSessionRuntime:
     def _consume_notices(
         self,
         notices: Iterator[ParticipantNotice],
+        connection_generation: int,
     ) -> None:
         try:
             for notice in notices:
                 self._apply_notice(notice)
             if not self._closing.is_set():
-                self._control_lost()
+                self._control_lost(connection_generation)
         except BaseException:
             if not self._closing.is_set():
-                self._control_lost()
+                self._control_lost(connection_generation)
 
     def _apply_notice(self, notice: ParticipantNotice) -> None:
         if (
@@ -771,14 +698,18 @@ class ClaudeSessionRuntime:
             self._fail(ClaudeStructuredFailure.AUTHORITY_MISMATCH)
         if notice.kind is ParticipantNoticeKind.PREPARE:
             with self._condition:
-                self._gate_code = None
+                if self._control_available:
+                    self._gate_code = None
                 self._condition.notify_all()
             return
         if notice.kind is ParticipantNoticeKind.OPEN:
             with self._condition:
+                self._control_available = True
+                self._reattaching = False
                 self._gate_code = None
                 self._open_revision += 1
                 self._condition.notify_all()
+            self._coordination_changed.set()
             return
         if notice.kind is ParticipantNoticeKind.STATUS:
             with self._condition:
@@ -811,13 +742,16 @@ class ClaudeSessionRuntime:
     def _await_admission(self, turn_id: TurnId) -> TurnAdmission:
         while True:
             with self._condition:
+                self._condition.wait_for(
+                    lambda: not self._reattaching or self._closing.is_set()
+                )
                 self._raise_failure()
                 self._raise_gate()
                 revision = self._open_revision
             try:
                 admission = self._control.begin(turn_id)
             except BaseException:
-                self._control_lost()
+                self._control_lost(self._connection_generation)
                 continue
             if admission.state is TurnAdmissionState.ADMITTED:
                 return admission
@@ -865,18 +799,117 @@ class ClaudeSessionRuntime:
                 self._failure = error
             self._condition.notify_all()
 
-    def _control_lost(self) -> None:
+    def _control_lost(self, connection_generation: int) -> None:
+        report_unavailable = False
         with self._condition:
+            if (
+                connection_generation != self._connection_generation
+                or self._closing.is_set()
+            ):
+                return
+            if not self._control_available and self._reattaching:
+                self._coordination_changed.set()
+                return
             self._control_available = False
             self._gate_code = SelectionCode.SELECTION_RECOVERY_REQUIRED
+            factory = self._coordination_factory
+            if factory is not None and not self._reattaching:
+                self._reattaching = True
+                thread = Thread(
+                    target=self._reattach,
+                    daemon=True,
+                    name="claude-participant-reattach",
+                )
+                thread.start()
+                self._reattach_thread = thread
+            elif factory is None:
+                report_unavailable = True
             self._condition.notify_all()
-        self._events.put(
-            ClaudeStructuredTerminalEvent(
-                conversation_id=None,
-                text=(),
-                status="Sidekick: selection_recovery_required",
+        if report_unavailable:
+            self._events.put(
+                ClaudeStructuredTerminalEvent(
+                    conversation_id=None,
+                    text=(),
+                    status="Sidekick: selection_recovery_required",
+                )
             )
-        )
+
+    def _reattach(self) -> None:
+        factory = self._coordination_factory
+        if factory is None:
+            return
+        old_channel = self._channel
+        if old_channel is not None:
+            old_channel.close()
+        with suppress(BaseException):
+            self._control.close()
+        attempt = 0
+        reported = False
+        while True:
+            delay = _REATTACH_DELAYS_SECONDS[
+                min(attempt, len(_REATTACH_DELAYS_SECONDS) - 1)
+            ]
+            if self._closing.wait(delay):
+                return
+            if self._reattach_once(factory):
+                return
+            if not reported:
+                reported = True
+                self._events.put(
+                    ClaudeStructuredTerminalEvent(
+                        conversation_id=None,
+                        text=(),
+                        status="Sidekick: selection_recovery_required",
+                    )
+                )
+            attempt += 1
+
+    def _reattach_once(self, factory: ClaudeCoordinationFactory) -> bool:
+        with self._condition:
+            self._connection_generation += 1
+            generation = self._connection_generation
+            self._coordination_changed.clear()
+        coordination: ClaudeCoordination | None = None
+        channel: ClaudeProtectedHostChannel | None = None
+        try:
+            coordination = factory(self._participant_id, generation)
+            with self._session_lock:
+                binding = self._require_session().binding
+            manifest = ParticipantManifest(
+                participant_id=self._participant_id,
+                provider_id=ProviderId.CLAUDE,
+                client_kind=ParticipantClientKind.CLAUDE_CODE,
+                capability_version=1,
+                connection_generation=generation,
+            )
+            channel, _registration = coordination.register(manifest, binding)
+            notices = coordination.control.notices()
+            first = next(notices)
+            with self._condition:
+                self._control = coordination.control
+                self._channel = channel
+            self._apply_notice(first)
+            self._start_threads(notices, generation, start_events=False)
+            if not self._control_is_available():
+                self._coordination_changed.wait()
+            if self._control_is_available() or self._closing.is_set():
+                return True
+        except BaseException:
+            self._close_coordination(coordination, channel)
+            return False
+        self._close_coordination(coordination, channel)
+        return False
+
+    @staticmethod
+    def _close_coordination(
+        coordination: ClaudeCoordination | None,
+        channel: ClaudeProtectedHostChannel | None,
+    ) -> None:
+        if channel is not None:
+            channel.close()
+        if coordination is not None:
+            with suppress(BaseException):
+                coordination.control.close()
 
     def _control_is_available(self) -> bool:
         with self._condition:

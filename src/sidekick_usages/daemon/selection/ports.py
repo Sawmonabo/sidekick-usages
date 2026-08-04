@@ -86,6 +86,14 @@ class ParticipantAttachmentRegistry(Protocol):
     ) -> None:
         """Close the endpoint matching one proved dead process."""
 
+    def refresh_binding(
+        self,
+        participant_id: ParticipantId,
+        connection_generation: int,
+        peer: ProcessIdentity,
+    ) -> None:
+        """Refresh one nonce-correlated secret-free attachment binding."""
+
     def matches_target(
         self,
         participant_id: ParticipantId,
