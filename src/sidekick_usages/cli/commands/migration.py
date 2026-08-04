@@ -13,7 +13,6 @@ from sidekick_usages.cli.validation import validated_label
 from sidekick_usages.core.types import ExitCode
 from sidekick_usages.credentials.migration.models.managed_auth import (
     ManagedAuthPlan,
-    ManagedAuthTarget,
 )
 from sidekick_usages.credentials.migration.types.managed_auth import (
     ManagedAuthOutcome,
@@ -38,20 +37,6 @@ def _render_plan(ctx: typer.Context, plan: ManagedAuthPlan) -> None:
     invocation.console.print(
         "[dim]Uses official provider login only; no tokens are accepted "
         "by this command.[/dim]"
-    )
-
-
-def _approve_association(
-    target: ManagedAuthTarget,
-    *,
-    assume_yes: bool,
-) -> bool:
-    if assume_yes:
-        return False
-    return typer.confirm(
-        "Associate the next verified Claude subscription identity with "
-        f"'{target.label}' while preserving its setup token?",
-        default=False,
     )
 
 
@@ -89,10 +74,7 @@ def managed_auth_cmd(
         bool,
         typer.Option(
             "--yes",
-            help=(
-                "Continue after the preview; never approve a new Claude "
-                "identity association."
-            ),
+            help="Continue after the migration preview.",
         ),
     ] = False,
     device_auth: Annotated[
@@ -140,10 +122,6 @@ def managed_auth_cmd(
     report = migration.migrate(
         interactive=sys.stdin.isatty() and sys.stdout.isatty(),
         device_auth=device_auth,
-        approve_claude_association=lambda target: _approve_association(
-            target,
-            assume_yes=assume_yes,
-        ),
         codex_events=lambda event: render_codex_login_event(
             invocation.console,
             event,
@@ -181,7 +159,8 @@ def managed_auth_cmd(
         invocation.err_console.print(Text(message, style="yellow"))
         raise typer.Exit(code=ExitCode.MANUAL_ACTION)
     invocation.console.print(
-        "[green]All saved accounts have verified managed authorities.[/green]"
+        "[green]All saved accounts have verified selectable "
+        "authorities.[/green]"
     )
 
 

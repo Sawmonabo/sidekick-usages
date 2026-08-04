@@ -1,7 +1,6 @@
 """Resumable provider-neutral managed-auth migration."""
 
-from collections.abc import Callable
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sidekick_usages.clock import Clock
 from sidekick_usages.core.accounts.models import (
@@ -132,7 +131,6 @@ class ManagedAuthMigrationCoordinator:
         *,
         interactive: bool,
         device_auth: bool,
-        approve_claude_association: Callable[[ManagedAuthTarget], bool],
         codex_events: CodexLoginEventSink,
     ) -> ManagedAuthReport:
         """Ensure readiness, then migrate every account independently."""
@@ -149,7 +147,6 @@ class ManagedAuthMigrationCoordinator:
                 target,
                 interactive=interactive,
                 device_auth=device_auth,
-                approve_claude_association=approve_claude_association,
                 codex_events=codex_events,
             )
             for target in plan.targets
@@ -185,7 +182,6 @@ class ManagedAuthMigrationCoordinator:
         *,
         interactive: bool,
         device_auth: bool,
-        approve_claude_association: Callable[[ManagedAuthTarget], bool],
         codex_events: CodexLoginEventSink,
     ) -> ManagedAuthAccountResult:
         before = self._accounts.read_saved(target.account_id)
@@ -197,21 +193,8 @@ class ManagedAuthMigrationCoordinator:
                 "managed-auth command.",
             )
         setup_before = _setup_authority(before)
-        if (
-            target.action is ManagedAuthAction.ASSOCIATE
-            and not approve_claude_association(target)
-        ):
-            return ManagedAuthAccountResult(
-                provider_id=target.provider_id,
-                account_id=target.account_id,
-                label=target.label,
-                outcome=ManagedAuthOutcome.CANCELED,
-                message=(
-                    "Identity association was canceled; the saved setup "
-                    "token remains unchanged."
-                ),
-                failure_kind=ProviderFailureKind.REJECTED,
-            )
+        if _setup_only_authority(before):
+            return self._prove_ready(target, setup_before)
         if target.provider_id is ProviderId.CODEX:
             migrated = self._codex.migrate(
                 target.label,
@@ -221,9 +204,7 @@ class ManagedAuthMigrationCoordinator:
         else:
             migrated = self._claude.migrate(
                 target.label,
-                establish_identity=(
-                    target.action is ManagedAuthAction.ASSOCIATE
-                ),
+                establish_identity=False,
                 interactive=interactive,
             )
         if isinstance(migrated, ProviderFailure):
@@ -299,10 +280,8 @@ class ManagedAuthMigrationCoordinator:
             if isinstance(
                 authority.subscription,
                 ClaudeManagedLoginAuthority,
-            ):
+            ) or authority.subscription is None:
                 action = ManagedAuthAction.VERIFY
-            elif authority.subscription is None:
-                action = ManagedAuthAction.ASSOCIATE
             else:
                 action = ManagedAuthAction.MIGRATE
         else:
@@ -329,19 +308,34 @@ def _managed_authority_ready(
         )
     elif isinstance(authority, ClaudeAccountAuthority):
         managed = authority.subscription
-        authority_ready = (
-            isinstance(managed, ClaudeManagedLoginAuthority)
-            and managed.health is CredentialHealth.HEALTHY
-            and managed.action is CredentialAction.NONE
-            and not refresh_due(
-                classify_expiry(
-                    account.access_expiry,
+        if managed is None:
+            setup = authority.setup_token
+            authority_ready = (
+                setup is not None
+                and setup.health is CredentialHealth.HEALTHY
+                and not refresh_due(
+                    classify_expiry(
+                        account.access_expiry,
+                        now=reference_time,
+                    ),
                     now=reference_time,
-                ),
-                now=reference_time,
-                margin=CLAUDE_REFRESH_MARGIN,
+                    margin=timedelta(),
+                )
             )
-        )
+        else:
+            authority_ready = (
+                isinstance(managed, ClaudeManagedLoginAuthority)
+                and managed.health is CredentialHealth.HEALTHY
+                and managed.action is CredentialAction.NONE
+                and not refresh_due(
+                    classify_expiry(
+                        account.access_expiry,
+                        now=reference_time,
+                    ),
+                    now=reference_time,
+                    margin=CLAUDE_REFRESH_MARGIN,
+                )
+            )
     else:
         return False
     return (
@@ -359,6 +353,16 @@ def _setup_authority(
         authority.setup_token
         if isinstance(authority, ClaudeAccountAuthority)
         else None
+    )
+
+
+def _setup_only_authority(account: SavedAccount) -> bool:
+    """Return whether one Claude account has only a setup-token authority."""
+    authority = account.authority
+    return (
+        isinstance(authority, ClaudeAccountAuthority)
+        and authority.setup_token is not None
+        and authority.subscription is None
     )
 
 

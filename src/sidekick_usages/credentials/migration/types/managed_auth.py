@@ -22,7 +22,6 @@ class ManagedAuthAction(StrEnum):
     """One resumable action derived from the current account authority."""
 
     MIGRATE = "migrate"
-    ASSOCIATE = "associate"
     VERIFY = "verify"
 
 
@@ -31,7 +30,6 @@ class ManagedAuthOutcome(StrEnum):
 
     READY = "ready"
     ACTION_REQUIRED = "action_required"
-    CANCELED = "canceled"
 
 
 class ManagedAuthAccounts(Protocol):

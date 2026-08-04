@@ -273,9 +273,11 @@ def test_managed_auth_migration_resumes_without_exposing_secrets(
         "codex-retry",
         "codex-retry",
     )
-    assert scenario.all_managed
+    assert scenario.setup_only_preserved
+    assert scenario.all_ready
     rendered = output.getvalue() + errors.getvalue()
-    assert "All saved accounts have verified managed authorities." in rendered
+    completed = "All saved accounts have verified selectable authorities."
+    assert completed in rendered
     for identity in MIGRATION_IDENTITIES:
         assert identity not in rendered
 
@@ -283,7 +285,7 @@ def test_managed_auth_migration_resumes_without_exposing_secrets(
     guided_before = tuple(scenario.claude.guided_account_ids)
     claude_calls_before = scenario.trace.count("claude:claude-team")
     unattended = harness.invoke(["migrate", "managed-auth", "--yes"])
-    assert unattended.exit_code == ExitCode.MANUAL_ACTION
+    assert unattended.exit_code == ExitCode.SUCCESS
     assert tuple(scenario.claude.guided_account_ids) == guided_before
     assert scenario.trace.count("claude:claude-team") == claude_calls_before
 

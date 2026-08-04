@@ -49,6 +49,9 @@ from sidekick_usages.providers.codex.auth.login.models import CodexLoginEvent
 REFERENCE_TIME = datetime(2026, 7, 25, 14, tzinfo=UTC)
 OBSERVED_AT = REFERENCE_TIME - timedelta(hours=2)
 CLAUDE_ACCOUNT_ID = SidekickAccountId("33333333-3333-4333-8333-333333333333")
+CLAUDE_SETUP_ACCOUNT_ID = SidekickAccountId(
+    "77777777-7777-4777-8777-777777777777"
+)
 CODEX_READY_ACCOUNT_ID = SidekickAccountId(
     "55555555-5555-4555-8555-555555555555"
 )
@@ -57,6 +60,9 @@ CODEX_RETRY_ACCOUNT_ID = SidekickAccountId(
 )
 CLAUDE_AUTHORITY_ID = AuthorityId("cccccccc-cccc-4ccc-8ccc-cccccccccccc")
 SETUP_AUTHORITY_ID = AuthorityId("dddddddd-dddd-4ddd-8ddd-dddddddddddd")
+SETUP_ONLY_AUTHORITY_ID = AuthorityId(
+    "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+)
 CODEX_READY_AUTHORITY_ID = AuthorityId("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
 CODEX_RETRY_AUTHORITY_ID = AuthorityId("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
 MIGRATION_IDENTITIES = (
@@ -406,12 +412,31 @@ class ManagedAuthScenario:
         return isinstance(account.authority.subscription, CodexStoredAuthority)
 
     @property
-    def all_managed(self) -> bool:
-        """Return whether every final account has a managed authority."""
-        return all(
-            account.has_managed_authority
-            for account in self.accounts.saved_accounts()
+    def setup_only_preserved(self) -> bool:
+        """Return whether setup-only authority remained unassociated."""
+        account = self.accounts.label(ProviderId.CLAUDE, "claude-setup")
+        authority = account.authority
+        return (
+            isinstance(authority, ClaudeAccountAuthority)
+            and authority.subscription is None
+            and authority.setup_token is not None
         )
+
+    @property
+    def all_ready(self) -> bool:
+        """Return whether every final account has a selectable authority."""
+        for account in self.accounts.saved_accounts():
+            if account.has_managed_authority:
+                continue
+            authority = account.authority
+            if not (
+                isinstance(authority, ClaudeAccountAuthority)
+                and authority.subscription is None
+                and authority.setup_token is not None
+                and authority.setup_token.health is CredentialHealth.HEALTHY
+            ):
+                return False
+        return True
 
 
 def managed_auth_scenario() -> ManagedAuthScenario:
@@ -426,6 +451,7 @@ def managed_auth_scenario() -> ManagedAuthScenario:
     accounts = _MigrationAccounts(
         (
             claude,
+            _setup_only_claude(),
             _legacy_codex(
                 CODEX_READY_ACCOUNT_ID,
                 CODEX_READY_AUTHORITY_ID,
@@ -498,4 +524,23 @@ def _legacy_claude() -> SavedAccount:
             ),
         ),
         credential_health=CredentialHealth.LOGIN_REQUIRED,
+    )
+
+
+def _setup_only_claude() -> SavedAccount:
+    return SavedAccount(
+        account_id=CLAUDE_SETUP_ACCOUNT_ID,
+        label=AccountLabel("claude-setup"),
+        provider_id=ProviderId.CLAUDE,
+        plan="max",
+        authority=ClaudeAccountAuthority(
+            setup_token=ClaudeSetupTokenAuthority(
+                authority_id=SETUP_ONLY_AUTHORITY_ID,
+                expires_at=REFERENCE_TIME + timedelta(days=180),
+                health=CredentialHealth.HEALTHY,
+                observed_at=OBSERVED_AT,
+            ),
+            subscription=None,
+        ),
+        credential_health=CredentialHealth.HEALTHY,
     )
