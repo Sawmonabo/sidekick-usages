@@ -142,8 +142,31 @@ systemd user services, LaunchAgents, Bash, Zsh, and Fish.
 - **Implementation branch:** `feat/hardened-global-account-selection`
 - **Required platforms:** Linux, WSL, macOS Arm64, macOS Intel
 - **Initial shell integration:** Bash, Zsh, Fish
-- **Claude qualified behavior baseline:** 2.1.220 structured stream
+- **Claude current-machine candidate:** 2.1.221 structured stream
 - **Codex qualified behavior baseline:** 0.146.0 app-server protocol
+
+### 2026-08-03 Claude 2.1.221 qualification amendment
+
+The stable launcher advanced after the 2.1.220 investigation. Preserve that
+older evidence as provenance, but bind every current-machine Task 8 gate to
+this exact candidate manifest:
+
+- provider version: `2.1.221`;
+- SHA-256:
+  `60db8e88d42c24b5199c92cfd56ec88370c510c3789c6f364af748354f087ada`;
+- embedded build time: `2026-08-03T03:19:26Z`; and
+- embedded Git SHA: `6efaf12e8b43dc7dbe50e0955c76dc4174a15876`.
+
+A disposable, owner-only, credential-free profile passed the positive and
+negative private control probes inside Linux user and network namespaces. The
+positive update was acknowledged; the malformed non-string variable was
+rejected without success. No prompt, inference request, provider login, or
+public network access occurred. The
+[official 2.1.221 release][claude-2-1-221-release] supplies release provenance.
+
+This evidence completes only the bounded artifact and private-probe portion
+of qualification. Host parity, genuine-turn identity, recovery, installed
+cutover, and general-public distribution gates remain unchanged.
 
 ## 1. Execution Preflight and Reporting Continuity
 
@@ -1440,7 +1463,7 @@ Write this one-line JSON request to the private child pipe:
 
 The encoder emits that object as one compact JSON line.
 
-Accept only this correlated success shape from 2.1.220:
+Accept only this correlated success shape from 2.1.221:
 
 ```json
 {
@@ -1481,7 +1504,7 @@ allowed update frame, and require the exact success response. Send one
 malformed variables object with a non-string value and require rejection with
 no success. Do not expect non-allowlisted string keys to return an error: the
 installed handler logs refusal but still acknowledges the frame. Prove the
-two-key allowlist from the sanitized manifest bound to version `2.1.220`, exact
+two-key allowlist from the sanitized manifest bound to version `2.1.221`, exact
 executable filesystem identity, and SHA-256. Submit no user turn and make no
 inference request. A changed launcher, executable, handler envelope, or
 manifest requires requalification; mismatch disables setup-token selection
@@ -2522,7 +2545,7 @@ cutover. Correct gaps in the feature branch; do not waive them.
   control, CLI, persistence, results, and receipts remain secret-free.
 - [ ] A Claude private response is an install receipt only; provider proof,
   READY, and genuine-turn adoption remain distinct.
-- [ ] The Claude 2.1.220 success fixture contains only `subtype` and
+- [ ] The Claude 2.1.221 success fixture contains only `subtype` and
   `request_id` inside `response`; no invented empty response object remains.
 - [ ] Setup selection performs no native mutation; refreshable selection proves
   native target before projecting the exact committed generation.
@@ -2592,3 +2615,5 @@ failed gate, not a partial success.
 
 [approved-design]:
   ../specs/2026-08-01-hardened-global-account-selection-design.md
+[claude-2-1-221-release]:
+  https://github.com/anthropics/claude-code/releases/tag/v2.1.221

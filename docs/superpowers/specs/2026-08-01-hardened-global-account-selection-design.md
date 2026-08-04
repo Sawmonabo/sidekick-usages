@@ -189,6 +189,31 @@ strings, and local control flow. It did not read provider credentials or dump
 the process environment. These exact identifiers are a compatibility input,
 not a general claim about other Claude builds.
 
+#### 2.1.1 Current-machine Claude 2.1.221 requalification
+
+On 2026-08-03, the stable launcher advanced to Claude Code 2.1.221. The
+2.1.220 table above remains historical evidence; it is not the current
+launcher binding. The current-machine candidate manifest is:
+
+- provider version: `2.1.221`;
+- SHA-256:
+  `60db8e88d42c24b5199c92cfd56ec88370c510c3789c6f364af748354f087ada`;
+- embedded build time: `2026-08-03T03:19:26Z`; and
+- embedded Git SHA: `6efaf12e8b43dc7dbe50e0955c76dc4174a15876`.
+
+A disposable, owner-only, credential-free profile was exercised in Linux
+user and network namespaces. No prompt, inference request, provider login, or
+public network access occurred. The exact positive private control frame was
+acknowledged, while the negative frame with a non-string variable value was
+rejected without a success response. The child exited normally.
+
+This result requalifies the bounded private control behavior for the exact
+2.1.221 artifact. It does not by itself satisfy host parity, genuine-turn
+identity, recovery, installed-release cutover, or public-distribution gates.
+The [official Claude Code 2.1.221 release][claude-2-1-221] establishes release
+provenance; the local manifest and isolated probes establish the private
+current-machine evidence.
+
 The complete scratch evidence available when this design was written is:
 
 - `.agents/tmp/current-develop-dashboard-qa-2026-08-01.md`;
@@ -1587,6 +1612,11 @@ best-effort frame, restart, native-file write, or hidden fallback.
 Provider upgrades trigger requalification before setup-token live switching
 is enabled. Usage collection and saved-account maintenance may remain
 available when their independent capabilities still pass.
+
+The current-machine candidate is the exact 2.1.221 manifest recorded in
+Section 2.1.1. Claude 2.1.220 remains historical evidence and cannot satisfy
+the current launcher binding. All other qualification requirements in this
+section remain unchanged.
 
 ### 9.7 Mixed setup-token and refreshable transitions
 
@@ -3260,7 +3290,7 @@ not silently reopen or weaken one.
 | D-009 | In-flight work finishes old; later prompts queue for new | Explicit no-interruption requirement and provider request boundaries |
 | D-010 | Refreshable Claude uses official native login and reread | User-observed `/login` convergence, current Sidekick transaction, installed 2.1.220 |
 | D-011 | Ordinary Claude foreground presence is not a conflict | Foreground probe cannot prove Remote Control |
-| D-012 | Claude structured host is exact-build qualified per machine | Private update and runtime probe |
+| D-012 | Claude host is exact-build qualified | 2.1.221 isolated probes |
 | D-013 | Setup/mixed current-machine enablement follows technical gates; public distribution also needs Anthropic clarification | SDK and legal evidence |
 | D-014 | Unmanaged processes stay alive and are reported honestly | OS environment/process boundary and no-restart requirement |
 | D-015 | Codex uses resident external auth plus direct HTTP-only Responses | Official config and exact 0.146 per-attempt auth source |
@@ -3315,6 +3345,7 @@ not silently reopen or weaken one.
 | Claude sessions | [Claude sessions][claude-sessions] | Conversation/session behavior belongs to the official runtime |
 | Agent SDK | [Overview][claude-agent-sdk] | Host primitives; no auth/TUI |
 | SDK input | [Streaming][claude-agent-streaming] | Long-lived engine |
+| Claude 2.1.221 | [Release][claude-2-1-221] | Candidate provenance |
 | Claude 2.1.220 | [Release][claude-2-1-220] | Exact private evidence |
 | TS SDK 0.3.220 | [Release][claude-ts-0-3-220] | Public SDK evidence |
 | Python SDK 0.2.128 | [Release][claude-py-0-2-128] | Public SDK evidence |
@@ -3322,6 +3353,7 @@ not silently reopen or weaken one.
 | Claude gateway | [Claude gateway guide][claude-gateway] | Stable model routing is technically documented but expands the trust boundary |
 | Claude credential restrictions | [Claude legal guidance][claude-legal] | Third-party consumer-credential routing requires a release/legal gate |
 | Claude installed behavior | Exact local 2.1.220 static inspection | Native mtime reread and private structured update/memo-clear capability |
+| Claude 2.1.221 probe | Section 2.1.1 | Current private control basis |
 | Codex auth and private homes | [Codex auth][codex-auth], [environment variables][codex-env], and exact source | One private `CODEX_HOME` can remain provider-owned per saved account |
 | Codex app-server auth | [Codex app-server][codex-app-server] | External token installation/readback/refresh callback exist but are experimental |
 | Codex shared auth | [Thread manager][codex-thread-manager] | Loaded threads share a process-wide `AuthManager` |
@@ -3416,13 +3448,15 @@ publisher and current canonical URL.
 58. [Claude Code concurrent refresh range](https://github.com/anthropics/claude-code/blob/7ef6eec9d9ba84ea6f233f26c45f1df5c5991843/CHANGELOG.md#L2809-L2815)
 59. [Claude Code rotation continuity](https://github.com/anthropics/claude-code/blob/7ef6eec9d9ba84ea6f233f26c45f1df5c5991843/CHANGELOG.md#L3667-L3673)
 60. [Claude Code release provenance](https://github.com/anthropics/claude-code/blob/7ef6eec9d9ba84ea6f233f26c45f1df5c5991843/CHANGELOG.md#L96-L101)
+61. [Claude Code 2.1.221 release][claude-2-1-221]
 
 These current primary sources establish that public SDKs provide structured
 host primitives but neither an auth-specific runtime setter nor stock-TUI
-embedding. The private 2.1.220 response remains exact-build evidence. It can
-qualify the current-user, current-machine implementation but does not establish
-a public compatibility promise. The Anthropic product and legal gate for
-general public distribution remains unresolved.
+embedding. The private response found in 2.1.220 remains historical evidence
+and was requalified against the exact local 2.1.221 artifact. That evidence
+can qualify the current-user, current-machine implementation but does not
+establish a public compatibility promise. The Anthropic product and legal
+gate for general public distribution remains unresolved.
 
 #### OpenAI official documentation
 
@@ -3701,6 +3735,8 @@ the Anthropic product and legal clarification gate.
 [claude-agent-sdk]: https://code.claude.com/docs/en/agent-sdk
 [claude-agent-streaming]: https://code.claude.com/docs/en/agent-sdk/streaming-vs-single-mode
 [claude-2-1-220]: https://github.com/anthropics/claude-code/releases/tag/v2.1.220
+[claude-2-1-221]:
+  https://github.com/anthropics/claude-code/releases/tag/v2.1.221
 [claude-ts-0-3-220]: https://github.com/anthropics/claude-agent-sdk-typescript/releases/tag/v0.3.220
 [claude-py-0-2-128]: https://github.com/anthropics/claude-agent-sdk-python/releases/tag/v0.2.128
 [claude-pinned-changelog]: https://github.com/anthropics/claude-code/blob/7ef6eec9d9ba84ea6f233f26c45f1df5c5991843/CHANGELOG.md
