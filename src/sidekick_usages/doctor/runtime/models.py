@@ -97,6 +97,8 @@ class ProviderSessionDiagnostic:
     @property
     def protected_session_state(self) -> str:
         """Return only provider-owned protected-session qualification."""
+        if self.reachable_count:
+            return "available"
         if self.registered_count:
             return "unavailable"
         return "not_observed"

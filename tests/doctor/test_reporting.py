@@ -422,7 +422,7 @@ def test_json_reports_current_auth_state_without_secrets(
         "claude",
         None,
         "observed",
-        "unavailable",
+        "available",
     )
     assert (
         codex_session["provider"],
@@ -457,7 +457,7 @@ def test_json_reports_current_auth_state_without_secrets(
         1,
         1,
         "observed",
-        "unavailable",
+        "available",
     )
     capabilities = {
         result["provider"]: result
@@ -695,6 +695,6 @@ def test_human_view_explains_login_renewal_action(
         "2 registered, 1 reachable, 2 required, 1 ready, 1 adopted, "
         "1 unreachable, 1 confirmed dead after commit · turns 1 active, "
         "1 queued · unmanaged unavailable · enrollment observed · "
-        "structured host unavailable"
+        "structured host available"
     ) in normalized
     assert "test-only-login" not in rendered
