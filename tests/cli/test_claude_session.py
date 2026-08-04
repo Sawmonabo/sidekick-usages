@@ -10,6 +10,7 @@ from sidekick_usages.cli.session.claude.host import ClaudeCliSession
 from sidekick_usages.cli.session.claude.runtime import (
     ClaudeSessionGateError,
     ClaudeSessionRuntime,
+    ClaudeTerminalEventsClosedError,
 )
 from sidekick_usages.cli.session.claude.terminal import (
     ClaudeTerminal,
@@ -17,6 +18,7 @@ from sidekick_usages.cli.session.claude.terminal import (
 )
 from sidekick_usages.core.selection.types import ParticipantId, SelectionCode
 from sidekick_usages.providers.claude.structured.codec import (
+    ClaudeProtectedChannelClosedError,
     ClaudeProtectedChannelError,
 )
 from sidekick_usages.providers.claude.structured.models import (
@@ -290,7 +292,7 @@ def test_claude_session_keeps_one_engine_across_a_queued_switch() -> None:
 
 
 def test_claude_session_fails_closed_on_invalid_reattachment() -> None:
-    """Surface a safety failure without retrying its attachment."""
+    """Close and surface one post-PREPARE safety failure exactly once."""
     events: list[str] = []
     engine = ClaudeSessionEngineFake(
         (StructuredResponseCase.SUCCESS,) * 2,
@@ -311,22 +313,48 @@ def test_claude_session_fails_closed_on_invalid_reattachment() -> None:
         request_id_factory=iter(SESSION_REQUESTS).__next__,
     )
     failure = ClaudeProtectedChannelError(
-        "Synthetic invalid protected registration."
+        "Synthetic invalid protected notice."
     )
     reporters_before = _binding_reporter_count()
 
     runtime.open()
-    control.fail_registration_once(failure)
+    control.fail_registration_once(
+        ClaudeProtectedChannelClosedError(
+            "Synthetic protected registration closure."
+        )
+    )
+    control.fail_notice_after_prepare_once(failure)
     control.disconnect()
     observed: BaseException | None = None
+    trailing: BaseException | None = None
+    closed = False
     try:
-        runtime.receive_event()
-    except BaseException as error:
-        observed = error
-    finally:
+        recovery = runtime.receive_event()
+        assert recovery.status == "Sidekick: selection_recovery_required"
+        try:
+            runtime.receive_event()
+        except BaseException as error:
+            observed = error
+        control.wait_failed_attachment_closed()
         runtime.close()
+        closed = True
+        runtime.stop_terminal_events()
+        try:
+            runtime.receive_event()
+        except BaseException as error:
+            trailing = error
+    finally:
+        if not closed:
+            runtime.close()
 
     assert observed is failure
+    assert isinstance(trailing, ClaudeTerminalEventsClosedError)
+    assert events == [
+        f"install:{SESSION_REQUESTS[0]}",
+        "initialize",
+        "reattach:3",
+        "fatal_notice:3",
+    ]
     assert _binding_reporter_count() == reporters_before
 
 

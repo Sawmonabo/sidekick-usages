@@ -842,15 +842,15 @@ class ClaudeSessionRuntime:
             self._fail(ClaudeStructuredFailure.PROCESS_UNAVAILABLE)
         return session
 
-    def _record_failure(self, error: BaseException) -> None:
+    def _publish_failure(self, error: BaseException) -> None:
         with self._condition:
-            if self._failure is None:
+            publish = self._failure is None
+            if publish:
                 self._failure = error
             self._condition.notify_all()
-
-    def _publish_failure(self, error: BaseException) -> None:
-        self._record_failure(error)
-        self._events.put(error)
+        self._coordination_changed.set()
+        if publish:
+            self._events.put(error)
 
     def _control_lost(self, connection_generation: int, retry: bool) -> None:
         report_unavailable = False
@@ -949,6 +949,7 @@ class ClaudeSessionRuntime:
             self._start_threads(notices, generation)
             if not self._control_is_available():
                 self._coordination_changed.wait()
+            self._raise_failure()
             if self._control_is_available() or self._closing.is_set():
                 return True
         except _ATTACHMENT_RETRY_ERRORS:

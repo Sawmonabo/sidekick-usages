@@ -261,6 +261,9 @@ class ClaudeSessionControlFake:
         self._initial_projected = False
         self._initial_receipt_proven = False
         self._registration_failure: BaseException | None = None
+        self._notice_failure: BaseException | None = None
+        self._notice_failure_raised = False
+        self._failed_attachment_closed = Event()
         self._reconnected = Event()
         self._initial = _binding(_OPERATION_A, _ACCOUNT_A, SESSION_OAUTH[0], 1)
         self._target = _binding(_OPERATION_B, _ACCOUNT_B, SESSION_OAUTH[1], 2)
@@ -331,6 +334,15 @@ class ClaudeSessionControlFake:
             )
             yield _notice(ParticipantNoticeKind.PREPARE, 1)
             return
+        failure = self._notice_failure
+        if failure is not None:
+            self._notice_failure = None
+            yield _notice(ParticipantNoticeKind.PREPARE, 1)
+            self._events.append(
+                f"fatal_notice:{self._connection_generation}"
+            )
+            self._notice_failure_raised = True
+            raise failure
         yield _notice(
             ParticipantNoticeKind.OPEN,
             2 if self._target_open else 1,
@@ -363,6 +375,10 @@ class ClaudeSessionControlFake:
         """Fail one attachment before its binding reporter can finish."""
         self._registration_failure = failure
 
+    def fail_notice_after_prepare_once(self, failure: BaseException) -> None:
+        """Fail one attachment after its first valid PREPARE notice."""
+        self._notice_failure = failure
+
     def prepare_reconnect(self, connection_generation: int) -> None:
         """Prepare one strictly newer fake supervisor attachment."""
         self._connection_generation = connection_generation
@@ -372,6 +388,11 @@ class ClaudeSessionControlFake:
         """Wait for the exact binding re-registration proof."""
         if not self._reconnected.wait(timeout=2):
             raise AssertionError("Claude participant did not reattach.")
+
+    def wait_failed_attachment_closed(self) -> None:
+        """Wait until the fatally invalid attachment is released."""
+        if not self._failed_attachment_closed.wait(timeout=2):
+            raise AssertionError("Fatal Claude attachment remained open.")
 
     def refuse_once(self) -> None:
         """Publish a recoverable precommit refusal for the live engine."""
@@ -459,6 +480,8 @@ class ClaudeSessionControlFake:
     def close(self) -> None:
         """Release only fake control resources."""
         self._notices.put(None)
+        if self._notice_failure_raised:
+            self._failed_attachment_closed.set()
         if self._receipt is not None:
             self._receipt.join(timeout=2)
         if self._endpoint is not None:
