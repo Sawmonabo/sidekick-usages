@@ -16,6 +16,7 @@ from sidekick_usages.cli.session.control import (
     participant_reattach_delay,
 )
 from sidekick_usages.cli.session.launcher import ProviderSessionLauncher
+from sidekick_usages.core.selection.models import SelectionEpoch
 from sidekick_usages.core.selection.types import (
     ParticipantId,
     SelectionCode,
@@ -56,6 +57,7 @@ from sidekick_usages.providers.codex.session.models import (
 )
 from sidekick_usages.providers.codex.session.quiescence import (
     CodexParticipantProofChannel,
+    CodexParticipantProofError,
 )
 from sidekick_usages.providers.codex.session.relay import CodexAdmissionRelay
 
@@ -558,9 +560,13 @@ class CodexSessionRuntime:
         if relay is None or participant is None or proof_channel is None:
             return
         while not self._closing.is_set():
+            failed_epoch: SelectionEpoch | None = None
             try:
-                for notice in notices:
-                    self._apply_notice(relay, proof_channel, notice)
+                failed_epoch = self._consume_attachment(
+                    notices,
+                    relay,
+                    proof_channel,
+                )
             except BaseException as error:
                 if not _codex_control_unavailable(error):
                     self._fail_reconnect(relay, error)
@@ -570,6 +576,11 @@ class CodexSessionRuntime:
             participant.disconnect(generation)
             proof_channel.close()
             relay.discard_quiescence()
+            if failed_epoch is not None and not self._await_selection_boundary(
+                failed_epoch,
+                relay,
+            ):
+                return
             try:
                 replacement = self._reattach(participant, relay)
             except BaseException as error:
@@ -674,7 +685,17 @@ class CodexSessionRuntime:
             attempt.proof_channel = proof_channel
             attempt.supervisor_endpoint = supervisor_endpoint
             self._retain_attempt(attempt)
-        self._register_control(control, supervisor_endpoint)
+        try:
+            self._register_control(control, supervisor_endpoint)
+        except CodexRelayError as error:
+            if error.code not in {
+                SelectionCode.PARTICIPANT_UNREACHABLE,
+                SelectionCode.SELECTION_RECOVERY_REQUIRED,
+            }:
+                raise
+            raise ConnectionAbortedError(
+                "Codex participant registration is not ready."
+            ) from error
         with self._state_lock:
             self._retain_attempt(attempt)
             attempt.supervisor_endpoint = None
@@ -738,6 +759,59 @@ class CodexSessionRuntime:
         if self._closing.is_set() or self._attachment_attempt is not attempt:
             raise ConnectionClosedError("The Codex participant is closing.")
 
+    def _await_selection_boundary(
+        self,
+        failed_epoch: SelectionEpoch,
+        relay: CodexAdmissionRelay,
+    ) -> bool:
+        """Wait until the failed proof operation leaves its active epoch."""
+        attempt = 0
+        while not self._closing.wait(participant_reattach_delay(attempt)):
+            client: ControlClient | None = None
+            try:
+                client = ControlClient.connect(
+                    self._supervisor_socket,
+                    connect_timeout_seconds=(
+                        _REATTACH_CONNECT_TIMEOUT_SECONDS
+                    ),
+                )
+                status = client.selection_status_snapshot(ProviderId.CODEX)
+            except BaseException as error:
+                if not _codex_control_unavailable(error):
+                    self._fail_reconnect(relay, error)
+                    return False
+            else:
+                if (
+                    status.operation_id is None
+                    or status.pending_epoch != failed_epoch
+                ):
+                    return True
+            finally:
+                if client is not None:
+                    client.close()
+            attempt += 1
+        return False
+
+    @staticmethod
+    def _consume_attachment(
+        notices: Iterator[ParticipantNotice],
+        relay: CodexAdmissionRelay,
+        proof_channel: CodexParticipantProofChannel,
+    ) -> SelectionEpoch | None:
+        """Consume one attachment until it needs exact replacement."""
+        for notice in notices:
+            try:
+                CodexSessionRuntime._apply_notice(
+                    relay,
+                    proof_channel,
+                    notice,
+                )
+            except ConnectionAbortedError:
+                proof_channel.close()
+                relay.discard_quiescence()
+                return notice.epoch
+        return None
+
     @staticmethod
     def _fail_reconnect(
         relay: CodexAdmissionRelay,
@@ -776,7 +850,16 @@ class CodexSessionRuntime:
             relay.discard_quiescence()
         elif notice.kind is ParticipantNoticeKind.PREPARE:
             relay.prepare_admission()
-            proof_channel.serve_selection(relay, notice.epoch)
+            try:
+                proof_channel.serve_selection(relay, notice.epoch)
+            except (
+                CodexParticipantProofError,
+                CodexRelayError,
+                OSError,
+            ) as error:
+                raise ConnectionAbortedError(
+                    "Codex participant proof attachment failed."
+                ) from error
         elif notice.kind is ParticipantNoticeKind.STATUS:
             relay.enter_recovery(
                 SelectionCode.SELECTION_RECOVERY_REQUIRED

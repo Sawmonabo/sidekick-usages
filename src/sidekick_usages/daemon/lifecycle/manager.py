@@ -54,10 +54,7 @@ from sidekick_usages.daemon.types.lifecycle import (
     ServiceFailureCode,
     ServiceLifecycleState,
 )
-from sidekick_usages.daemon.types.protocol import (
-    EventKind,
-    ProtocolErrorCode,
-)
+from sidekick_usages.daemon.types.protocol import ProtocolErrorCode
 from sidekick_usages.errors import UsageError
 from sidekick_usages.paths import ApplicationPaths, discover_application_paths
 from sidekick_usages.platform.errors import ExecutableQualificationError
@@ -254,7 +251,7 @@ class DaemonManager:
             client = ControlClient.connect(socket_path)
             try:
                 return tuple(
-                    _selection_status(client, provider_id)
+                    client.selection_status_snapshot(provider_id)
                     for provider_id in ProviderId
                 )
             finally:
@@ -373,20 +370,6 @@ def build_daemon_manager(
         RuntimeCleanup(resolved_paths),
         resolved_paths.supervisor_socket,
     )
-
-
-def _selection_status(
-    client: ControlClient,
-    provider_id: ProviderId,
-) -> SelectionStatus:
-    """Require one exact selection-status terminal event."""
-    events = tuple(client.selection_status(provider_id))
-    if len(events) != 1 or events[0].kind is not EventKind.SELECTION_STATUS:
-        raise ValueError("Selection status response is invalid.")
-    payload = events[0].payload
-    if not isinstance(payload, SelectionStatus):
-        raise ValueError("Selection status payload is invalid.")
-    return payload
 
 
 def build_service_launch_command(

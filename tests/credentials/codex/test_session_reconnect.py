@@ -5,11 +5,31 @@ from pathlib import Path
 import pytest
 
 from sidekick_usages.cli.session.codex import CodexSessionRuntime
-from tests.fakes.codex.app_server.daemon import FakeCodexDaemon
+from sidekick_usages.core.selection.models import (
+    SelectionEpoch,
+    SelectionResult,
+)
+from sidekick_usages.core.selection.types import (
+    SelectionCode,
+    SelectionOutcome,
+)
+from sidekick_usages.core.types import ProviderId
+from sidekick_usages.daemon.control.client import ControlClient
+from sidekick_usages.providers.codex.session import quiescence
+from sidekick_usages.providers.codex.session.errors import CodexRelayError
+from sidekick_usages.providers.codex.session.quiescence import (
+    CodexParticipantProofChannel,
+    CodexQuiescenceRelay,
+)
+from tests.fakes.codex.app_server.daemon import (
+    FakeCodexDaemon,
+    FakeCodexTuiObserver,
+)
 from tests.fakes.codex.app_server.executable import (
     configure_codex_daemon_lifecycle,
 )
 from tests.fakes.codex.broker.runtime import (
+    MANAGED_ACCOUNT_ID,
     activation_source_fixture,
     real_worker_executable,
 )
@@ -114,6 +134,66 @@ def test_session_reattaches_active_turn_and_releases_queued_turn(
                 _QUEUED_TURN_REQUEST_ID,
             )
             restarted.wait_for_codex_participants(1, 0)
+            _prove_proof_failure_reconnect(
+                monkeypatch,
+                restarted,
+                paths.supervisor_socket,
+                tui,
+            )
 
         tui.close()
         session.close()
+
+
+def _prove_proof_failure_reconnect(
+    monkeypatch: pytest.MonkeyPatch,
+    supervisor: FakeCodexSupervisor,
+    supervisor_socket: Path,
+    tui: FakeCodexTuiObserver,
+) -> None:
+    original = CodexParticipantProofChannel.serve_selection
+    failed = False
+
+    def fail_once(
+        channel: CodexParticipantProofChannel,
+        relay: CodexQuiescenceRelay,
+        epoch: SelectionEpoch,
+    ) -> None:
+        nonlocal failed
+        if not failed:
+            failed = True
+            raise CodexRelayError(SelectionCode.AUTHORITY_PROOF_FAILED)
+        original(channel, relay, epoch)
+
+    with monkeypatch.context() as proof_patch:
+        proof_patch.setattr(quiescence, "_PROOF_TIMEOUT_SECONDS", 0.2)
+        proof_patch.setattr(
+            CodexParticipantProofChannel,
+            "serve_selection",
+            fail_once,
+        )
+        first = _select(supervisor_socket)
+    assert (first.outcome, first.safe_code) == (
+        SelectionOutcome.FAILED_OLD_EPOCH,
+        SelectionCode.SELECTION_ROLLED_BACK,
+    )
+    supervisor.wait_until_selection_workers_collected()
+    supervisor.wait_for_codex_participants(1, 0, reachable=1)
+    tui.assert_turn_completed(4, "thread-reconnect")
+
+
+def _select(supervisor_socket: Path) -> SelectionResult:
+    client = ControlClient.connect(
+        supervisor_socket,
+        action_timeout_seconds=15.0,
+    )
+    try:
+        client.handshake()
+        events = tuple(
+            client.select_account(ProviderId.CODEX, MANAGED_ACCOUNT_ID)
+        )
+    finally:
+        client.close()
+    result = events[-1].payload
+    assert isinstance(result, SelectionResult), events
+    return result

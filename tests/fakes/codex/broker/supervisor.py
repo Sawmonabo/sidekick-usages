@@ -634,6 +634,8 @@ class FakeCodexSupervisor:
         self,
         registered: int,
         active_turns: int,
+        *,
+        reachable: int | None = None,
     ) -> None:
         """Wait for exact safe Codex participant counts."""
         deadline = time.monotonic() + _READINESS_TIMEOUT_SECONDS
@@ -642,6 +644,9 @@ class FakeCodexSupervisor:
             if (
                 snapshot.registered_count == registered
                 and snapshot.active_turn_count == active_turns
+                and (
+                    reachable is None or snapshot.reachable_count == reachable
+                )
             ):
                 return
             self._raise_failure()

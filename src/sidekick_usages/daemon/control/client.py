@@ -688,6 +688,22 @@ class ControlClient:
             ProviderPayload(provider_id),
         )
 
+    def selection_status_snapshot(
+        self,
+        provider_id: ProviderId,
+    ) -> SelectionStatus:
+        """Return one exact provider selection-status snapshot."""
+        events = tuple(self.selection_status(provider_id))
+        if (
+            len(events) != 1
+            or events[0].kind is not EventKind.SELECTION_STATUS
+            or not isinstance(events[0].payload, SelectionStatus)
+        ):
+            raise UnexpectedServiceEventError(
+                "The service returned an invalid selection status."
+            )
+        return events[0].payload
+
     def reconcile(
         self,
         provider_id: ProviderId,
