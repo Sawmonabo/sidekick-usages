@@ -3,13 +3,18 @@
 import socket
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
+from pathlib import Path
 from threading import Event, Thread
 
 from sidekick_usages import __version__
 from sidekick_usages.core.accounts.identifiers import new_request_id
 from sidekick_usages.core.accounts.types import OperationId, RequestId
-from sidekick_usages.core.selection.models import SelectionEpoch
-from sidekick_usages.core.selection.types import ParticipantId
+from sidekick_usages.core.selection.models import (
+    OpenSelectionOperation,
+    SelectionEpoch,
+    SelectionResult,
+)
+from sidekick_usages.core.selection.types import ParticipantId, SelectionPhase
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.daemon.control.client import ControlClient
 from sidekick_usages.daemon.control.dispatch import (
@@ -55,6 +60,7 @@ from sidekick_usages.daemon.types.protocol import (
     ProgressPhase,
     RequestKind,
 )
+from sidekick_usages.persistence.errors import ReplaceFailedError
 from sidekick_usages.persistence.supervisor.selection import (
     SelectionOperationStore,
 )
@@ -240,6 +246,67 @@ class ExactProcessInspectorFake:
         if identity in self.dead or later_dead:
             return ProcessLiveness.DEAD
         return ProcessLiveness.UNKNOWN
+
+
+class ObservedSelectionOperationStore(SelectionOperationStore):
+    """Expose exact durable selection phases to concurrent journeys."""
+
+    def __init__(self, root: Path) -> None:
+        super().__init__(root)
+        self.preparing = Event()
+        self.awaiting_ready = Event()
+        self.crash_after_complete_once = False
+        self.block_complete_once = False
+        self.complete_started = Event()
+        self.allow_complete = Event()
+        self.reject_final_snapshot_once = False
+
+    def compare_and_swap(
+        self,
+        expected: OpenSelectionOperation,
+        replacement: OpenSelectionOperation,
+    ) -> OpenSelectionOperation:
+        result = super().compare_and_swap(expected, replacement)
+        self._observe_phase(replacement)
+        return result
+
+    def advance_with_required_additions(
+        self,
+        expected: OpenSelectionOperation,
+        replacement: OpenSelectionOperation,
+    ) -> OpenSelectionOperation:
+        if (
+            self.reject_final_snapshot_once
+            and expected.phase is SelectionPhase.AWAITING_READY
+            and replacement.phase is SelectionPhase.AWAITING_READY
+            and replacement.ready_participant_ids
+        ):
+            self.reject_final_snapshot_once = False
+            raise ReplaceFailedError
+        result = super().advance_with_required_additions(
+            expected,
+            replacement,
+        )
+        self._observe_phase(replacement)
+        return result
+
+    def complete(self, result: SelectionResult) -> SelectionResult:
+        completed = super().complete(result)
+        if self.block_complete_once:
+            self.block_complete_once = False
+            self.complete_started.set()
+            if not self.allow_complete.wait(1):
+                raise RuntimeError("Synthetic completion gate timed out.")
+        if self.crash_after_complete_once:
+            self.crash_after_complete_once = False
+            raise RuntimeError("Synthetic crash after durable completion.")
+        return completed
+
+    def _observe_phase(self, operation: OpenSelectionOperation) -> None:
+        if operation.phase is SelectionPhase.PREPARING:
+            self.preparing.set()
+        if operation.phase is SelectionPhase.AWAITING_READY:
+            self.awaiting_ready.set()
 
 
 class FailingControlReporter:

@@ -64,7 +64,6 @@ from sidekick_usages.daemon.selection.worker import (
     SelectionWorkerGateway,
 )
 from sidekick_usages.daemon.types.worker import WorkerOutcome
-from sidekick_usages.persistence.errors import ReplaceFailedError
 from sidekick_usages.persistence.supervisor.queue import OperationQueueStore
 from sidekick_usages.persistence.supervisor.selection import (
     SelectedStateStore,
@@ -72,6 +71,7 @@ from sidekick_usages.persistence.supervisor.selection import (
 )
 from sidekick_usages.platform.models import ProcessIdentity
 from sidekick_usages.providers.claude.structured.codec import (
+    ClaudeProtectedChannelError,
     clear_secret_buffer,
 )
 from sidekick_usages.providers.claude.structured.data_plane import (
@@ -83,7 +83,10 @@ from sidekick_usages.providers.claude.structured.models import (
     ClaudeStructuredInstallReceipt,
 )
 from tests.fakes.claude.session import start_claude_binding_reporter
-from tests.fakes.daemon.control import ExactProcessInspectorFake
+from tests.fakes.daemon.control import (
+    ExactProcessInspectorFake,
+    ObservedSelectionOperationStore,
+)
 from tests.support.persistence import (
     make_application_paths,
     seed_finalized_selections,
@@ -292,70 +295,11 @@ class _SelectionAdapter:
         host.acknowledge(receipt)
 
 
-class _ObservedOperationStore(SelectionOperationStore):
-    def __init__(self, root: Path) -> None:
-        super().__init__(root)
-        self.preparing = Event()
-        self.awaiting_ready = Event()
-        self.crash_after_complete_once = False
-        self.block_complete_once = False
-        self.complete_started = Event()
-        self.allow_complete = Event()
-        self.reject_final_snapshot_once = False
-
-    def compare_and_swap(
-        self,
-        expected: OpenSelectionOperation,
-        replacement: OpenSelectionOperation,
-    ) -> OpenSelectionOperation:
-        result = super().compare_and_swap(expected, replacement)
-        self._observe_phase(replacement)
-        return result
-
-    def advance_with_required_additions(
-        self,
-        expected: OpenSelectionOperation,
-        replacement: OpenSelectionOperation,
-    ) -> OpenSelectionOperation:
-        if (
-            self.reject_final_snapshot_once
-            and expected.phase is SelectionPhase.AWAITING_READY
-            and replacement.phase is SelectionPhase.AWAITING_READY
-            and replacement.ready_participant_ids
-        ):
-            self.reject_final_snapshot_once = False
-            raise ReplaceFailedError
-        result = super().advance_with_required_additions(
-            expected,
-            replacement,
-        )
-        self._observe_phase(replacement)
-        return result
-
-    def complete(self, result: SelectionResult) -> SelectionResult:
-        completed = super().complete(result)
-        if self.block_complete_once:
-            self.block_complete_once = False
-            self.complete_started.set()
-            if not self.allow_complete.wait(1):
-                raise RuntimeError("Synthetic completion gate timed out.")
-        if self.crash_after_complete_once:
-            self.crash_after_complete_once = False
-            raise RuntimeError("Synthetic crash after durable completion.")
-        return completed
-
-    def _observe_phase(self, operation: OpenSelectionOperation) -> None:
-        if operation.phase is SelectionPhase.PREPARING:
-            self.preparing.set()
-        if operation.phase is SelectionPhase.AWAITING_READY:
-            self.awaiting_ready.set()
-
-
 @dataclass(frozen=True, slots=True)
 class _Journey:
     other: FinalizedSelection
     selected: SelectedStateStore
-    operations: _ObservedOperationStore
+    operations: ObservedSelectionOperationStore
     registry: ParticipantRegistry
     adapter: _SelectionAdapter
     process_inspector: ExactProcessInspectorFake
@@ -363,6 +307,49 @@ class _Journey:
     coordinator: SelectionCoordinator
     subscriptions: tuple[Generator[ParticipantNotice], ...]
     protected_hosts: dict[ParticipantId, socket.socket]
+
+
+def _register_unbound(
+    coordinator: SelectionCoordinator,
+    protected_hosts: dict[ParticipantId, socket.socket],
+    participant_id: ParticipantId,
+    process: ProcessIdentity,
+) -> tuple[ParticipantRegistration, socket.socket]:
+    host, supervisor = socket.socketpair(socket.AF_UNIX)
+    protected_hosts[participant_id] = host
+    start_claude_binding_reporter(host, participant_id, 1, None)
+    registration = coordinator.register(
+        _manifest(participant_id), process, protected_endpoint=supervisor)
+    return registration, host
+
+
+def _complete_bootstrap(
+    journey: _Journey,
+    process: ProcessIdentity,
+) -> socket.socket:
+    registration, host = _register_unbound(
+        journey.coordinator, journey.protected_hosts,
+        PARTICIPANT_A, process,
+    )
+    snapshot = journey.registry.snapshot(PROVIDER_ID)
+    assert registration.registered_epoch == SelectionEpoch(0)
+    assert snapshot.registered_count == snapshot.reachable_count == 1
+    assert not snapshot.unreachable_participant_ids
+    journey.adapter.allow_prevalidation.set()
+    _canonical_id, stream = journey.coordinator.select_events(
+        REPLAY_OPERATION_ID, PROVIDER_ID, TARGET_ACCOUNT_ID)
+    for _index in range(4):
+        next(stream)
+    notices = journey.coordinator.subscribe(new_request_id(),
+        ParticipantConnectionRequest(PARTICIPANT_A, 1), process)
+    assert next(notices).kind is ParticipantNoticeKind.READY
+    journey.coordinator.ready_request(
+        _ready_request(PARTICIPANT_A, SelectionEpoch(1)), process)
+    assert isinstance(result := next(stream), SelectionResult)
+    assert result.outcome is SelectionOutcome.READY
+    assert next(notices).kind is ParticipantNoticeKind.OPEN
+    notices.close()
+    return host
 
 
 def _build_journey(
@@ -384,7 +371,7 @@ def _build_journey(
     states = (baseline, other) if baseline_exists else (other,)
     seed_finalized_selections(paths, *states)
     selected = SelectedStateStore(paths.selected_state)
-    operations = _ObservedOperationStore(paths.selection_journals)
+    operations = ObservedSelectionOperationStore(paths.selection_journals)
     registry = ParticipantRegistry(selected)
     failed = partial(registry.disconnect, attachment_failure=True)
     channels = ClaudeParticipantChannelRegistry(
@@ -418,16 +405,10 @@ def _build_journey(
             (PARTICIPANT_A, 1), (PARTICIPANT_B, 2), (PARTICIPANT_D, 4)
         )
     for participant_id, process_index in participant_specs:
-        host, supervisor = socket.socketpair(socket.AF_UNIX)
-        host.settimeout(1)
-        protected_hosts[participant_id] = host
         process = _process(process_index)
-        start_claude_binding_reporter(host, participant_id, 1, None)
-        coordinator.register(
-            _manifest(participant_id),
-            process,
-            protected_endpoint=supervisor,
-        )
+        _registration, host = _register_unbound(
+            coordinator, protected_hosts, participant_id, process)
+        host.settimeout(1)
     subscriptions = tuple(
         registry.subscribe(
             new_request_id(),
@@ -585,14 +566,12 @@ def _assert_journey_result(
 
 
 def _register_late(journey: _Journey) -> ParticipantRegistration:
-    host, supervisor = socket.socketpair(socket.AF_UNIX)
-    journey.protected_hosts[PARTICIPANT_C] = host
     process = _process(3)
-    start_claude_binding_reporter(host, PARTICIPANT_C, 1, None)
-    registration = journey.coordinator.register(
-        _manifest(PARTICIPANT_C),
+    registration, _host = _register_unbound(
+        journey.coordinator,
+        journey.protected_hosts,
+        PARTICIPANT_C,
         process,
-        protected_endpoint=supervisor,
     )
     notices = journey.coordinator.subscribe(
         new_request_id(),
@@ -630,25 +609,34 @@ def test_setup_requires_a_participant_before_commit(tmp_path: Path) -> None:
         tmp_path / "bootstrap", include_participants=False,
         baseline_exists=False,
     )
-    host, supervisor = socket.socketpair(socket.AF_UNIX)
-    bootstrap.protected_hosts[PARTICIPANT_A] = host
     process = _process(1)
-    start_claude_binding_reporter(host, PARTICIPANT_A, 1, None)
-    registration = bootstrap.coordinator.register(
-        _manifest(PARTICIPANT_A), process, protected_endpoint=supervisor)
-    snapshot = bootstrap.registry.snapshot(PROVIDER_ID)
-    assert registration.registered_epoch == SelectionEpoch(0)
-    assert snapshot.registered_count == snapshot.reachable_count == 1
-    assert not snapshot.unreachable_participant_ids
+    host = _complete_bootstrap(bootstrap, process)
     host.close()
-    bootstrap.protected_hosts.pop(PARTICIPANT_A)
-    bootstrap.process_inspector.dead_after_first.add(process)
-    bootstrap.adapter.allow_prevalidation.set()
-    result = bootstrap.coordinator.select(
+    attachments = bootstrap.registry.attachment_registry(PROVIDER_ID)
+    assert attachments is not None
+    with pytest.raises(ClaudeProtectedChannelError):
+        attachments.refresh_binding(PARTICIPANT_A, 1, process)
+    snapshot = bootstrap.registry.snapshot(PROVIDER_ID)
+    assert (
+        snapshot.registered_count,
+        snapshot.reachable_count,
+        snapshot.unreachable_participant_ids,
+    ) == (1, 0, (PARTICIPANT_A,))
+    failed = _build_journey(
+        tmp_path / "failed", include_participants=False,
+        baseline_exists=False,
+    )
+    _registration, host = _register_unbound(
+        failed.coordinator, failed.protected_hosts, PARTICIPANT_A, process)
+    host.close()
+    failed.protected_hosts.pop(PARTICIPANT_A)
+    failed.process_inspector.dead_after_first.add(process)
+    failed.adapter.allow_prevalidation.set()
+    result = failed.coordinator.select(
         REPLAY_OPERATION_ID, PROVIDER_ID, TARGET_ACCOUNT_ID)
     assert result.outcome is SelectionOutcome.RECOVERY_REQUIRED
-    assert bootstrap.process_inspector.inspected == [process, process]
-    operation = bootstrap.operations.load(PROVIDER_ID).active
+    assert failed.process_inspector.inspected == [process, process]
+    operation = failed.operations.load(PROVIDER_ID).active
     assert operation is not None
     assert operation.lost_after_commit_participant_ids == (PARTICIPANT_A,)
 

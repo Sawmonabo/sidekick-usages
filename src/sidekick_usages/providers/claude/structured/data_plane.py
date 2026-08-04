@@ -48,7 +48,6 @@ from sidekick_usages.providers.claude.structured.codec import (
     encode_protected_exchange_instruction,
     encode_protected_install_receipt,
     encode_protected_projection,
-    receive_protected_socket_frame,
     require_protected_ack,
     require_protected_binding_query,
     require_protected_binding_report,
@@ -57,6 +56,9 @@ from sidekick_usages.providers.claude.structured.codec import (
 from sidekick_usages.providers.claude.structured.models import (
     ClaudeStructuredBinding,
     ClaudeStructuredInstallReceipt,
+)
+from sidekick_usages.providers.claude.structured.transport import (
+    receive_protected_socket_frame,
 )
 from sidekick_usages.serialization.framing import (
     clear_mutable_buffer,
@@ -434,7 +436,8 @@ class ClaudeParticipantChannelRegistry:
                         )
                     current.binding = report
                 return report is None
-            except OSError, ValueError:
+            except ClaudeProtectedChannelError, OSError, ValueError:
+                self._discard_failed(participant_id, channel)
                 raise ClaudeProtectedChannelError(
                     "The protected Claude binding was not reported."
                 ) from None
