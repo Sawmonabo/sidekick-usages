@@ -319,6 +319,23 @@ class CodexParticipantProofSet:
             self._channels.pop(participant_id)
         channel.transport.close()
 
+    def refresh_binding(
+        self,
+        participant_id: ParticipantId,
+        connection_generation: int,
+        peer: ProcessIdentity,
+    ) -> None:
+        """Require the exact process-wide Codex attachment to remain."""
+        with self._lock:
+            channel = self._channels.get(participant_id)
+            if channel is None or (
+                channel.connection_generation != connection_generation
+                or channel.peer != peer
+            ):
+                raise CodexParticipantProofError(
+                    "The Codex participant attachment does not match."
+                )
+
     def prepare(
         self,
         operation_id: OperationId,
