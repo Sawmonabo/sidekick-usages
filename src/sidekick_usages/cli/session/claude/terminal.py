@@ -143,6 +143,7 @@ class ClaudeTerminalState:
             self._condition.wait_for(
                 lambda: (
                     closing.is_set()
+                    or self._close_when_idle
                     or (
                         bool(self._prompts)
                         and not self._turn_starting
@@ -150,16 +151,17 @@ class ClaudeTerminalState:
                     )
                 )
             )
-            if closing.is_set():
+            if closing.is_set() or self._close_when_idle:
                 return None
             self._turn_starting = True
             return self._prompts.popleft()
 
-    def cancel_start(self) -> None:
-        """Release a prompt admission that failed before provider start."""
+    def cancel_start(self) -> bool:
+        """Release a failed admission and return its close intent."""
         with self._condition:
             self._turn_starting = False
             self._condition.notify_all()
+            return self._close_when_idle
 
     def complete_start(self, turn_id: TurnId) -> None:
         """Retain the exact admitted turn until provider completion."""
@@ -174,18 +176,26 @@ class ClaudeTerminalState:
         """Request natural closure and report whether work remains."""
         with self._condition:
             self._close_when_idle = True
+            self._condition.notify_all()
             return self._turn_starting or self._active_turn is not None
 
-    def finish_turn(self) -> tuple[TurnId, bool]:
-        """Release the completed turn and return its closure intent."""
+    def begin_turn_completion(self) -> TurnId:
+        """Return the exact active turn without releasing admission."""
         with self._condition:
             self._condition.wait_for(lambda: not self._turn_starting)
             turn_id = self._active_turn
             if turn_id is None:
                 raise RuntimeError("Claude completed an unknown turn.")
+            return turn_id
+
+    def complete_turn(self, turn_id: TurnId) -> bool:
+        """Release a supervisor-ended turn and return close intent."""
+        with self._condition:
+            if self._active_turn != turn_id:
+                raise RuntimeError("Claude turn completion state is invalid.")
             self._active_turn = None
             self._condition.notify_all()
-            return turn_id, self._close_when_idle
+            return self._close_when_idle
 
     def wake(self) -> None:
         """Wake a worker whose terminal owner is closing."""
@@ -501,12 +511,14 @@ class ClaudeTerminalApplication:
             try:
                 turn_id = self._require_session().start_turn(prompt)
             except ClaudeSessionGateError as error:
-                self._state.cancel_start()
+                if self._state.cancel_start():
+                    self._exit(None)
+                    return
                 self._set_status(f"Sidekick: {error.code.value}")
                 continue
             except BaseException as error:
-                self._state.cancel_start()
-                self._exit(error)
+                close = self._state.cancel_start()
+                self._exit(None if close else error)
                 return
             self._state.complete_start(turn_id)
             self._set_status("Claude is responding. New prompts will queue.")
@@ -649,11 +661,12 @@ class ClaudeTerminalApplication:
 
     def _finish_turn(self) -> None:
         try:
-            turn_id, close = self._state.finish_turn()
+            turn_id = self._state.begin_turn_completion()
+            self._require_session().end_turn(turn_id)
+            close = self._state.complete_turn(turn_id)
         except RuntimeError as error:
             self._exit(error)
             return
-        self._require_session().end_turn(turn_id)
         if close:
             self._exit(None)
         else:

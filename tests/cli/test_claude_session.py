@@ -63,6 +63,7 @@ class _JourneyTerminal(ClaudeTerminal):
         self._interrupted = False
         self._cancelled: ClaudeStructuredPermissionRequest | None = None
         self._stream_correlation: str | None = None
+        self.prompt_after_close: str | None = None
         self.rendered: list[str] = []
 
     def run(self, session: ClaudeTerminalSession) -> None:
@@ -108,19 +109,16 @@ class _JourneyTerminal(ClaudeTerminal):
         self,
         session: ClaudeTerminalSession,
     ) -> None:
-        turn_id, close = self._state.finish_turn()
-        if close:
-            raise AssertionError("Recovered turn closed unexpectedly.")
+        turn_id = self._state.begin_turn_completion()
+        if self._state.active_turn != turn_id:
+            raise AssertionError("Active turn cleared before supervisor end.")
         session.end_turn(turn_id)
-        prompt = self._state.claim_prompt(threading.Event())
-        if prompt != "follow-up prompt":
-            raise AssertionError("Queued prompt text changed.")
-        next_turn = session.start_turn(prompt)
-        self._state.complete_start(next_turn)
-        completed, close = self._state.finish_turn()
-        if close:
-            raise AssertionError("Queued turn closed unexpectedly.")
-        session.end_turn(completed)
+        if not self._state.request_close():
+            raise AssertionError("Active turn did not defer terminal close.")
+        close = self._state.complete_turn(turn_id)
+        if not close:
+            raise AssertionError("Recovered turn lost terminal close intent.")
+        self.prompt_after_close = self._state.claim_prompt(threading.Event())
 
     def _respond(
         self,
@@ -343,6 +341,13 @@ def test_claude_session_keeps_one_engine_across_a_queued_switch() -> None:
 
     status = ClaudeCliSession(runtime, terminals.__next__).run(())
 
+    cancelled = ClaudeTerminalState()
+    cancelled.queue_prompt("cancelled prompt")
+    if cancelled.claim_prompt(threading.Event()) != "cancelled prompt":
+        raise AssertionError("Starting prompt was not claimed.")
+    if not cancelled.request_close() or not cancelled.cancel_start():
+        raise AssertionError("Cancelled start lost terminal close intent.")
+
     assert (
         status,
         engine.process_id == runtime.process_id,
@@ -352,6 +357,7 @@ def test_claude_session_keeps_one_engine_across_a_queued_switch() -> None:
         engine.event_consumer_count,
         state.active_turn,
         state.pending_prompt_count,
+        terminal.prompt_after_close,
     ) == (
         0,
         True,
@@ -361,10 +367,11 @@ def test_claude_session_keeps_one_engine_across_a_queued_switch() -> None:
             "continued",
             "Claude could not complete the request.",
         ],
-        2,
+        1,
         1,
         None,
-        0,
+        1,
+        None,
     )
     assert events == [
         "bootstrap_disconnect:1",
@@ -415,9 +422,6 @@ def test_claude_session_keeps_one_engine_across_a_queued_switch() -> None:
         "presentation:Claude usage limits are nearly exhausted.",
         "presentation:Claude authentication requires attention.",
         "interrupt",
-        "end",
-        "adoption",
-        "prompt",
         "end",
         "close_input",
         "wait",
