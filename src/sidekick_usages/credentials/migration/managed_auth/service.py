@@ -312,7 +312,11 @@ def _managed_authority_ready(
             setup = authority.setup_token
             authority_ready = (
                 setup is not None
-                and setup.health is CredentialHealth.HEALTHY
+                and setup.health
+                in {
+                    CredentialHealth.HEALTHY,
+                    CredentialHealth.UNKNOWN,
+                }
                 and not refresh_due(
                     classify_expiry(
                         account.access_expiry,
@@ -338,10 +342,15 @@ def _managed_authority_ready(
             )
     else:
         return False
-    return (
-        authority_ready
-        and account.credential_health is CredentialHealth.HEALTHY
+    account_health_ready = (
+        account.credential_health is CredentialHealth.HEALTHY
     )
+    if _setup_only_authority(account):
+        account_health_ready = account.credential_health in {
+            CredentialHealth.HEALTHY,
+            CredentialHealth.UNKNOWN,
+        }
+    return authority_ready and account_health_ready
 
 
 def _setup_authority(

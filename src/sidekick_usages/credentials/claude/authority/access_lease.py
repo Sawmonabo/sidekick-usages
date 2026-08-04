@@ -159,7 +159,10 @@ class ClaudeSelectedAccessLeaseService:
                 "Protected Claude selection remains disabled.",
                 SelectionCode.UNSUPPORTED_SESSION_CAPABILITY,
             )
-        if setup.health is not CredentialHealth.HEALTHY or (
+        if setup.health not in {
+            CredentialHealth.HEALTHY,
+            CredentialHealth.UNKNOWN,
+        } or (
             setup.expires_at is not None
             and setup.expires_at <= self._clock.now()
         ):

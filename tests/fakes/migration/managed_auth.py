@@ -433,7 +433,11 @@ class ManagedAuthScenario:
                 isinstance(authority, ClaudeAccountAuthority)
                 and authority.subscription is None
                 and authority.setup_token is not None
-                and authority.setup_token.health is CredentialHealth.HEALTHY
+                and authority.setup_token.health
+                in {
+                    CredentialHealth.HEALTHY,
+                    CredentialHealth.UNKNOWN,
+                }
             ):
                 return False
         return True
@@ -537,10 +541,10 @@ def _setup_only_claude() -> SavedAccount:
             setup_token=ClaudeSetupTokenAuthority(
                 authority_id=SETUP_ONLY_AUTHORITY_ID,
                 expires_at=REFERENCE_TIME + timedelta(days=180),
-                health=CredentialHealth.HEALTHY,
+                health=CredentialHealth.UNKNOWN,
                 observed_at=OBSERVED_AT,
             ),
             subscription=None,
         ),
-        credential_health=CredentialHealth.HEALTHY,
+        credential_health=CredentialHealth.UNKNOWN,
     )
