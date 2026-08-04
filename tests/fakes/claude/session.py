@@ -119,12 +119,14 @@ class ClaudeSessionEngineFake(ClaudeStructuredEngineFake):
         expected_oauth_values: tuple[str, ...] = SESSION_OAUTH,
         fail_control_once: bool = False,
         initial_event_count: int = 0,
+        turn_events_ready: Event | None = None,
     ) -> None:
         super().__init__(responses, expected_oauth_values)
         self._interactive_events = list(interactive_events)
         self._journey_events = journey_events
         self._fail_control_once = fail_control_once
         self._initial_event_count = initial_event_count
+        self._turn_events_ready = turn_events_ready
         self._event_consumers: set[int] = set()
         self.interactive_frames: list[JsonObject] = []
 
@@ -246,6 +248,13 @@ class ClaudeSessionEngineFake(ClaudeStructuredEngineFake):
         if self._initial_event_count:
             self._initial_event_count -= 1
             return self._interactive_events.pop(0)
+        if (
+            self._turn_events_ready is not None
+            and not self._turn_events_ready.is_set()
+        ):
+            raise ClaudeStructuredError(
+                ClaudeStructuredFailure.PROTOCOL_TIMEOUT
+            )
         if not self.user_turn_count or not self._interactive_events:
             failure = (
                 ClaudeStructuredFailure.PROTOCOL_EOF

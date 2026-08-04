@@ -19,6 +19,7 @@ from sidekick_usages.cli.session.claude.host import ClaudeCliSession
 from sidekick_usages.cli.session.claude.runtime import ClaudeSessionRuntime
 from sidekick_usages.cli.session.claude.terminal import (
     ClaudeTerminalApplication,
+    ClaudeTerminalState,
 )
 from sidekick_usages.cli.session.codex import (
     CodexCliSession,
@@ -222,9 +223,10 @@ class _ClaudeSessionRunner:
         commands = ClaudeSavedAccountCommands(
             compose_use_context(paths=self._paths)
         )
+        terminal_state = ClaudeTerminalState()
         return ClaudeCliSession(
             runtime,
-            lambda: ClaudeTerminalApplication(commands),
+            lambda: ClaudeTerminalApplication(commands, terminal_state),
         )
 
     def _native_profile(self) -> ClaudeNativeProfile:

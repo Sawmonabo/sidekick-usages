@@ -15,6 +15,7 @@ from sidekick_usages.cli.session.claude.runtime import (
 from sidekick_usages.cli.session.claude.terminal import (
     ClaudeTerminal,
     ClaudeTerminalSession,
+    ClaudeTerminalState,
 )
 from sidekick_usages.core.selection.types import ParticipantId, SelectionCode
 from sidekick_usages.providers.claude.structured.codec import (
@@ -50,9 +51,13 @@ class _JourneyTerminal(ClaudeTerminal):
     def __init__(
         self,
         control: ClaudeSessionControlFake,
+        state: ClaudeTerminalState,
+        turn_events_ready: threading.Event,
         events: list[str],
     ) -> None:
         self._control = control
+        self._state = state
+        self._turn_events_ready = turn_events_ready
         self._events = events
         self._prompt = 0
         self._interrupted = False
@@ -62,28 +67,8 @@ class _JourneyTerminal(ClaudeTerminal):
 
     def run(self, session: ClaudeTerminalSession) -> None:
         """Drive one compact retained-engine parity journey."""
-        self._control.wait_initial_recovered()
-        recovered = session.receive_event()
-        if recovered.status != (
-            "Sidekick recovered the terminal; Claude remained active."
-        ):
-            raise AssertionError("Terminal recovery status was lost.")
-        self.render(recovered)
-        self._control.refuse_once()
-        try:
-            session.start_turn("refused prompt")
-        except ClaudeSessionGateError as error:
-            self.render_status(error.code)
-        self._control.start_selection()
-        recovery = session.receive_event()
-        if recovery.status != "Sidekick: selection_recovery_required":
-            raise AssertionError("Ambiguous target install was not gated.")
-        self.render(recovery)
-        self._control.retry_target_projection()
-        self._control.wait_target_recovered()
-        turn_id = session.start_turn("queued prompt")
-        self._control.disconnect()
-        self._control.wait_reconnected()
+        self._assert_recovered_state(session)
+        self._turn_events_ready.set()
         while True:
             event = session.receive_event()
             try:
@@ -101,8 +86,41 @@ class _JourneyTerminal(ClaudeTerminal):
                 )
                 self._cancelled = None
             if event.turn_complete:
-                session.end_turn(turn_id)
+                self._finish_recovered_turn(session)
                 return
+
+    def _assert_recovered_state(
+        self,
+        session: ClaudeTerminalSession,
+    ) -> None:
+        recovered = session.receive_event()
+        if recovered.status != (
+            "Sidekick recovered the terminal; Claude remained active."
+        ):
+            raise AssertionError("Terminal recovery status was lost.")
+        self.render(recovered)
+        if self._state.active_turn != SESSION_TURN:
+            raise AssertionError("Active turn was lost during recreation.")
+        if self._state.pending_prompt_count != 1:
+            raise AssertionError("Queued prompt was lost or duplicated.")
+
+    def _finish_recovered_turn(
+        self,
+        session: ClaudeTerminalSession,
+    ) -> None:
+        turn_id, close = self._state.finish_turn()
+        if close:
+            raise AssertionError("Recovered turn closed unexpectedly.")
+        session.end_turn(turn_id)
+        prompt = self._state.claim_prompt(threading.Event())
+        if prompt != "follow-up prompt":
+            raise AssertionError("Queued prompt text changed.")
+        next_turn = session.start_turn(prompt)
+        self._state.complete_start(next_turn)
+        completed, close = self._state.finish_turn()
+        if close:
+            raise AssertionError("Queued turn closed unexpectedly.")
+        session.end_turn(completed)
 
     def _respond(
         self,
@@ -222,9 +240,55 @@ class _FailingTerminal(ClaudeTerminal):
         raise RuntimeError("synthetic terminal failure")
 
 
+class _InFlightFailingTerminal(ClaudeTerminal):
+    def __init__(
+        self,
+        control: ClaudeSessionControlFake,
+        state: ClaudeTerminalState,
+        events: list[str],
+    ) -> None:
+        self._control = control
+        self._state = state
+        self._events = events
+
+    def run(self, session: ClaudeTerminalSession) -> None:
+        """Fail one terminal while its provider turn remains active."""
+        self._control.wait_initial_recovered()
+        recovered = session.receive_event()
+        if recovered.status != (
+            "Sidekick recovered the terminal; Claude remained active."
+        ):
+            raise AssertionError("Bootstrap terminal recovery was lost.")
+        self._events.append(f"presentation:{recovered.status}")
+        self._control.refuse_once()
+        with pytest.raises(ClaudeSessionGateError) as refusal:
+            session.start_turn("refused prompt")
+        self._events.append(f"status:{refusal.value.code.value}")
+        self._control.start_selection()
+        recovery = session.receive_event()
+        if recovery.status != "Sidekick: selection_recovery_required":
+            raise AssertionError("Ambiguous target install was not gated.")
+        self._events.append(f"presentation:{recovery.status}")
+        self._control.retry_target_projection()
+        self._control.wait_target_recovered()
+        self._state.queue_prompt("queued prompt")
+        prompt = self._state.claim_prompt(threading.Event())
+        if prompt != "queued prompt":
+            raise AssertionError("Initial queued prompt text changed.")
+        turn_id = session.start_turn(prompt)
+        self._state.complete_start(turn_id)
+        self._state.queue_prompt("follow-up prompt")
+        self._control.disconnect()
+        self._control.wait_reconnected()
+        self._events.append("inflight_terminal_failure")
+        raise RuntimeError("synthetic in-flight terminal failure")
+
+
 def test_claude_session_keeps_one_engine_across_a_queued_switch() -> None:
     """Keep PID and conversation through refusal, switch, and interrupt."""
     events: list[str] = []
+    state = ClaudeTerminalState()
+    turn_events_ready = threading.Event()
     engine = ClaudeSessionEngineFake(
         (
             StructuredResponseCase.MALFORMED_UTF8,
@@ -244,6 +308,7 @@ def test_claude_session_keeps_one_engine_across_a_queued_switch() -> None:
         ),
         fail_control_once=True,
         initial_event_count=3,
+        turn_events_ready=turn_events_ready,
     )
     control = ClaudeSessionControlFake(events)
     control.recover_initial_projection_once()
@@ -262,8 +327,19 @@ def test_claude_session_keeps_one_engine_across_a_queued_switch() -> None:
         turn_id_factory=lambda: SESSION_TURN,
         request_id_factory=iter(SESSION_REQUESTS).__next__,
     )
-    terminal = _JourneyTerminal(control, events)
-    terminals = iter((_FailingTerminal(control, events), terminal))
+    terminal = _JourneyTerminal(
+        control,
+        state,
+        turn_events_ready,
+        events,
+    )
+    terminals = iter(
+        (
+            _FailingTerminal(control, events),
+            _InFlightFailingTerminal(control, state, events),
+            terminal,
+        )
+    )
 
     status = ClaudeCliSession(runtime, terminals.__next__).run(())
 
@@ -274,6 +350,8 @@ def test_claude_session_keeps_one_engine_across_a_queued_switch() -> None:
         terminal.rendered,
         engine.user_turn_count,
         engine.event_consumer_count,
+        state.active_turn,
+        state.pending_prompt_count,
     ) == (
         0,
         True,
@@ -283,8 +361,10 @@ def test_claude_session_keeps_one_engine_across_a_queued_switch() -> None:
             "continued",
             "Claude could not complete the request.",
         ],
+        2,
         1,
-        1,
+        None,
+        0,
     )
     assert events == [
         "bootstrap_disconnect:1",
@@ -309,6 +389,11 @@ def test_claude_session_keeps_one_engine_across_a_queued_switch() -> None:
         "adoption",
         "prompt",
         "reattach:3",
+        "inflight_terminal_failure",
+        (
+            "presentation:Sidekick recovered the terminal; Claude remained "
+            "active."
+        ),
         "presentation:A Claude hook is running.",
         "permission_pending",
         "cancel:cancel-1",
@@ -330,6 +415,9 @@ def test_claude_session_keeps_one_engine_across_a_queued_switch() -> None:
         "presentation:Claude usage limits are nearly exhausted.",
         "presentation:Claude authentication requires attention.",
         "interrupt",
+        "end",
+        "adoption",
+        "prompt",
         "end",
         "close_input",
         "wait",

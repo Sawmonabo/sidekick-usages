@@ -103,6 +103,96 @@ class ClaudeTerminal(Protocol):
         """Run until ordinary terminal EOF with restoration."""
 
 
+class ClaudeTerminalState:
+    """Retain turn admission state across terminal-owner recreation."""
+
+    def __init__(self) -> None:
+        self._condition = Condition(RLock())
+        self._prompts: deque[str] = deque()
+        self._active_turn: TurnId | None = None
+        self._turn_starting = False
+        self._close_when_idle = False
+
+    @property
+    def active_turn(self) -> TurnId | None:
+        """Return the admitted provider turn, when one remains active."""
+        with self._condition:
+            return self._active_turn
+
+    @property
+    def pending_prompt_count(self) -> int:
+        """Return prompts waiting behind the current account epoch."""
+        with self._condition:
+            return len(self._prompts)
+
+    @property
+    def busy(self) -> bool:
+        """Return whether a prompt is starting or a turn remains active."""
+        with self._condition:
+            return self._turn_starting or self._active_turn is not None
+
+    def queue_prompt(self, prompt: str) -> None:
+        """Queue one provider prompt for exactly one terminal worker."""
+        with self._condition:
+            self._prompts.append(prompt)
+            self._condition.notify_all()
+
+    def claim_prompt(self, closing: Event) -> str | None:
+        """Claim the next prompt once no admitted turn remains active."""
+        with self._condition:
+            self._condition.wait_for(
+                lambda: (
+                    closing.is_set()
+                    or (
+                        bool(self._prompts)
+                        and not self._turn_starting
+                        and self._active_turn is None
+                    )
+                )
+            )
+            if closing.is_set():
+                return None
+            self._turn_starting = True
+            return self._prompts.popleft()
+
+    def cancel_start(self) -> None:
+        """Release a prompt admission that failed before provider start."""
+        with self._condition:
+            self._turn_starting = False
+            self._condition.notify_all()
+
+    def complete_start(self, turn_id: TurnId) -> None:
+        """Retain the exact admitted turn until provider completion."""
+        with self._condition:
+            if not self._turn_starting or self._active_turn is not None:
+                raise RuntimeError("Claude turn start state is invalid.")
+            self._active_turn = turn_id
+            self._turn_starting = False
+            self._condition.notify_all()
+
+    def request_close(self) -> bool:
+        """Request natural closure and report whether work remains."""
+        with self._condition:
+            self._close_when_idle = True
+            return self._turn_starting or self._active_turn is not None
+
+    def finish_turn(self) -> tuple[TurnId, bool]:
+        """Release the completed turn and return its closure intent."""
+        with self._condition:
+            self._condition.wait_for(lambda: not self._turn_starting)
+            turn_id = self._active_turn
+            if turn_id is None:
+                raise RuntimeError("Claude completed an unknown turn.")
+            self._active_turn = None
+            self._condition.notify_all()
+            return turn_id, self._close_when_idle
+
+    def wake(self) -> None:
+        """Wake a worker whose terminal owner is closing."""
+        with self._condition:
+            self._condition.notify_all()
+
+
 class _TerminalMode(StrEnum):
     PROMPT = "prompt"
     LOGIN = "login"
@@ -113,23 +203,27 @@ class _TerminalMode(StrEnum):
 class ClaudeTerminalApplication:
     """Multiplex input, events, controls, and restoration in one app."""
 
-    def __init__(self, commands: ClaudeSavedAccountCommands) -> None:
+    def __init__(
+        self,
+        commands: ClaudeSavedAccountCommands,
+        state: ClaudeTerminalState,
+    ) -> None:
         self._commands = commands
+        self._state = state
         self._history = InMemoryHistory()
         self._buffer = Buffer(multiline=True, history=self._history)
         self._lock = RLock()
-        self._turn_condition = Condition(self._lock)
         self._closing = Event()
-        self._prompts: Queue[str | None] = Queue()
         self._control_actions: Queue[_TerminalAction | None] = Queue()
         self._selection_actions: Queue[_TerminalAction | None] = Queue()
         self._output: list[str] = []
         self._output_correlations: dict[str, int] = {}
-        self._status = "Enter a prompt. Ctrl-C interrupts an active turn."
+        self._status = (
+            "Claude is responding. New prompts will queue."
+            if state.busy
+            else "Enter a prompt. Ctrl-C interrupts an active turn."
+        )
         self._mode = _TerminalMode.PROMPT
-        self._active_turn: TurnId | None = None
-        self._turn_starting = False
-        self._close_when_idle = False
         self._control: ClaudeStructuredControlRequest | None = None
         self._controls: dict[
             str,
@@ -204,11 +298,9 @@ class ClaudeTerminalApplication:
         finally:
             self._closing.set()
             session.stop_terminal_events()
-            self._prompts.put(None)
             self._control_actions.put(None)
             self._selection_actions.put(None)
-            with self._turn_condition:
-                self._turn_condition.notify_all()
+            self._state.wake()
             for thread in self._threads:
                 thread.join(_THREAD_JOIN_SECONDS)
                 if thread.is_alive() and failure is None:
@@ -239,7 +331,7 @@ class ClaudeTerminalApplication:
     def _route_prompt(self, prompt: str) -> None:
         route = self._commands.route(prompt)
         if route.kind is ClaudeCommandKind.PROVIDER:
-            self._prompts.put(prompt)
+            self._state.queue_prompt(prompt)
             self._set_status("Prompt queued for the current account epoch.")
             return
         if route.kind is ClaudeCommandKind.REFUSED:
@@ -369,9 +461,7 @@ class ClaudeTerminalApplication:
                 )
             )
             return
-        with self._lock:
-            active = self._active_turn is not None
-        if active:
+        if self._state.active_turn is not None:
             self._control_actions.put(self._require_session().interrupt)
             self._set_status("Interrupt requested for the active response.")
         else:
@@ -379,15 +469,12 @@ class ClaudeTerminalApplication:
 
     def _eof(self, _event: KeyPressEvent) -> None:
         if self._control is not None:
-            self._close_when_idle = True
+            self._state.request_close()
             self._deny_control()
             return
-        with self._lock:
-            if self._turn_starting or self._active_turn is not None:
-                self._close_when_idle = True
-                self._status = "Waiting for the active turn to finish."
-                self._application.invalidate()
-                return
+        if self._state.request_close():
+            self._set_status("Waiting for the active turn to finish.")
+            return
         self._application.exit(result=0)
 
     def _move_up(self, _event: KeyPressEvent) -> None:
@@ -408,34 +495,20 @@ class ClaudeTerminalApplication:
 
     def _consume_prompts(self) -> None:
         while not self._closing.is_set():
-            prompt = self._prompts.get()
+            prompt = self._state.claim_prompt(self._closing)
             if prompt is None:
                 return
-            with self._turn_condition:
-                self._turn_condition.wait_for(
-                    lambda: self._active_turn is None or self._closing.is_set()
-                )
-                if self._closing.is_set():
-                    return
-                self._turn_starting = True
             try:
                 turn_id = self._require_session().start_turn(prompt)
             except ClaudeSessionGateError as error:
-                with self._turn_condition:
-                    self._turn_starting = False
-                    self._turn_condition.notify_all()
+                self._state.cancel_start()
                 self._set_status(f"Sidekick: {error.code.value}")
                 continue
             except BaseException as error:
-                with self._turn_condition:
-                    self._turn_starting = False
-                    self._turn_condition.notify_all()
+                self._state.cancel_start()
                 self._exit(error)
                 return
-            with self._turn_condition:
-                self._active_turn = turn_id
-                self._turn_starting = False
-                self._turn_condition.notify_all()
+            self._state.complete_start(turn_id)
             self._set_status("Claude is responding. New prompts will queue.")
 
     def _consume_control_actions(self) -> None:
@@ -501,16 +574,12 @@ class ClaudeTerminalApplication:
             message = (
                 "Sidekick cannot run an undeclared Claude hook."
                 if isinstance(control, ClaudeStructuredHookCallbackRequest)
-                else (
-                    "Sidekick cannot route an undeclared SDK MCP server."
-                )
+                else ("Sidekick cannot route an undeclared SDK MCP server.")
             )
             self._append(message)
             self._control_actions.put(
                 lambda request=control: (
-                    self._require_session().refuse_unsupported_control(
-                        request
-                    )
+                    self._require_session().refuse_unsupported_control(request)
                 )
             )
         if event.cancelled_request_id is not None:
@@ -579,15 +648,11 @@ class ClaudeTerminalApplication:
         self._append("The provider cancelled the pending request.")
 
     def _finish_turn(self) -> None:
-        with self._turn_condition:
-            self._turn_condition.wait_for(lambda: not self._turn_starting)
-            turn_id = self._active_turn
-            if turn_id is None:
-                self._exit(RuntimeError("Claude completed an unknown turn."))
-                return
-            self._active_turn = None
-            self._turn_condition.notify_all()
-            close = self._close_when_idle
+        try:
+            turn_id, close = self._state.finish_turn()
+        except RuntimeError as error:
+            self._exit(error)
+            return
         self._require_session().end_turn(turn_id)
         if close:
             self._exit(None)
