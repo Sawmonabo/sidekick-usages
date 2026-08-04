@@ -539,6 +539,13 @@ class SelectionCoordinator:
         try:
             prepared = self._adapter.prevalidate(operation, baseline)
             self._require_prepared(operation, prepared)
+            if not self._participants.target_available(
+                prepared.provider_id,
+                prepared.target_account_id,
+            ):
+                raise SelectionRequestError(
+                    SelectionCode.SESSION_CONFIGURATION_REQUIRED
+                )
         except SelectionRequestError as error:
             if error.code is SelectionCode.SELECTION_RECOVERY_REQUIRED:
                 yield from self._terminal_events(self._recovering(operation))

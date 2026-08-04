@@ -61,6 +61,13 @@ class ParticipantAttachmentRegistry(Protocol):
     def requires_finalized_binding(self, provider_id: ProviderId) -> bool:
         """Return whether baseline admission requires attachment binding."""
 
+    def requires_participant(
+        self,
+        provider_id: ProviderId,
+        account_id: SidekickAccountId,
+    ) -> bool:
+        """Return whether one target requires integrated membership."""
+
     def stage(
         self,
         participant_id: ParticipantId,

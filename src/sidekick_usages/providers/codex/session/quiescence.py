@@ -9,7 +9,11 @@ from threading import Lock
 from typing import Protocol, Self
 
 from sidekick_usages.core.accounts.identifiers import new_request_id
-from sidekick_usages.core.accounts.types import OperationId, RequestId
+from sidekick_usages.core.accounts.types import (
+    OperationId,
+    RequestId,
+    SidekickAccountId,
+)
 from sidekick_usages.core.selection.models import (
     AuthorityReadyProof,
     FinalizedSelection,
@@ -223,6 +227,15 @@ class CodexParticipantProofSet:
     def requires_finalized_binding(provider_id: ProviderId) -> bool:
         """Return false because Codex baseline authority is process-wide."""
         del provider_id
+        return False
+
+    @staticmethod
+    def requires_participant(
+        provider_id: ProviderId,
+        account_id: SidekickAccountId,
+    ) -> bool:
+        """Return false because Codex authority is process-wide."""
+        del provider_id, account_id
         return False
 
     def stage(

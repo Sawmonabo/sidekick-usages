@@ -81,6 +81,7 @@ from sidekick_usages.providers.claude.auth.storage.service import (
 from sidekick_usages.providers.claude.structured.data_plane import (
     ClaudeParticipantChannelRegistry,
     ClaudeProtectedCommitRelay,
+    claude_participant_ack_required,
 )
 from sidekick_usages.providers.codex.app_server.executable import (
     discover_codex_executable_from_launcher,
@@ -173,7 +174,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     selection_journals = SelectionOperationStore(paths.selection_journals)
     exchanges = WorkerExchangeRegistry(time.monotonic)
     protected_channels = (
-        ClaudeParticipantChannelRegistry()
+        ClaudeParticipantChannelRegistry(
+            partial(
+                claude_participant_ack_required,
+                AccountIndexReader(paths.accounts).load,
+            )
+        )
         if protected_selection_enabled(ProviderId.CLAUDE)
         else None
     )

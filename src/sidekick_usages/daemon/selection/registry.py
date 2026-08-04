@@ -119,9 +119,22 @@ class ParticipantRegistry:
     def requires_finalized_attachment(self, provider_id: ProviderId) -> bool:
         """Return whether baseline turns require a provider target bind."""
         attachments = self._attachment_registry(provider_id)
-        return bool(
-            attachments and attachments.requires_finalized_binding(provider_id)
+        return attachments is not None and (
+            attachments.requires_finalized_binding(provider_id)
         )
+
+    def target_available(
+        self, provider_id: ProviderId, account_id: SidekickAccountId,
+    ) -> bool:
+        """Return whether required integrated membership exists now."""
+        with self._condition:
+            attachments = self._attachment_registry(provider_id)
+            required = attachments is not None and (
+                attachments.requires_participant(provider_id, account_id)
+            )
+            return not required or bool(
+                self._snapshot(provider_id).registered_count
+            )
 
     def stage_attachment(
         self,
@@ -543,14 +556,8 @@ class ParticipantRegistry:
         with self._condition:
             return self._snapshot(provider_id)
 
-    def registered_count(self, provider_id: ProviderId) -> int:
-        """Return live and durably required provider membership."""
-        with self._condition:
-            return self._snapshot(provider_id).registered_count
-
     def unreachable_processes(
-        self,
-        provider_id: ProviderId,
+        self, provider_id: ProviderId,
     ) -> tuple[tuple[ParticipantId, ProcessIdentity], ...]:
         """Return exact disconnected process identities for inspection."""
         with self._condition:
@@ -563,8 +570,7 @@ class ParticipantRegistry:
             )
 
     def unresolved_processes(
-        self,
-        provider_id: ProviderId,
+        self, provider_id: ProviderId,
     ) -> tuple[tuple[ParticipantId, ProcessIdentity], ...]:
         """Return exact identities for unresolved required participants."""
         with self._condition:
@@ -825,14 +831,8 @@ class ParticipantRegistry:
                 raise ParticipantRequestError(
                     SelectionCode.SELECTION_RECOVERY_REQUIRED
                 )
-            released = tuple(
-                sorted(
-                    {
-                        request.participant_id
-                        for request in gate.queued.values()
-                    }
-                )
-            )
+            participants = gate.queued.values()
+            released = tuple(sorted({p.participant_id for p in participants}))
             self._open_participants(gate.required, epoch)
             self._gates.pop(provider_id)
             self._condition.notify_all()

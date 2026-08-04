@@ -2,12 +2,14 @@
 
 import os
 import socket
+from collections.abc import Callable
 from dataclasses import dataclass
 from threading import Lock
 from time import monotonic
 from typing import Protocol
 
 from sidekick_usages.core.accounts.identifiers import new_request_id
+from sidekick_usages.core.accounts.models import SavedAccount
 from sidekick_usages.core.accounts.types import (
     AuthorityGeneration,
     OperationId,
@@ -56,6 +58,24 @@ _CLAUDE_PROJECTION_KINDS = frozenset(
         OperationKind.CLAUDE_PARTICIPANT_BIND,
     }
 )
+
+
+def claude_participant_ack_required(
+    accounts: Callable[[], tuple[SavedAccount, ...]],
+    account_id: SidekickAccountId,
+) -> bool:
+    """Return whether one exact Claude target needs an integrated host."""
+    matches = tuple(
+        account
+        for account in accounts()
+        if account.account_id == account_id
+        and account.provider_id is ProviderId.CLAUDE
+    )
+    if len(matches) != 1:
+        raise ClaudeProtectedChannelError(
+            "The protected Claude target is unavailable."
+        )
+    return not matches[0].has_managed_authority
 
 
 class ClaudeProtectedOAuthFrame:
@@ -210,10 +230,14 @@ class ClaudeParticipantChannelTransaction:
 class ClaudeParticipantChannelRegistry:
     """Own bounded process-bound participant endpoints without a listener."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        participant_required: Callable[[SidekickAccountId], bool],
+    ) -> None:
         self._lock = Lock()
         self._distribution_lock = Lock()
         self._channels: dict[ParticipantId, _ClaudeParticipantChannel] = {}
+        self._participant_required = participant_required
 
     @staticmethod
     def requires_endpoint(provider_id: ProviderId) -> bool:
@@ -224,6 +248,18 @@ class ClaudeParticipantChannelRegistry:
     def requires_finalized_binding(provider_id: ProviderId) -> bool:
         """Require Claude authority installation before baseline admission."""
         return provider_id is ProviderId.CLAUDE
+
+    def requires_participant(
+        self,
+        provider_id: ProviderId,
+        account_id: SidekickAccountId,
+    ) -> bool:
+        """Return whether this target requires one protected participant."""
+        if provider_id is not ProviderId.CLAUDE:
+            raise ClaudeProtectedChannelError(
+                "The protected participant provider does not match."
+            )
+        return self._participant_required(account_id)
 
     def stage(
         self,
@@ -349,6 +385,13 @@ class ClaudeParticipantChannelRegistry:
         with self._distribution_lock:
             with self._lock:
                 channels = tuple(self._channels.items())
+            if self.requires_participant(
+                ProviderId.CLAUDE,
+                binding.account_id,
+            ) and not channels:
+                raise ClaudeProtectedChannelError(
+                    "The protected Claude participant is unavailable."
+                )
             for participant_id, channel in channels:
                 if channel.binding == binding:
                     continue
