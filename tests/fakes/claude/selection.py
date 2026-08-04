@@ -145,10 +145,10 @@ def execute_selection_worker(
         if active.baseline_account_id is None
         else tuple(
             sorted(
-                (
+                {
                     active.baseline_account_id,
                     active.target_account_id,
-                )
+                }
             )
         )
     )

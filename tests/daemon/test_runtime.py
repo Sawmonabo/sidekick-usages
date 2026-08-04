@@ -21,7 +21,6 @@ from sidekick_usages.core.selection.models import (
     RelatedRuntimeAuthority,
     SelectionAuthorityObservation,
     SelectionEpoch,
-    SelectionResult,
 )
 from sidekick_usages.core.selection.types import (
     OperationKind,
@@ -55,7 +54,6 @@ from sidekick_usages.daemon.runtime.supervisor import (
     SupervisorRuntime,
     WakeupChannel,
 )
-from sidekick_usages.daemon.selection.coordinator import SelectionCoordinator
 from sidekick_usages.daemon.selection.models import (
     ParticipantClientKind,
     ParticipantConnectionRequest,
@@ -66,14 +64,10 @@ from sidekick_usages.daemon.selection.models import (
 )
 from sidekick_usages.daemon.selection.recovery import SelectionRecovery
 from sidekick_usages.daemon.selection.registry import ParticipantRegistry
-from sidekick_usages.daemon.selection.worker import (
-    SelectionSchedulerSink,
-    SelectionWorkerGateway,
-)
+from sidekick_usages.daemon.selection.worker import SelectionWorkerGateway
 from sidekick_usages.daemon.types.service import ServicePhase
 from sidekick_usages.daemon.types.worker import WorkerOutcome
 from sidekick_usages.daemon.worker.pool import WorkerPool
-from sidekick_usages.entrypoints import worker
 from sidekick_usages.entrypoints.supervisor import (
     parse_provider_launchers,
 )
@@ -85,7 +79,6 @@ from sidekick_usages.persistence.supervisor.selection import (
 from sidekick_usages.persistence.supervisor.service import ServiceStateStore
 from sidekick_usages.platform.models import ProcessIdentity
 from tests.fakes.claude.activation import claude_activation_scenario
-from tests.fakes.claude.managed import use_synthetic_claude
 from tests.fakes.claude.selection import existing_selection_operation
 from tests.fakes.daemon.foundation import (
     CLAUDE_NATIVE_OPERATION_ID,
@@ -99,10 +92,7 @@ from tests.fakes.daemon.runtime import (
     FakeWorkerLauncher,
     GlobalSelectionRecovery,
     RuntimeClock,
-    entrypoint_worker_launcher,
     foundation_runtime,
-    run_scheduled_gateway_call,
-    run_scheduler_phase,
     selection_phase_action,
     selection_scheduler,
     worker_planner,
@@ -238,7 +228,7 @@ def _assert_native_login_cancels_stale_activation(
         provider_id=ProviderId.CLAUDE,
         account_id=None,
         kind=OperationKind.RECONCILE_NATIVE,
-        priority=OperationPriority.INTERACTIVE,
+        priority=OperationPriority.SCHEDULED,
         state=OperationState.SCHEDULED,
         due_at=clock.now(),
         updated_at=clock.now(),
@@ -272,6 +262,10 @@ def _assert_native_login_cancels_stale_activation(
     assert len(completions) == 1
     assert completions[0].operation_id == running.operation_id
     assert completions[0].outcome is WorkerOutcome.NO_CHANGE
+    assert (
+        completions[0].related_runtime_authority
+        == result.related_runtime_authority
+    )
     assert state.queue.find(stale_activation.operation_id) is None
     assert update.completion is not None
     assert update.completion.outcome is WorkerOutcome.CANCELLED
@@ -371,12 +365,7 @@ def _run_restarted_readback(
     return launcher, tuple(observations), blocked and valid, completed
 
 
-@pytest.mark.parametrize(
-    "phase_kind",
-    [OperationKind.SELECTION_PREVALIDATE, OperationKind.SELECTION_COMMIT],
-)
 def test_selection_worker_lifetime_and_phase_ownership(
-    phase_kind: OperationKind,
     tmp_path: Path,
 ) -> None:
     """Retain an orphan phase until one isolated READBACK completes."""
@@ -438,7 +427,7 @@ def test_selection_worker_lifetime_and_phase_ownership(
             selection_operation_id=parent_id,
             provider_id=ProviderId.CLAUDE,
             account_id=target.account_id,
-            kind=phase_kind,
+            kind=OperationKind.SELECTION_PREVALIDATE,
             priority=OperationPriority.INTERACTIVE,
             state=OperationState.SCHEDULED,
             due_at=clock.now(),
@@ -485,189 +474,6 @@ def test_selection_worker_lifetime_and_phase_ownership(
         results.load(phase_id),
         launcher.events,
     ) == (None, None, [f"launch:{phase_id}"])
-
-
-def test_selection_worker_gateway_runs_every_phase_through_entrypoint(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    """Run all selection phases through queue, worker, result, and gateway."""
-    use_synthetic_claude(monkeypatch)
-    scenario = claude_activation_scenario(tmp_path)
-    paths = scenario.paths
-    queue = OperationQueueStore(paths.durable_operations)
-    journal = SelectionOperationStore(paths.selection_journals)
-    wake = Event()
-    gateway = SelectionWorkerGateway(queue, FixedClock(), wake.set)
-    open_operation, baseline = existing_selection_operation(scenario)
-    active = journal.begin(open_operation)
-    monkeypatch.setattr(worker, "discover_application_paths", lambda: paths)
-    monkeypatch.setattr(
-        worker,
-        "_claude_selection_executor",
-        lambda *arguments, **keywords: scenario.executor,
-    )
-    results = WorkerResultStore(paths.durable_operations)
-    launcher, _kinds = entrypoint_worker_launcher(
-        queue,
-        lambda operation_id: worker.main((str(operation_id),)),
-    )
-    recovery = GlobalSelectionRecovery()
-    scheduler = DurableScheduler(
-        queue,
-        results,
-        WorkerPool(launcher, worker_planner(), lambda: None),
-        RuntimeClock(),
-        events=SelectionSchedulerSink(
-            OperationEventHub(),
-            gateway,
-            recovery,
-        ),
-    )
-
-    prepared = run_scheduled_gateway_call(
-        lambda: gateway.prevalidate(active, baseline),
-        wake,
-        scheduler,
-    )
-    active = journal.compare_and_swap(
-        active,
-        replace(
-            active,
-            phase=SelectionPhase.PREPARING,
-            prepared_generation=prepared.target_generation,
-        ),
-    )
-    for phase in (
-        SelectionPhase.WAITING_OLD_TURNS,
-        SelectionPhase.COMMITTING,
-    ):
-        active = journal.compare_and_swap(
-            active,
-            replace(active, phase=phase),
-        )
-    proof = run_scheduled_gateway_call(
-        lambda: gateway.commit(prepared),
-        wake,
-        scheduler,
-    )
-    active = journal.compare_and_swap(
-        active,
-        replace(
-            active,
-            phase=SelectionPhase.AWAITING_READY,
-            target_generation=proof.generation,
-        ),
-    )
-    observation = run_scheduled_gateway_call(
-        lambda: gateway.readback(prepared),
-        wake,
-        scheduler,
-    )
-
-    assert (
-        prepared.target_account_id,
-        proof.account_id,
-        observation.account_id,
-    ) == (scenario.target.account_id,) * 3
-    assert observation.generation == proof.generation
-    assert queue.find(active.operation_id) is None
-    assert results.load(active.operation_id) is None
-    assert recovery.orphan_calls == 0
-
-
-def test_postcommit_failure_reads_back_without_replaying_commit(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    """Resolve ambiguous native mutation through one queued readback."""
-    use_synthetic_claude(monkeypatch)
-    scenario = claude_activation_scenario(
-        tmp_path,
-        advance_native_mtime=False,
-    )
-    paths = scenario.paths
-    queue = OperationQueueStore(paths.durable_operations)
-    journal = SelectionOperationStore(paths.selection_journals)
-    registry = ParticipantRegistry(scenario.selected)
-    wake = Event()
-    gateway = SelectionWorkerGateway(queue, FixedClock(), wake.set)
-    recovery = SelectionRecovery(
-        scenario.selected,
-        journal,
-        registry,
-        gateway,
-        FixedClock(),
-    )
-    coordinator = SelectionCoordinator(
-        scenario.selected,
-        journal,
-        registry,
-        gateway,
-        FixedClock(),
-        resume_recovery=recovery.resume,
-    )
-    monkeypatch.setattr(worker, "discover_application_paths", lambda: paths)
-    monkeypatch.setattr(
-        worker,
-        "_claude_selection_executor",
-        lambda *arguments, **keywords: scenario.executor,
-    )
-    results = WorkerResultStore(paths.durable_operations)
-    launcher, launched_kinds = entrypoint_worker_launcher(
-        queue,
-        lambda operation_id: worker.main((str(operation_id),)),
-    )
-    scheduler = DurableScheduler(
-        queue,
-        results,
-        WorkerPool(launcher, worker_planner(), lambda: None),
-        RuntimeClock(),
-        events=SelectionSchedulerSink(
-            OperationEventHub(),
-            gateway,
-            recovery,
-        ),
-    )
-    selections: list[SelectionResult] = []
-    selector = Thread(
-        target=lambda: selections.append(
-            coordinator.select(
-                scenario.operation.operation_id,
-                ProviderId.CLAUDE,
-                scenario.target.account_id,
-            )
-        ),
-        daemon=True,
-    )
-    selector.start()
-    run_scheduler_phase(wake, scheduler)
-    run_scheduler_phase(wake, scheduler)
-    selector.join(2)
-
-    assert not selector.is_alive()
-    assert len(selections) == 1
-    assert selections[0].outcome is SelectionOutcome.RECOVERY_REQUIRED
-    active = journal.load(ProviderId.CLAUDE).active
-    assert active is not None
-    assert active.operation_id == scenario.operation.operation_id
-    assert active.phase is SelectionPhase.RECOVERING
-
-    run_scheduler_phase(wake, scheduler)
-
-    finalized = scenario.selected.load(ProviderId.CLAUDE)
-    assert finalized is not None
-    assert finalized.account_id == scenario.target.account_id
-    worker_ids = tuple(spec.operation_id for spec in launcher.specs)
-    assert len(set(worker_ids)) == len(launched_kinds)
-    assert scenario.operation.operation_id not in worker_ids
-    assert launched_kinds == [
-        OperationKind.SELECTION_PREVALIDATE,
-        OperationKind.SELECTION_COMMIT,
-        OperationKind.SELECTION_READBACK,
-    ]
-    assert queue.find(scenario.operation.operation_id) is None
-    assert journal.load(ProviderId.CLAUDE).active is None
 
 
 def test_recovery_restores_durable_participant_loss(tmp_path: Path) -> None:

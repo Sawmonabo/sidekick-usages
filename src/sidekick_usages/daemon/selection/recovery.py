@@ -299,13 +299,26 @@ class SelectionRecovery:
             return self._recovery_required(operation)
         prepared = self._prepared(operation)
         baseline = self._selected.load(operation.provider_id)
+        same_account = (
+            operation.baseline_account_id == operation.target_account_id
+        )
         generation = operation.target_generation
-        if (
-            generation is None
-            and observation.account_id == operation.target_account_id
-        ):
-            generation = observation.generation
-        candidate = generation or operation.prepared_generation
+        if same_account:
+            expected_target = generation or operation.prepared_generation
+            generation = (
+                expected_target
+                if observation.account_id == operation.target_account_id
+                and observation.generation == expected_target
+                else None
+            )
+            candidate = generation
+        else:
+            if (
+                generation is None
+                and observation.account_id == operation.target_account_id
+            ):
+                generation = observation.generation
+            candidate = generation or operation.prepared_generation
         binding_proven = candidate is not None and (
             self._participants.prepare_target(
                 operation.operation_id,

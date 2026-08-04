@@ -32,6 +32,13 @@ class PeerVerificationError(PermissionError):
         super().__init__(code.value)
 
 
+class _LinuxZombieProcessError(PeerVerificationError):
+    """Internal Linux proof that a process can no longer execute."""
+
+    def __init__(self) -> None:
+        super().__init__(PeerFailureCode.PROOF_UNAVAILABLE)
+
+
 class _MacosProcessLookupError(PeerVerificationError):
     """Internal macOS lookup failure with captured absence proof."""
 
@@ -81,6 +88,8 @@ class OperatingSystemProcessInspector:
             return ProcessLiveness.UNKNOWN
         try:
             current = reader(identity.process_id)
+        except _LinuxZombieProcessError:
+            current = None
         except _MacosProcessLookupError as error:
             return (
                 ProcessLiveness.DEAD
@@ -179,13 +188,16 @@ def _linux_process_start(process_id: int) -> int:
         raise PeerVerificationError(PeerFailureCode.PROOF_UNAVAILABLE)
     fields = payload[closing + 2 :].split()
     try:
+        state = fields[0]
         start_identity = int(fields[19])
     except IndexError, ValueError:
         raise PeerVerificationError(
             PeerFailureCode.PROOF_UNAVAILABLE
         ) from None
-    if start_identity <= 0:
+    if len(state) != 1 or start_identity <= 0:
         raise PeerVerificationError(PeerFailureCode.PROOF_UNAVAILABLE)
+    if state == b"Z":
+        raise _LinuxZombieProcessError()
     return start_identity
 
 

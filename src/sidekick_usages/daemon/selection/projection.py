@@ -349,7 +349,10 @@ def project_snapshot(
         is not None
         and (
             participant.connected
-            or (finalized is None and participant.prebootstrap_reachable)
+            or (
+                participant.prebootstrap_reachable
+                and (finalized is None or gate is not None)
+            )
         )
         and not participant.confirmed_dead
     }

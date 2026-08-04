@@ -19,6 +19,7 @@ from sidekick_usages.core.accounts.types import (
 )
 from sidekick_usages.core.selection.models import (
     DueOperation,
+    RelatedRuntimeAuthority,
     SelectionEpoch,
     SelectionResult,
 )
@@ -148,23 +149,18 @@ class _OperatorSelection(SelectionSupervisorPort):
         self.allow_completion = Event()
         self.completed = Event()
 
-    def select(
+    def reconcile_generation(
         self,
         operation_id: OperationId,
-        provider_id: ProviderId,
-        target_account_id: SidekickAccountId,
-    ) -> SelectionResult:
-        """Drain the same synthetic stream used by control dispatch."""
-        _canonical_id, stream = self.select_events(
-            operation_id,
-            provider_id,
-            target_account_id,
+        authority: RelatedRuntimeAuthority,
+    ) -> SelectionResult | None:
+        """Drain one synthetic internal generation transition."""
+        events = self.select_events(
+            operation_id, authority.provider_id, authority.account_id
+        )[1]
+        return next(
+            event for event in events if isinstance(event, SelectionResult)
         )
-        events = tuple(stream)
-        result = events[-1]
-        if not isinstance(result, SelectionResult):
-            raise AssertionError("Synthetic selection lost its result.")
-        return result
 
     def select_events(
         self,
@@ -251,9 +247,7 @@ def _assert_monitor(state: FoundationState, resident: ResidentState) -> None:
     assert "synthetic cancellation failure" not in result.diagnostics
 
 
-def _assert_reused_operation_follows_current_events(
-    state: FoundationState,
-) -> None:
+def _assert_reconcile_follows_current_events(state: FoundationState) -> None:
     """Ignore retained completion from an earlier recurrent operation run."""
     native = DueOperation(
         operation_id=CLAUDE_NATIVE_OPERATION_ID,
@@ -272,6 +266,12 @@ def _assert_reused_operation_follows_current_events(
         updated_at=REFERENCE_TIME,
     )
     events = OperationEventHub()
+    authority = RelatedRuntimeAuthority(
+        provider_id=ProviderId.CLAUDE,
+        account_id=state.operations[0].required_account_id,
+        generation=AuthorityGeneration("generation-native-2"),
+        observed_at=REFERENCE_TIME,
+    )
     completion = SchedulerCompletion(
         provider_id=native.provider_id,
         operation_id=native.operation_id,
@@ -279,8 +279,10 @@ def _assert_reused_operation_follows_current_events(
         state=OperationState.SCHEDULED,
         outcome=WorkerOutcome.SUCCEEDED,
         failure_code=None,
+        related_runtime_authority=authority,
     )
     events.completed(completion)
+    selection = _OperatorSelection()
     dispatcher = SupervisorDispatcher(
         state.queue,
         ServiceStateStore(state.paths.service_state),
@@ -288,6 +290,7 @@ def _assert_reused_operation_follows_current_events(
         RuntimeClock(),
         Event().set,
         Event().set,
+        selection=selection,
     )
     stream = dispatcher.dispatch(
         _verified(
@@ -303,10 +306,9 @@ def _assert_reused_operation_follows_current_events(
     assert next(stream).kind is EventKind.ACCEPTED
     events.started(running)
     events.completed(completion)
-    assert tuple(event.kind for event in stream) == (
-        EventKind.PROGRESS,
-        EventKind.COMPLETED,
-    )
+    kinds = tuple(event.kind for event in stream)
+    assert kinds == (EventKind.PROGRESS, EventKind.COMPLETED)
+    assert selection.completed.is_set()
 
 
 @REQUIRES_MANAGED_RUNTIME
@@ -412,7 +414,7 @@ def test_authenticated_control_stream_frames_completes_and_cancels(
         )
         is None
     )
-    _assert_reused_operation_follows_current_events(state)
+    _assert_reconcile_follows_current_events(state)
 
 
 def test_control_protocol_fails_closed_at_each_trust_boundary(

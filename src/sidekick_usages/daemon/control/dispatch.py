@@ -17,7 +17,9 @@ from sidekick_usages.core.selection.types import (
     OperationPriority,
     OperationState,
     SelectionCode,
+    SelectionOutcome,
 )
+from sidekick_usages.core.types import ProviderId
 from sidekick_usages.daemon.models.control import VerifiedControlRequest
 from sidekick_usages.daemon.models.protocol import (
     AcceptedPayload,
@@ -637,7 +639,46 @@ class SupervisorDispatcher:
             operation.operation_id,
             after_sequence=event_sequence,
         ):
+            failure_code = self._reconcile_generation(update)
+            if failure_code is not None:
+                yield self._event(
+                    request,
+                    EventKind.FAILED,
+                    FailedPayload(operation.operation_id, failure_code),
+                )
+                return
             yield self._update_event(request, update)
+
+    def _reconcile_generation(
+        self,
+        update: OperationUpdate,
+    ) -> str | None:
+        completion = update.completion
+        authority = (
+            None
+            if completion is None
+            else completion.related_runtime_authority
+        )
+        if authority is None or (
+            authority.provider_id is not ProviderId.CLAUDE
+        ):
+            return None
+        selection = self._selection
+        if selection is None:
+            return ProtocolErrorCode.FEATURE_DISABLED.value
+        try:
+            result = selection.reconcile_generation(
+                self._operation_id_factory(),
+                authority,
+            )
+        except SelectionRequestError as error:
+            return error.code.value
+        except Exception:
+            self._events.control_failed(ControlFailurePhase.DISPATCH)
+            return ProtocolErrorCode.DISPATCH_FAILED.value
+        if result is None or result.outcome is SelectionOutcome.READY:
+            return None
+        return result.safe_code.value
 
     def _snapshot(self, request: ControlRequest) -> ControlEvent:
         state = self._service_state.load()

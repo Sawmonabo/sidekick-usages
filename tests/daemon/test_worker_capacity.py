@@ -1,5 +1,7 @@
 """Worker-capacity behavior at protected provider boundaries."""
 
+import socket
+from contextlib import suppress
 from dataclasses import replace
 from pathlib import Path
 from threading import Event
@@ -20,6 +22,7 @@ from sidekick_usages.daemon.selection.worker import SelectionWorkerGateway
 from sidekick_usages.daemon.worker.exchange import WorkerExchangeRegistry
 from sidekick_usages.daemon.worker.pool import WorkerPool
 from sidekick_usages.persistence.supervisor.results import WorkerResultStore
+from sidekick_usages.platform.models import ProcessIdentity
 from sidekick_usages.providers.claude.structured.data_plane import (
     ClaudeParticipantChannelRegistry,
     ClaudeProtectedCommitRelay,
@@ -35,6 +38,34 @@ _PARTICIPANTS = (
     ParticipantId("521d4f0d-f92a-4d67-a5fa-f5ec86131337"),
     ParticipantId("b3348405-3d31-410c-9afc-9af6761976dc"),
 )
+
+
+def _protected_channels() -> tuple[
+    list[tuple[ParticipantId, int]],
+    ClaudeParticipantChannelRegistry,
+    list[socket.socket],
+]:
+    failed: list[tuple[ParticipantId, int]] = []
+    channels = ClaudeParticipantChannelRegistry(
+        lambda _account_id: True,
+        lambda participant_id, generation: failed.append(
+            (participant_id, generation)
+        ),
+    )
+    hosts: list[socket.socket] = []
+    for index, participant_id in enumerate(_PARTICIPANTS, start=1):
+        host, endpoint = socket.socketpair(socket.AF_UNIX)
+        transaction = channels.stage(
+            participant_id,
+            1,
+            ProcessIdentity(2000 + index, index),
+            endpoint,
+        )
+        transaction.commit()
+        transaction.finalize()
+        host.setblocking(False)
+        hosts.append(host)
+    return failed, channels, hosts
 
 
 def test_scheduler_prepares_exact_claude_bind_at_available_capacity(
@@ -65,7 +96,7 @@ def test_scheduler_prepares_exact_claude_bind_at_available_capacity(
         finalized_at=clock.now(),
     )
     exchanges = WorkerExchangeRegistry(clock.monotonic)
-    channels = ClaudeParticipantChannelRegistry(lambda _account_id: True)
+    failed, channels, hosts = _protected_channels()
     gateway = SelectionWorkerGateway(
         capacity.queue,
         clock,
@@ -119,7 +150,17 @@ def test_scheduler_prepares_exact_claude_bind_at_available_capacity(
         if index == 0:
             assert not exchanges.available(expected_bind_ids[1])
         gateway.abort_exchange(operation_id)
+        closed = 0
+        for host in hosts:
+            with suppress(BlockingIOError):
+                closed += host.recv(1) == b""
+        assert closed == index + 1
         releases[operation_id].set()
     scheduler.collect()
+    assert set(failed) == {
+        (participant_id, 1) for participant_id in _PARTICIPANTS
+    }
     gateway.close()
     channels.close()
+    for host in hosts:
+        host.close()

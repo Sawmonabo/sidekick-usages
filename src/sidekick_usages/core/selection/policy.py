@@ -147,6 +147,34 @@ def selection_recovery_decision(
 ) -> SelectionRecoveryDecision:
     """Relate composite provider evidence without guessing rollback."""
     target_generation = operation.target_generation
+    if operation.baseline_account_id == operation.target_account_id:
+        expected_target = target_generation or operation.prepared_generation
+        if (
+            expected_target is not None
+            and observation.provider_id is operation.provider_id
+            and observation.account_id == operation.target_account_id
+            and observation.generation == expected_target
+        ):
+            return SelectionRecoveryDecision(
+                relation=SelectionRecoveryRelation.TARGET_PROVEN,
+                target_generation=expected_target,
+                safe_code=SelectionCode.SELECTION_SUCCEEDED,
+            )
+        if baseline_observation_conclusive and _selection_baseline_proven(
+            operation,
+            baseline,
+            observation,
+        ):
+            return SelectionRecoveryDecision(
+                relation=SelectionRecoveryRelation.BASELINE_PROVEN,
+                target_generation=None,
+                safe_code=SelectionCode.SELECTION_ROLLED_BACK,
+            )
+        return SelectionRecoveryDecision(
+            relation=SelectionRecoveryRelation.UNRESOLVED,
+            target_generation=None,
+            safe_code=SelectionCode.SELECTION_RECOVERY_REQUIRED,
+        )
     observed_target = (
         observation.provider_id is operation.provider_id
         and observation.account_id == operation.target_account_id

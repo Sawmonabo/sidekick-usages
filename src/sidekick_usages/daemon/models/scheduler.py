@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 
 from sidekick_usages.core.accounts.types import OperationId
+from sidekick_usages.core.selection.models import RelatedRuntimeAuthority
 from sidekick_usages.core.selection.types import (
     OperationKind,
     OperationState,
@@ -25,6 +26,7 @@ class SchedulerCompletion:
     failure_code: str | None
     selection: SelectionWorkerMetadata | None = None
     worker_operation_id: OperationId | None = None
+    related_runtime_authority: RelatedRuntimeAuthority | None = None
 
     def __post_init__(self) -> None:
         """Require selection metadata to match its exact phase."""
@@ -34,6 +36,14 @@ class SchedulerCompletion:
             or self.selection.kind is not self.operation_kind
         ):
             raise ValueError("Scheduler selection completion is unrelated.")
+        related = self.related_runtime_authority
+        if related is not None and (
+            related.provider_id is not self.provider_id
+            or self.operation_kind is not OperationKind.RECONCILE_NATIVE
+            or self.outcome
+            not in {WorkerOutcome.SUCCEEDED, WorkerOutcome.NO_CHANGE}
+        ):
+            raise ValueError("Scheduler runtime authority is unrelated.")
 
 
 @dataclass(frozen=True, slots=True)

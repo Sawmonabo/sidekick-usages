@@ -440,7 +440,11 @@ class ClaudeStructuredStreamDecoder:
         delta = _object(event, "delta")
         delta_type = _bounded_text(delta, "type")
         if delta_type == "thinking_delta":
-            _bounded_text(delta, "thinking")
+            thinking = delta.get("thinking")
+            if thinking != "":
+                _bounded_text(delta, "thinking")
+            if "estimated_tokens" in delta:
+                _nonnegative_int(delta, "estimated_tokens")
             return (), None, False, "Claude is thinking."
         if delta_type != "text_delta":
             return (), None, False, None

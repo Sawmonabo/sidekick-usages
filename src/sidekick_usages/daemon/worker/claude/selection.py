@@ -35,6 +35,7 @@ from sidekick_usages.credentials.claude.activation.service import (
 from sidekick_usages.credentials.claude.authority.access_lease import (
     ClaudeAccessLease,
     ClaudeAuthorityMode,
+    ClaudePreparedAuthority,
     ClaudeSelectedAccessError,
     ClaudeSelectedAccessLeaseService,
 )
@@ -235,15 +236,14 @@ class ClaudeSelectionWorkerExecutor:
     ) -> WorkerResult:
         """Execute one exact Claude global-selection worker phase."""
         authority.require(ProviderId.CLAUDE)
-        if (
-            operation.provider_id is not ProviderId.CLAUDE
-            or operation.kind not in _CLAUDE_SELECTION_WORKER_KINDS
-            or operation.priority is not OperationPriority.INTERACTIVE
-            or active.provider_id is not ProviderId.CLAUDE
-            or operation.required_selection_operation_id != active.operation_id
-            or operation.required_account_id != active.target_account_id
-        ):
-            raise ValueError("Worker operation is not Claude selection work.")
+        self._require_selection_work(operation, active)
+        if active.baseline_account_id == active.target_account_id:
+            return self._execute_generation_rollover(
+                operation,
+                active,
+                baseline,
+                authority,
+            )
         try:
             if operation.kind is OperationKind.SELECTION_PREVALIDATE:
                 prepared = self.prevalidate_selection(
@@ -262,17 +262,15 @@ class ClaudeSelectionWorkerExecutor:
                     raise ClaudeActivationError(
                         ClaudeActivationFailure.STATE_CHANGED
                     )
-                proof = self.commit_selection(
-                    PreparedSelection(
-                        operation_id=active.operation_id,
-                        provider_id=active.provider_id,
-                        target_account_id=active.target_account_id,
-                        target_generation=generation,
-                        baseline_epoch=active.baseline_epoch,
-                        pending_epoch=active.pending_epoch,
-                    ),
-                    authority,
+                prepared = PreparedSelection(
+                    operation_id=active.operation_id,
+                    provider_id=active.provider_id,
+                    target_account_id=active.target_account_id,
+                    target_generation=generation,
+                    baseline_epoch=active.baseline_epoch,
+                    pending_epoch=active.pending_epoch,
                 )
+                proof = self.commit_selection(prepared, authority)
                 observation = SelectionAuthorityObservation(
                     provider_id=ProviderId.CLAUDE,
                     account_id=proof.account_id,
@@ -320,6 +318,149 @@ class ClaudeSelectionWorkerExecutor:
             observation,
             self._clock,
         )
+
+    def _execute_generation_rollover(
+        self,
+        operation: DueOperation,
+        active: OpenSelectionOperation,
+        baseline: FinalizedSelection | None,
+        authority: ProviderMutationAuthority,
+    ) -> WorkerResult:
+        """Execute one provider-observed same-account generation rollover."""
+        try:
+            target, generation = self._generation_rollover_target(
+                active,
+                baseline,
+                authority,
+            )
+            expected = (
+                active.prepared_generation
+                if operation.kind is OperationKind.SELECTION_COMMIT
+                else active.target_generation
+                if operation.kind is OperationKind.CLAUDE_PARTICIPANT_BIND
+                else None
+            )
+            if operation.kind is not OperationKind.SELECTION_READBACK and (
+                baseline is None
+                or generation == baseline.generation
+                or (expected is not None and generation != expected)
+            ):
+                raise ClaudeActivationError(
+                    ClaudeActivationFailure.STATE_CHANGED
+                )
+            if operation.kind in {
+                OperationKind.SELECTION_COMMIT,
+                OperationKind.CLAUDE_PARTICIPANT_BIND,
+            }:
+                if expected is None:
+                    raise ClaudeActivationError(
+                        ClaudeActivationFailure.STATE_CHANGED
+                    )
+                access = self._access
+                if access is None:
+                    raise ClaudeSelectedAccessError(
+                        "The selected Claude access lease is unavailable."
+                    )
+                with access.open_rollover_proven(
+                    target,
+                    generation,
+                    authority,
+                ) as lease:
+                    self._project(
+                        ClaudeStructuredBinding(
+                            operation_id=active.operation_id,
+                            account_id=active.target_account_id,
+                            generation=generation,
+                            epoch=active.pending_epoch,
+                        ),
+                        lease,
+                    )
+        except ClaudeActivationError as error:
+            return claude_selection_failure(
+                operation,
+                error,
+                self._clock,
+                recovery_required=(
+                    operation.kind is OperationKind.SELECTION_READBACK
+                ),
+            )
+        except ClaudeSelectedAccessError as error:
+            return WorkerResult(
+                operation_id=operation.operation_id,
+                outcome=WorkerOutcome.ACTION_REQUIRED,
+                finished_at=self._clock.now(),
+                failure_code=error.code.value,
+            )
+        return selection_worker_success(
+            operation,
+            active.pending_epoch,
+            SelectionAuthorityObservation(
+                provider_id=ProviderId.CLAUDE,
+                account_id=active.target_account_id,
+                generation=generation,
+                authority_requires_participant=(
+                    False
+                    if operation.kind is OperationKind.SELECTION_READBACK
+                    else None
+                ),
+            ),
+            self._clock,
+        )
+
+    @staticmethod
+    def _require_selection_work(
+        operation: DueOperation,
+        active: OpenSelectionOperation,
+    ) -> None:
+        """Require one exact interactive Claude selection child."""
+        if (
+            operation.provider_id is not ProviderId.CLAUDE
+            or operation.kind not in _CLAUDE_SELECTION_WORKER_KINDS
+            or operation.priority is not OperationPriority.INTERACTIVE
+            or active.provider_id is not ProviderId.CLAUDE
+            or operation.required_selection_operation_id != active.operation_id
+            or operation.required_account_id != active.target_account_id
+        ):
+            raise ValueError("Worker operation is not Claude selection work.")
+
+    def _generation_rollover_target(
+        self,
+        operation: OpenSelectionOperation,
+        baseline: FinalizedSelection | None,
+        authority: ProviderMutationAuthority,
+    ) -> tuple[ClaudePreparedAuthority, AuthorityGeneration]:
+        """Require one refreshable target and stable newer native proof."""
+        if (
+            baseline is None
+            or baseline.provider_id is not ProviderId.CLAUDE
+            or baseline.account_id != operation.target_account_id
+            or baseline.account_id != operation.baseline_account_id
+            or baseline.epoch != operation.baseline_epoch
+        ):
+            raise ClaudeActivationError(ClaudeActivationFailure.STATE_CHANGED)
+        access = self._access
+        if access is None:
+            raise ClaudeSelectedAccessError(
+                "The selected Claude access lease is unavailable."
+            )
+        target = access.prevalidate(operation.target_account_id, authority)
+        if target.mode is not ClaudeAuthorityMode.REFRESHABLE:
+            raise ClaudeSelectedAccessError(
+                "Claude generation rollover requires refreshable authority."
+            )
+        selected = self._native_reconciliation.observe_selection(
+            (operation.target_account_id,),
+            authority,
+        )
+        generation = None if selected is None else selected.runtime_generation
+        if (
+            selected is None
+            or selected.runtime_state is not ProviderRuntimeState.SAVED_ACTIVE
+            or selected.account_id != operation.target_account_id
+            or generation is None
+        ):
+            raise ClaudeActivationError(ClaudeActivationFailure.STATE_CHANGED)
+        return target, generation
 
     def execute_finalized_bind(
         self,
@@ -501,7 +642,8 @@ class ClaudeSelectionWorkerExecutor:
             )
         )
         return self._native_reconciliation.observe_selection(
-            account_ids, authority,
+            account_ids,
+            authority,
         )
 
     def recovery_readback_selection(

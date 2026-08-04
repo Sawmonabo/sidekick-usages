@@ -340,11 +340,7 @@ class ParticipantRegistry:
             participant = self._require_connection(participant_id, generation)
             if participant.process_identity != peer:
                 raise ParticipantRequestError(_PARTICIPANT_UNREACHABLE)
-            if (
-                unbound
-                and self._selected.load(participant.manifest.provider_id)
-                is None
-            ):
+            if unbound:
                 participant.prebootstrap_reachable = True
                 self._condition.notify_all()
 

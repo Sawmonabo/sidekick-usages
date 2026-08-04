@@ -454,6 +454,7 @@ class DurableScheduler:
                 if operation.kind.is_selection_worker
                 else None
             ),
+            related_runtime_authority=result.related_runtime_authority,
         )
 
     def _selection_completion(

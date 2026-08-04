@@ -28,9 +28,11 @@ class ClaudeCliSession:
         self,
         runtime: ClaudeSessionRuntime,
         terminal_factory: Callable[[], ClaudeTerminal],
+        cleanup_profile: Callable[[], None],
     ) -> None:
         self._runtime = runtime
         self._terminal_factory = terminal_factory
+        self._cleanup_profile = cleanup_profile
 
     def run(self, arguments: tuple[str, ...]) -> int:
         """Run one application and return the engine's natural status."""
@@ -53,7 +55,10 @@ class ClaudeCliSession:
                     self._runtime.report_terminal_failure()
             return self._runtime.finish_engine()
         finally:
-            self._runtime.close()
+            try:
+                self._runtime.close()
+            finally:
+                self._cleanup_profile()
 
     def start_turn(self, prompt: str) -> TurnId:
         """Queue, admit, and transmit one real provider turn."""

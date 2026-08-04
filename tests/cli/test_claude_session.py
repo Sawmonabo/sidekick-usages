@@ -340,7 +340,11 @@ def test_claude_session_keeps_one_engine_across_a_queued_switch() -> None:
         )
     )
 
-    status = ClaudeCliSession(runtime, terminals.__next__).run(())
+    status = ClaudeCliSession(
+        runtime,
+        terminals.__next__,
+        lambda: events.append("profile_cleanup"),
+    ).run(())
 
     cancelled = ClaudeTerminalState()
     cancelled.queue_prompt("cancelled prompt")
@@ -419,6 +423,7 @@ def test_claude_session_keeps_one_engine_across_a_queued_switch() -> None:
         "mcp_message_response",
         "presentation:Claude entered plan mode.",
         "presentation:Claude is thinking.",
+        "presentation:Claude is thinking.",
         "presentation:Bash has been running for 2s.",
         "presentation:Claude usage limits are nearly exhausted.",
         "presentation:Claude authentication requires attention.",
@@ -428,6 +433,7 @@ def test_claude_session_keeps_one_engine_across_a_queued_switch() -> None:
         "end_ack",
         "close_input",
         "wait",
+        "profile_cleanup",
     ]
 
 
@@ -648,6 +654,13 @@ def _stream_events() -> tuple[bytes, ...]:
             b'{"type":"system","subtype":"thinking_tokens",'
             b'"estimated_tokens":10,"estimated_tokens_delta":2,'
             b'"uuid":"thinking-1","session_id":"' + session + b'"}'
+        ),
+        (
+            b'{"type":"stream_event","session_id":"'
+            + session
+            + b'","event":{"type":"content_block_delta",'
+            b'"index":0,"delta":{"type":"thinking_delta",'
+            b'"thinking":"","estimated_tokens":0}}}'
         ),
         (
             b'{"type":"tool_progress","tool_use_id":"tool-1",'

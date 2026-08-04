@@ -73,6 +73,9 @@ from sidekick_usages.providers.claude.activation.service import (
     claude_environment_conflict,
     claude_native_switch_conflict,
 )
+from sidekick_usages.providers.claude.auth.login.service import (
+    verify_logged_out_claude_status,
+)
 from sidekick_usages.providers.claude.auth.proof.service import (
     same_claude_authority_proof,
 )
@@ -85,6 +88,10 @@ from sidekick_usages.providers.claude.auth.storage.models import (
 from sidekick_usages.providers.claude.auth.storage.types import (
     ClaudeProtectedStorageFailure,
 )
+from sidekick_usages.providers.claude.environment import (
+    claude_profile_environment,
+)
+from sidekick_usages.providers.claude.errors import ClaudeProcessError
 from sidekick_usages.providers.claude.managed.errors import ClaudeManagedError
 from sidekick_usages.providers.claude.managed.models import ClaudeCapabilities
 from sidekick_usages.providers.claude.models import ClaudeNativeProfile
@@ -347,6 +354,13 @@ class ClaudeActivationAuthorityCoordinator:
                 runner=self._runner,
             )
         except ClaudeProtectedStorageError as error:
+            if (
+                error.code is ClaudeProtectedStorageFailure.MALFORMED
+                and self._officially_logged_out(capabilities)
+            ):
+                return ClaudeNativeObservation(
+                    state=ProviderAuthState.LOGGED_OUT,
+                )
             return ClaudeNativeObservation(
                 state=_INACTIVE_NATIVE_STATES.get(
                     error.code,
@@ -357,6 +371,31 @@ class ClaudeActivationAuthorityCoordinator:
             state=ProviderAuthState.ACTIVE,
             snapshot=snapshot,
         )
+
+    def _officially_logged_out(
+        self,
+        capabilities: ClaudeCapabilities,
+    ) -> bool:
+        """Confirm provider-owned logged-out storage with official status."""
+        environment: dict[str, str] = {}
+        try:
+            environment.update(
+                claude_profile_environment(
+                    self._source_environment(),
+                    capabilities.profile,
+                )
+            )
+            verify_logged_out_claude_status(
+                capabilities.executable,
+                environment,
+                capabilities.profile.config_directory,
+                runner=self._runner,
+            )
+        except ClaudeManagedError, ClaudeProcessError:
+            return False
+        finally:
+            environment.clear()
+        return True
 
     def record_native_observation(
         self,

@@ -17,6 +17,7 @@ from sidekick_usages.core.selection.models import (
     FinalizedSelection,
     OpenSelectionOperation,
     PreparedSelection,
+    RelatedRuntimeAuthority,
     SelectionEpoch,
     SelectionResult,
 )
@@ -63,6 +64,7 @@ from sidekick_usages.platform.types import (
 
 OLD_TURN_DRAIN_TIMEOUT_SECONDS = 120.0
 PARTICIPANT_READY_TIMEOUT_SECONDS = 30.0
+type _GenerationTransition = tuple[AuthorityGeneration, AuthorityGeneration]
 
 
 @dataclass(slots=True)
@@ -269,6 +271,49 @@ class SelectionCoordinator:
             raise RuntimeError("Selection stream completed without a result.")
         return result
 
+    def reconcile_generation(
+        self,
+        operation_id: OperationId,
+        authority: RelatedRuntimeAuthority,
+    ) -> SelectionResult | None:
+        """Advance one proven Claude generation through a normal flight."""
+        if authority.provider_id is not ProviderId.CLAUDE:
+            return None
+        baseline = self._selected.load(authority.provider_id)
+        if (
+            baseline is None
+            or baseline.account_id != authority.account_id
+            or baseline.generation == authority.generation
+        ):
+            return None
+        flight, owner = self._join_flight(
+            operation_id,
+            authority.provider_id,
+            authority.account_id,
+        )
+        if not owner:
+            raise SelectionRequestError(
+                SelectionCode.UNCOORDINATED_AUTH_MUTATION
+            )
+        result: SelectionResult | None = None
+        transition = baseline.generation, authority.generation
+        try:
+            for event in self._flight_events(
+                flight,
+                True,
+                authority.provider_id,
+                transition=transition,
+            ):
+                if isinstance(event, SelectionResult):
+                    result = event
+        except SelectionRequestError as error:
+            if error.code is SelectionCode.ALREADY_SELECTED:
+                return None
+            raise
+        if result is None:
+            raise RuntimeError("Generation reconciliation lost its result.")
+        return result
+
     def select_events(
         self,
         operation_id: OperationId,
@@ -295,6 +340,8 @@ class SelectionCoordinator:
         flight: _SelectionFlight,
         owner: bool,
         provider_id: ProviderId,
+        *,
+        transition: _GenerationTransition | None = None,
     ) -> Generator[SelectionStatus | SelectionResult]:
         """Yield one owner flight or observe its exact terminal truth."""
         if not owner:
@@ -315,6 +362,7 @@ class SelectionCoordinator:
                 flight.operation_id,
                 provider_id,
                 flight.target_account_id,
+                transition=transition,
             ):
                 if isinstance(event, SelectionStatus):
                     flight.status = event
@@ -346,11 +394,15 @@ class SelectionCoordinator:
         operation_id: OperationId,
         provider_id: ProviderId,
         target_account_id: SidekickAccountId,
+        *,
+        transition: _GenerationTransition | None = None,
     ) -> Generator[SelectionStatus | SelectionResult]:
         """Yield a new selection or its exact durable replay."""
         active = self._journal.load(provider_id).active
         if active is not None:
-            if active.target_account_id != target_account_id:
+            if transition is not None or (
+                active.target_account_id != target_account_id
+            ):
                 raise SelectionRequestError(
                     SelectionCode.UNCOORDINATED_AUTH_MUTATION
                 )
@@ -372,11 +424,22 @@ class SelectionCoordinator:
             )
         baseline = self._selected.load(provider_id)
         if baseline is not None and baseline.account_id == target_account_id:
-            raise SelectionRequestError(SelectionCode.ALREADY_SELECTED)
+            if transition is None or (baseline.generation == transition[1]):
+                raise SelectionRequestError(SelectionCode.ALREADY_SELECTED)
+            if baseline.generation != transition[0]:
+                raise SelectionRequestError(
+                    SelectionCode.UNCOORDINATED_AUTH_MUTATION
+                )
+        elif transition is not None:
+            raise SelectionRequestError(
+                SelectionCode.UNCOORDINATED_AUTH_MUTATION
+            )
+        expected_generation = transition and transition[1]
         yield from self._selection_events(
             operation_id,
             provider_id,
             target_account_id,
+            expected_generation=expected_generation,
         )
 
     def _handoff_recovery(
@@ -439,6 +502,8 @@ class SelectionCoordinator:
         operation_id: OperationId,
         provider_id: ProviderId,
         target_account_id: SidekickAccountId,
+        *,
+        expected_generation: AuthorityGeneration | None = None,
     ) -> Generator[SelectionStatus | SelectionResult]:
         baseline = self._selected.load(provider_id)
         baseline_epoch = (
@@ -472,6 +537,10 @@ class SelectionCoordinator:
         try:
             prepared = self._adapter.prevalidate(operation, baseline)
             self._require_prepared(operation, prepared)
+            self._require_expected_generation(
+                prepared.target_generation,
+                expected_generation,
+            )
             if not self._participants.target_available(
                 prepared.provider_id,
                 prepared.target_account_id,
@@ -500,6 +569,10 @@ class SelectionCoordinator:
         try:
             proof = self._adapter.commit(prepared)
             self._require_proof(prepared, proof)
+            self._require_expected_generation(
+                proof.generation,
+                expected_generation,
+            )
         except Exception:
             self.reconcile_disconnected(provider_id)
             yield from self._terminal_events(self._recovering(operation))
@@ -914,3 +987,11 @@ class SelectionCoordinator:
         if generation is None:
             raise RuntimeError("Runtime authority generation is unavailable.")
         return generation
+
+    @staticmethod
+    def _require_expected_generation(
+        generation: AuthorityGeneration,
+        expected: AuthorityGeneration | None,
+    ) -> None:
+        if expected is not None and generation != expected:
+            raise SelectionRequestError(SelectionCode.AUTHORITY_PROOF_FAILED)

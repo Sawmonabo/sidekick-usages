@@ -15,6 +15,7 @@ from sidekick_usages.core.selection.models import (
     FinalizedSelection,
     OpenSelectionOperation,
     PreparedSelection,
+    RelatedRuntimeAuthority,
     SelectionAuthorityObservation,
     SelectionEpoch,
     SelectionRecoveryDecision,
@@ -281,6 +282,13 @@ class ParticipantControlPort(Protocol):
 
 class SelectionControlPort(Protocol):
     """Provider-neutral account selection and status boundary."""
+
+    def reconcile_generation(
+        self,
+        operation_id: OperationId,
+        authority: RelatedRuntimeAuthority,
+    ) -> SelectionResult | None:
+        """Advance one proven same-account runtime generation."""
 
     def select_events(
         self,

@@ -63,6 +63,9 @@ from sidekick_usages.providers.claude.auth.storage.service import (
 from sidekick_usages.providers.claude.environment import (
     CLAUDE_CONFIG_DIR_ENVIRONMENT_KEY,
 )
+from sidekick_usages.providers.claude.structured.models import (
+    ClaudeStructuredBinding,
+)
 from sidekick_usages.usage.dashboard.models import DashboardAccount
 from sidekick_usages.usage.dashboard.service import CachedDashboardService
 from tests.fakes.claude.activation import (
@@ -70,6 +73,7 @@ from tests.fakes.claude.activation import (
     claude_activation_scenario,
 )
 from tests.fakes.claude.managed import (
+    CLAUDE_LOGGED_OUT_STATUS,
     claude_profile_status,
     credential_payload,
     use_synthetic_claude,
@@ -84,6 +88,26 @@ from tests.fakes.claude.selection import (
 from tests.support.platform import REQUIRES_MANAGED_RUNTIME
 
 pytestmark = REQUIRES_MANAGED_RUNTIME
+
+_LOGGED_OUT_CREDENTIAL_PAYLOAD = (
+    b'{"claudeAiOauth":{"accessToken":"","refreshToken":""}}'
+)
+
+
+class _ProjectionRecorder:
+    """Record only secret-free protected projection evidence."""
+
+    def __init__(self) -> None:
+        self.bindings: list[ClaudeStructuredBinding] = []
+
+    def submit(
+        self,
+        binding: ClaudeStructuredBinding,
+        oauth: bytearray,
+    ) -> None:
+        """Record one secret-free binding."""
+        del oauth
+        self.bindings.append(binding)
 
 
 def _execute_activation(
@@ -505,6 +529,38 @@ def test_native_activation_retains_source_and_commits_verified_target(
     )
 
 
+def test_selection_repairs_official_logged_out_native(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A saved target replaces exact provider-owned logged-out state."""
+    use_synthetic_claude(monkeypatch)
+    scenario = claude_activation_scenario(
+        tmp_path,
+        native_logged_out=True,
+    )
+    scenario.script.set_authority(
+        scenario.native.config_directory,
+        _LOGGED_OUT_CREDENTIAL_PAYLOAD,
+        CLAUDE_LOGGED_OUT_STATUS,
+    )
+
+    _, proof = _execute_selection(scenario)
+    record = scenario.journals.load(ProviderId.CLAUDE).history[-1]
+
+    assert (
+        proof.account_id,
+        scenario.native_credentials.read_bytes(),
+        record.native_auth_baseline.state,
+        scenario.script.login_profiles,
+    ) == (
+        scenario.target.account_id,
+        scenario.native_target_payload,
+        ProviderAuthState.LOGGED_OUT,
+        [scenario.native.config_directory],
+    )
+
+
 def test_selection_commit_refuses_rotated_prevalidated_target(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -730,6 +786,102 @@ def test_first_selection_lifecycle_uses_no_manufactured_source(
             ActivationPhase.RECONCILIATION_REQUIRED,
             ClaudeActivationFailure.RECONCILIATION_REQUIRED.failure_code,
         )
+
+
+def test_same_account_generation_rollover_projects_without_activation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Project a stably refreshed native authority without logging in."""
+    use_synthetic_claude(monkeypatch)
+    scenario = claude_activation_scenario(tmp_path)
+    baseline = scenario.selected.load(ProviderId.CLAUDE)
+    assert baseline is not None
+    source_status, _identity = claude_profile_status("source")
+    scenario.script.set_authority(
+        scenario.native.config_directory,
+        scenario.retained_source_payload,
+        source_status,
+    )
+    native_before = scenario.native_credentials.read_bytes()
+    projection = _ProjectionRecorder()
+    monkeypatch.setattr(scenario.executor, "_projection", projection)
+    active = replace(
+        _open_selection(scenario),
+        baseline_account_id=scenario.source.account_id,
+        target_account_id=scenario.source.account_id,
+    )
+    prevalidate_due = replace(
+        scenario.operation,
+        account_id=scenario.source.account_id,
+        kind=OperationKind.SELECTION_PREVALIDATE,
+        selection_operation_id=active.operation_id,
+    )
+    commit_due = replace(
+        prevalidate_due,
+        kind=OperationKind.SELECTION_COMMIT,
+    )
+    prevalidated = execute_selection_worker(
+        scenario, prevalidate_due, active, baseline
+    )
+    generation = require_worker_observation(
+        prevalidated,
+        active,
+        OperationKind.SELECTION_PREVALIDATE,
+        scenario.source.account_id,
+    )
+    assert generation is not None
+    prepared = replace(
+        active,
+        prepared_generation=generation,
+        phase=SelectionPhase.COMMITTING,
+    )
+    committed = execute_selection_worker(
+        scenario, commit_due, prepared, baseline
+    )
+    assert scenario.native_credentials.read_bytes() == native_before
+    assert scenario.store.read_saved(scenario.source.account_id) == (
+        scenario.source
+    )
+    assert scenario.journals.load(ProviderId.CLAUDE).active is None
+    assert not scenario.journals.load(ProviderId.CLAUDE).history
+    assert scenario.script.login_profiles == []
+    scenario.script.set_authority(
+        scenario.native.config_directory,
+        scenario.native_target_payload,
+        source_status,
+    )
+    readback = execute_selection_worker(
+        scenario,
+        replace(prevalidate_due, kind=OperationKind.SELECTION_READBACK),
+        prepared,
+        baseline,
+    )
+
+    assert generation != baseline.generation
+    assert (
+        require_worker_observation(
+            committed,
+            active,
+            OperationKind.SELECTION_COMMIT,
+            scenario.source.account_id,
+        )
+        == generation
+    )
+    assert require_worker_observation(
+        readback,
+        active,
+        OperationKind.SELECTION_READBACK,
+        scenario.source.account_id,
+    ) == claude_access_token_generation("sk-ant-oat01-target-native")
+    assert projection.bindings == [
+        ClaudeStructuredBinding(
+            operation_id=active.operation_id,
+            account_id=scenario.source.account_id,
+            generation=generation,
+            epoch=active.pending_epoch,
+        )
+    ]
 
 
 def test_selection_readback_observes_baseline_target_or_unrelated_runtime(

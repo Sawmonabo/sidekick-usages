@@ -110,6 +110,20 @@ class ClaudeActivationService:
             target_capabilities
         )
         self._authorities.require_native_switch(native_capabilities)
+        native_observation = self._authorities.observe_native(
+            native_capabilities
+        )
+        if native_observation.state is ProviderAuthState.LOGGED_OUT:
+            return self._activate_initial(
+                operation_id,
+                target_account_id,
+                authority,
+                expected_target_generation,
+            )
+        if native_observation.state is not ProviderAuthState.ACTIVE:
+            raise ClaudeActivationError(
+                ClaudeActivationFailure.RECONCILIATION_REQUIRED
+            )
         self._authorities.read_saved_private(
             source_capabilities,
             source_authority,

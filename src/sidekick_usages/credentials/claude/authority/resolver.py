@@ -140,7 +140,7 @@ class ClaudeManagedCredentialResolver:
         authority: OperationAuthority,
     ) -> AbstractContextManager[AuthenticatedSavedAccount]:
         """Return one exact authority-bound Claude credential context."""
-        return self._open(account, authority, None)
+        return self._open(account, authority, None, maintain=True)
 
     def open_native_authorized(
         self,
@@ -149,7 +149,26 @@ class ClaudeManagedCredentialResolver:
         authority: OperationAuthority,
     ) -> AbstractContextManager[AuthenticatedSavedAccount]:
         """Open the exact native target before durable finalization."""
-        return self._open(account, authority, expected_generation)
+        return self._open(
+            account,
+            authority,
+            expected_generation,
+            maintain=True,
+        )
+
+    def open_rollover_authorized(
+        self,
+        account: SavedAccount,
+        expected_generation: AuthorityGeneration,
+        authority: OperationAuthority,
+    ) -> AbstractContextManager[AuthenticatedSavedAccount]:
+        """Open one already-observed native refresh without maintenance."""
+        return self._open(
+            account,
+            authority,
+            expected_generation,
+            maintain=False,
+        )
 
     @contextmanager
     def _open(
@@ -157,13 +176,17 @@ class ClaudeManagedCredentialResolver:
         account: SavedAccount,
         authority: OperationAuthority,
         expected_native_generation: AuthorityGeneration | None,
+        *,
+        maintain: bool,
     ) -> Iterator[AuthenticatedSavedAccount]:
         authority.require(account.account_id)
-        maintained = self._maintainer.maintain_with_authority(
-            account.account_id,
-            authority,
-        )
-        current = _maintained_account(account, maintained)
+        current = account
+        if maintain:
+            maintained = self._maintainer.maintain_with_authority(
+                account.account_id,
+                authority,
+            )
+            current = _maintained_account(account, maintained)
         subscription = require_managed_claude_authority(current)
         try:
             selected = None

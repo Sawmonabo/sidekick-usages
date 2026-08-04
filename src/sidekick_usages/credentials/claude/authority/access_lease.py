@@ -241,6 +241,36 @@ class ClaudeSelectedAccessLeaseService:
         with self._open_authorized(committed, authority) as lease:
             yield lease
 
+    @contextmanager
+    def open_rollover_proven(
+        self,
+        prepared: ClaudePreparedAuthority,
+        committed_generation: AuthorityGeneration,
+        authority: ProviderMutationAuthority,
+    ) -> Iterator[ClaudeAccessLease]:
+        """Open an observed native refresh without maintenance or mutation."""
+        self._require_current(prepared, authority)
+        if prepared.mode is not ClaudeAuthorityMode.REFRESHABLE:
+            raise ClaudeSelectedAccessError(
+                "Claude generation rollover requires refreshable authority."
+            )
+        committed = replace(
+            prepared,
+            generation=committed_generation,
+        )
+        account = self._account(committed.account_id)
+        operation_authority = authority.account(committed.account_id)
+        with self._managed.open_rollover_authorized(
+            account,
+            committed.generation,
+            operation_authority,
+        ) as authenticated:
+            lease = ClaudeAccessLease(committed, authenticated)
+            try:
+                yield lease
+            finally:
+                lease.close()
+
     def _require_current(
         self,
         prepared: ClaudePreparedAuthority,

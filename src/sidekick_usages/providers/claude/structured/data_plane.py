@@ -7,12 +7,10 @@ from contextlib import suppress
 from dataclasses import dataclass
 from threading import Lock
 from time import monotonic
-from typing import Protocol
 
 from sidekick_usages.core.accounts.identifiers import new_request_id
 from sidekick_usages.core.accounts.models import SavedAccount
 from sidekick_usages.core.accounts.types import (
-    AuthorityGeneration,
     OperationId,
     RequestId,
     SidekickAccountId,
@@ -22,7 +20,6 @@ from sidekick_usages.core.selection.models import (
     FinalizedSelection,
     OpenSelectionOperation,
     SelectionAuthorityObservation,
-    SelectionEpoch,
     SelectionRecoveryDecision,
 )
 from sidekick_usages.core.selection.policy import selection_recovery_decision
@@ -56,6 +53,12 @@ from sidekick_usages.providers.claude.structured.codec import (
 from sidekick_usages.providers.claude.structured.models import (
     ClaudeStructuredBinding,
     ClaudeStructuredInstallReceipt,
+)
+from sidekick_usages.providers.claude.structured.ports import (
+    ClaudeProtectedCompletion,
+    ClaudeProtectedExchangeRegistry,
+    ClaudeProtectedSupervisorExchange,
+    ClaudeProtectedWorkerExchange,
 )
 from sidekick_usages.providers.claude.structured.protected_frame import (
     ClaudeProtectedOAuthFrame,
@@ -463,6 +466,20 @@ class ClaudeParticipantChannelRegistry:
             if channel.binding != binding:
                 self._install_one(participant_id, channel, binding, oauth)
 
+    def fail_target(
+        self,
+        participant_id: ParticipantId,
+        connection_generation: int,
+    ) -> None:
+        """Close one exact failed target and publish its disconnection."""
+        with self._lock:
+            channel = self._channels.get(participant_id)
+            if channel is None or (
+                channel.connection_generation != connection_generation
+            ):
+                return
+        self._discard_failed(participant_id, channel)
+
     def _install_one(
         self,
         participant_id: ParticipantId,
@@ -704,74 +721,6 @@ class ClaudeProtectedHostChannel:
         return "<ClaudeProtectedHostChannel protected>"
 
 
-class ClaudeProtectedSupervisorExchange(Protocol):
-    """Resident half of one existing bounded worker exchange."""
-
-    def receive_response(self) -> bytearray:
-        """Receive the sole worker response."""
-
-    def acknowledge(self, payload: bytes | bytearray) -> None:
-        """Acknowledge receipt without returning a credential."""
-
-
-class ClaudeProtectedExchangeRegistry(Protocol):
-    """Create and cancel exact child exchanges owned by the scheduler."""
-
-    def create(
-        self,
-        operation_id: OperationId,
-        instruction: bytes,
-        response_deadline: float,
-        completion_deadline: float,
-    ) -> ClaudeProtectedSupervisorExchange:
-        """Create one exchange before the child is enqueued."""
-
-    def cancel(self, operation_id: OperationId) -> None:
-        """Cancel the exact child exchange."""
-
-
-class ClaudeProtectedWorkerSubmission(Protocol):
-    """Worker response awaiting one safe supervisor receipt."""
-
-    def receive_acknowledgement(self) -> bytearray:
-        """Return the sole safe acknowledgement."""
-
-
-class ClaudeProtectedWorkerExchange(Protocol):
-    """Worker half of one existing bounded exchange."""
-
-    def receive_instruction(self) -> bytearray:
-        """Receive one safe exact-child instruction."""
-
-    def submit(
-        self,
-        payload: bytearray,
-        response_deadline: float,
-        completion_deadline: float,
-    ) -> ClaudeProtectedWorkerSubmission:
-        """Submit one mutable projection and clear the payload."""
-
-
-class ClaudeProtectedCompletion(Protocol):
-    """Safe selection metadata required after scheduler completion."""
-
-    @property
-    def kind(self) -> OperationKind:
-        """Return the exact selection child kind."""
-
-    @property
-    def observed_account_id(self) -> SidekickAccountId | None:
-        """Return the worker-observed exact account."""
-
-    @property
-    def observed_generation(self) -> AuthorityGeneration | None:
-        """Return the worker-observed exact generation."""
-
-    @property
-    def pending_epoch(self) -> SelectionEpoch:
-        """Return the pending selection epoch."""
-
-
 @dataclass(slots=True)
 class _PendingProjection:
     parent_operation_id: OperationId
@@ -915,8 +864,11 @@ class ClaudeProtectedCommitRelay:
         with self._lock:
             pending = self._pending.pop(child_operation_id, None)
         self._exchanges.cancel(child_operation_id)
-        if pending is not None and pending.frame is not None:
-            pending.frame.close_protected_frame()
+        if pending is not None:
+            if pending.frame is not None:
+                pending.frame.close_protected_frame()
+            if pending.target is not None:
+                self._channels.fail_target(*pending.target)
 
     def _require_pending(
         self,

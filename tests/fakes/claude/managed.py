@@ -724,7 +724,8 @@ class ClaudeManagedLoginScript:
             config_directory = self._config_directory(environment)
             configured = self._profile_statuses.get(config_directory)
             if configured is not None:
-                return ClaudeCommandResult(0, configured)
+                code = 1 if configured == CLAUDE_LOGGED_OUT_STATUS else 0
+                return ClaudeCommandResult(code, configured)
             credential_file = config_directory / CLAUDE_CREDENTIAL_FILE
             return (
                 ClaudeCommandResult(0, CLAUDE_LOGGED_IN_STATUS)

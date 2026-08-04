@@ -6,7 +6,7 @@ import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Never, Protocol
 from uuid import uuid4
 
 from rich.console import Console
@@ -34,9 +34,36 @@ from sidekick_usages.cli.session.shell import (
     ShellEnrollment,
     ShellStartupResolver,
 )
+from sidekick_usages.clock import SystemClock
+from sidekick_usages.core.accounts.models import (
+    ClaudeAccountAuthority,
+    ClaudeManagedLoginAuthority,
+)
+from sidekick_usages.core.selection.types import ProviderAuthState
 from sidekick_usages.core.types import ProviderId
+from sidekick_usages.daemon.control.client import (
+    ControlClient,
+    consume_control_action,
+)
+from sidekick_usages.daemon.control.protocol import ProtocolFailureError
+from sidekick_usages.daemon.models.protocol import CompletedPayload
+from sidekick_usages.daemon.types.protocol import (
+    CompletionOutcome,
+    ControlOperationIdentity,
+)
 from sidekick_usages.errors import UsageError
 from sidekick_usages.paths import ApplicationPaths, discover_application_paths
+from sidekick_usages.persistence.accounts.index import AccountIndex
+from sidekick_usages.persistence.accounts.reader import AccountIndexReader
+from sidekick_usages.persistence.supervisor.activation import (
+    ActivationJournalStore,
+)
+from sidekick_usages.persistence.supervisor.observation import (
+    RuntimeAuthObservationStore,
+)
+from sidekick_usages.persistence.supervisor.queue import OperationQueueStore
+from sidekick_usages.persistence.supervisor.runtime import RuntimeStateReader
+from sidekick_usages.persistence.supervisor.selection import SelectedStateStore
 from sidekick_usages.platform.executable import (
     qualify_executable,
     resolve_executable_launcher,
@@ -53,7 +80,6 @@ from sidekick_usages.providers.claude.managed.errors import ClaudeManagedError
 from sidekick_usages.providers.claude.managed.executable import (
     discover_claude_executable,
 )
-from sidekick_usages.providers.claude.models import ClaudeNativeProfile
 from sidekick_usages.providers.claude.structured.models import (
     ClaudeStructuredCapability,
     ClaudeStructuredError,
@@ -168,6 +194,8 @@ class _ClaudeSessionRunner:
                     "Claude authentication must use Sidekick selection.",
                 )
             if claude_structured_arguments_supported(arguments):
+                self._reconcile()
+                self._require_finalized_relation()
                 return self._compose(arguments).run(arguments)
             Console(stderr=True).print(
                 "Sidekick: these arguments are not structured-host "
@@ -183,42 +211,144 @@ class _ClaudeSessionRunner:
             ClaudeProcessError,
             ClaudeStructuredError,
             UsageError,
+            OSError,
+            ProtocolFailureError,
         ) as error:
             raise SessionLaunchError(
                 SessionLaunchFailure.EXECUTION_FAILED,
                 str(error),
             ) from None
 
+    def _reconcile(self) -> None:
+        """Require exact Claude read-back before provider process creation."""
+        client: ControlClient | None = None
+        try:
+            client = ControlClient.connect(self._paths.supervisor_socket)
+            terminal = consume_control_action(
+                client.reconcile(ProviderId.CLAUDE),
+                identity=ControlOperationIdentity.PROVIDER,
+            )
+            if not isinstance(terminal, CompletedPayload) or (
+                terminal.outcome
+                not in {
+                    CompletionOutcome.SUCCEEDED,
+                    CompletionOutcome.NO_CHANGE,
+                }
+            ):
+                raise SessionLaunchError(
+                    SessionLaunchFailure.EXECUTION_FAILED,
+                    "Claude authority reconciliation failed.",
+                )
+        except OSError, ProtocolFailureError:
+            raise SessionLaunchError(
+                SessionLaunchFailure.EXECUTION_FAILED,
+                "Claude authority reconciliation is unavailable.",
+            ) from None
+        finally:
+            if client is not None:
+                client.close()
+
+    def _require_finalized_relation(self) -> None:
+        """Require refreshable selection to match exact saved metadata."""
+        try:
+            runtime = RuntimeStateReader(
+                ProviderId.CLAUDE,
+                SelectedStateStore(self._paths.selected_state),
+                ActivationJournalStore(
+                    self._paths.activation_journals,
+                    self._paths.durable_operations,
+                ),
+                OperationQueueStore(self._paths.durable_operations),
+                RuntimeAuthObservationStore(self._paths.durable_operations),
+                SystemClock(),
+            ).current()
+        except RuntimeError:
+            self._fail_finalized_relation()
+        selected = runtime.finalized_selection
+        if selected is None:
+            return
+        account = AccountIndex(
+            AccountIndexReader(self._paths.accounts).load()
+        ).get(selected.account_id)
+        authority = None if account is None else account.authority
+        if (
+            account is None
+            or account.provider_id is not ProviderId.CLAUDE
+            or not isinstance(authority, ClaudeAccountAuthority)
+        ):
+            self._fail_finalized_relation()
+        subscription = authority.subscription
+        if authority.setup_token is not None and not isinstance(
+            subscription,
+            ClaudeManagedLoginAuthority,
+        ):
+            return
+        native = runtime.native_auth
+        if (
+            runtime.activation_in_progress
+            or not isinstance(subscription, ClaudeManagedLoginAuthority)
+            or native is None
+            or native.state is not ProviderAuthState.ACTIVE
+            or native.provider_identity != subscription.provider_identity
+            or native.generation != selected.generation
+        ):
+            self._fail_finalized_relation()
+
+    @staticmethod
+    def _fail_finalized_relation() -> Never:
+        raise SessionLaunchError(
+            SessionLaunchFailure.EXECUTION_FAILED,
+            "The selected Claude authority does not match saved state.",
+        )
+
     def _compose(self, arguments: tuple[str, ...]) -> ClaudeCliSession:
         working_directory = Path.cwd()
-        profile = self._native_profile()
-        environment = claude_structured_environment(
-            self._environment,
-            profile,
-        )
-        capability = self._qualify_disposable()
-        engine = ClaudeStructuredProcess.open(
-            capability,
-            environment,
-            working_directory=working_directory,
-            user_arguments=arguments,
+        profile = tempfile.TemporaryDirectory(
+            prefix="sidekick-claude-session-"
         )
         try:
-            runtime = ClaudeSessionRuntime.create(
-                engine,
-                self._paths.supervisor_socket,
+            root = Path(profile.name)
+            home = root / "home"
+            config = home / ".claude"
+            home.mkdir(mode=_PRIVATE_DIRECTORY_MODE)
+            config.mkdir(mode=_PRIVATE_DIRECTORY_MODE)
+            environment = claude_structured_environment(
+                claude_private_profile_environment(
+                    self._environment,
+                    process_home=home,
+                    config_directory=config,
+                ),
+                native_claude_profile(
+                    credential_home=config,
+                    environment={},
+                ),
             )
-        except BaseException as error:
-            failures: list[BaseException] = [error]
+            capability = self._qualify_disposable(environment, home)
+            engine = ClaudeStructuredProcess.open(
+                capability,
+                environment,
+                working_directory=working_directory,
+                user_arguments=arguments,
+            )
             try:
-                engine.dispose_unenrolled()
-            except BaseException as dispose_error:
-                failures.append(dispose_error)
-            if len(failures) > 1:
-                raise BaseExceptionGroup(
-                    "Claude composition and disposal both failed.",
-                    failures,
-                ) from None
+                runtime = ClaudeSessionRuntime.create(
+                    engine,
+                    self._paths.supervisor_socket,
+                )
+            except BaseException as error:
+                failures: list[BaseException] = [error]
+                try:
+                    engine.dispose_unenrolled()
+                except BaseException as dispose_error:
+                    failures.append(dispose_error)
+                if len(failures) > 1:
+                    raise BaseExceptionGroup(
+                        "Claude composition and disposal both failed.",
+                        failures,
+                    ) from None
+                raise
+        except BaseException:
+            profile.cleanup()
             raise
         commands = ClaudeSavedAccountCommands(
             compose_use_context(paths=self._paths)
@@ -227,46 +357,24 @@ class _ClaudeSessionRunner:
         return ClaudeCliSession(
             runtime,
             lambda: ClaudeTerminalApplication(commands, terminal_state),
-        )
-
-    def _native_profile(self) -> ClaudeNativeProfile:
-        home = self._environment.get("HOME")
-        if home is None or "\0" in home or not Path(home).is_absolute():
-            raise SessionLaunchError(
-                SessionLaunchFailure.INVALID_ARGUMENT,
-                "The native Claude home must be an absolute path.",
-            )
-        return native_claude_profile(
-            credential_home=Path(home) / ".claude",
-            environment={},
+            profile.cleanup,
         )
 
     def _qualify_disposable(
         self,
+        environment: Mapping[str, str],
+        home: Path,
     ) -> ClaudeStructuredCapability:
-        with tempfile.TemporaryDirectory(
-            prefix="sidekick-claude-session-capability-"
-        ) as raw_root:
-            root = Path(raw_root)
-            home = root / "home"
-            config = root / "config"
-            home.mkdir(mode=_PRIVATE_DIRECTORY_MODE)
-            config.mkdir(mode=_PRIVATE_DIRECTORY_MODE)
-            environment = claude_private_profile_environment(
-                self._environment,
-                process_home=home,
-                config_directory=config,
-            )
-            executable = discover_claude_executable(
-                environment,
-                working_directory=home,
-            )
-            return qualify_claude_structured_capability(
-                executable,
-                detect_host_platform(environment=environment),
-                environment,
-                working_directory=home,
-            )
+        executable = discover_claude_executable(
+            environment,
+            working_directory=home,
+        )
+        return qualify_claude_structured_capability(
+            executable,
+            detect_host_platform(environment=environment),
+            environment,
+            working_directory=home,
+        )
 
 
 def compose_session_context(
