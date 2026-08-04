@@ -1581,13 +1581,19 @@ git commit -m "feat(claude): qualify structured oauth updates"
 - Modify: `tests/providers/claude/test_managed_boundaries.py`
 - Modify: `tests/daemon/selection/test_coordination.py`
 - Modify: `tests/daemon/test_runtime.py`
+- Create: `tests/daemon/test_worker_capacity.py`
 - Modify: `tests/daemon/test_control.py`
 - Modify: `tests/cli/test_sessions.py`
 
-No new test module is permitted. The two new infrastructure owners have
-distinct credential and provider-runtime boundaries; they are not generic
-token, broker, transport, or compatibility frameworks. The Claude session
-host remains the already-approved public command owner.
+Do not increase the test count for the participant-bind capacity correction.
+Move its one existing scheduler regression from the near-limit runtime module
+into the narrow worker-capacity module so both owners remain below 1000 lines.
+The test must use the real scheduler, worker pool, gateway, relay, and exchange
+registry; direct preparer assertions are insufficient. The two new production
+infrastructure owners have distinct credential and provider-runtime
+boundaries; they are not generic token, broker, transport, or compatibility
+frameworks. The Claude session host remains the already-approved public
+command owner.
 
 **Interfaces:**
 
@@ -1704,9 +1710,13 @@ provider/account authorities, and exits. Only then may the resident Claude
 relay fan out separately encoded mutable copies and await install receipts.
 
 `SelectionWorkerGateway._operation()` creates the durable child operation ID.
-Before `_submit()` enqueues that child, the gateway calls its injected
-`SelectionWorkerExchangeOwner` with the exact child operation ID, parent
-selection operation ID, provider, and kind. The composite dispatcher selects:
+For blocking selection commits, `_submit()` calls the injected
+`SelectionWorkerExchangeOwner` before enqueue because the serialized caller
+owns that transaction. For independent `CLAUDE_PARTICIPANT_BIND` children,
+enqueue only the secret-free operation and retain the exact participant ID and
+connection generation in supervisor memory. Once a general worker slot is
+available, `DurableScheduler` asks the composite dispatcher to prepare that
+exact exchange immediately before launch. The dispatcher selects:
 
 - `ClaudeProtectedCommitRelay` for Claude selection commit,
   recovery-forward, and `CLAUDE_PARTICIPANT_BIND`; or
@@ -1714,8 +1724,12 @@ selection operation ID, provider, and kind. The composite dispatcher selects:
   delegating those matches to `CodexRuntimeBroker.prepare_operation()`.
 
 Claude work never reaches `CodexRuntimeBroker`. Keep
-`operation_requires_provider_preparation()` explicit for the Codex-owned
-prelaunch cases; exchange presence alone is not a dispatch predicate.
+`operation_requires_provider_preparation()` explicit for Claude participant
+binds and the Codex-owned prelaunch cases; exchange presence alone is not a
+dispatch predicate. Match the exchange-registry bound to the actual maximum of
+two general workers plus one reserved Codex callback. Do not create a bind
+exchange while both general slots are occupied: its protected-response
+deadline begins only when scheduler capacity is available.
 
 After enqueue, the calling relay may read the one-way protected reply, but it
 must wait for scheduler-confirmed successful completion before fan-out.
@@ -1724,6 +1738,11 @@ must wait for scheduler-confirmed successful completion before fan-out.
 exact child exchange, and the gateway hook aborts that same child on enqueue,
 wakeup, relay, waiter, cancellation, or failure paths. Do not add an executor,
 thread, polling loop, worker lane, or generic broker.
+
+On supervisor restart, rely on the existing scheduler recovery rule that
+discards non-running selection children. The reconnecting participant creates
+a new exact bind for its new connection generation. Never persist the target,
+reconstruct it from stale connection data, or replay a protected projection.
 
 Worker results, operation records, journals, control messages, and event state
 remain credential-free. Clear the worker, relay, host, and child-encoder

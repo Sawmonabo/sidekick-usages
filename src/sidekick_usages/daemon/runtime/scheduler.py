@@ -1,7 +1,7 @@
 """Durable supervisor scheduling and callback priority."""
 
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from contextlib import suppress
 from datetime import datetime, timedelta
 
@@ -51,6 +51,25 @@ class NullOperationEventSink:
 
     def failed(self, operation: DueOperation, code: str) -> None:
         del operation, code
+
+
+class ProviderOperationExchangePreparer:
+    """Route provider preparation without crossing provider boundaries."""
+
+    def __init__(
+        self,
+        preparers: Mapping[ProviderId, OperationExchangePreparer],
+    ) -> None:
+        self._preparers = dict(preparers)
+
+    def prepare_operation(self, operation: DueOperation) -> bool:
+        """Prepare one operation through only its provider owner."""
+        preparer = self._preparers.get(operation.provider_id)
+        return (
+            False
+            if preparer is None
+            else preparer.prepare_operation(operation)
+        )
 
 
 class DurableScheduler:
@@ -125,10 +144,7 @@ class DurableScheduler:
         monotonic_now = self._monotonic()
         for operation in self._queue.due(now):
             callback = operation.priority is OperationPriority.CODEX_CALLBACK
-            if (
-                not callback
-                and not self._workers.has_capacity_for(operation)
-            ):
+            if not callback and not self._workers.has_capacity_for(operation):
                 continue
             requires_provider_preparation = (
                 operation_requires_provider_preparation(operation)

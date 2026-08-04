@@ -577,20 +577,36 @@ adapters. The supervisor does not become a credential database, prompt log,
 or model-response proxy.
 
 `SelectionWorkerGateway` creates each durable child operation ID before
-enqueue. For an exchange-bearing selection child, it calls one injected
-provider exchange owner with the exact child operation ID, parent selection
-operation ID, provider, and kind before publishing the child to the queue.
-One composite dispatcher selects the provider owner by provider and kind. It
-delegates only explicit Codex operations to
-`CodexRuntimeBroker.prepare_operation()` and never sends Claude work through
-`CodexRuntimeBroker`; Claude commit, recovery-forward, and participant-bind
-work belongs to `ClaudeProtectedCommitRelay`.
+enqueue. A blocking selection commit creates its protected exchange before
+publishing the child because the caller owns that serialized transaction.
+Independent `CLAUDE_PARTICIPANT_BIND` children instead persist their
+secret-free queue record while retaining the exact participant ID and
+connection generation only in supervisor memory. At an available general
+worker slot, the scheduler asks one composite dispatcher to create the exact
+provider exchange immediately before launch. The dispatcher selects the owner
+by provider: Claude bind work belongs to `ClaudeProtectedCommitRelay`, while
+only explicit Codex operations reach
+`CodexRuntimeBroker.prepare_operation()`. Claude work never crosses the Codex
+broker boundary.
+
+This split is required by the bounded runtime. The pool owns two general
+workers plus one reserved Codex callback slot, so the exchange registry permits
+at most those same three live consumers. A queued participant bind must not
+consume its eight-second protected-response lifetime while both general slots
+are occupied. It also must not take a fourth exchange while the two general
+workers and reserved callback are live. Provider preparation is therefore an
+explicit predicate for Claude participant binds and the existing Codex
+prelaunch kinds, not a property inferred from exchange presence.
 
 `DurableScheduler` and its existing `WorkerPool` remain the only scheduler and
 executor. Scheduler completion, cancellation, or failure closes the exchange
 for that exact child ID. The gateway also aborts the same exchange if enqueue,
 wakeup, relay, or waiter handling fails. No second executor, thread, polling
-loop, or provider-generic broker is added.
+loop, or provider-generic broker is added. A supervisor restart discards any
+non-running selection child through the existing scheduler recovery contract;
+the reconnecting participant then registers its new connection generation and
+creates a new exact bind. No protected target is reconstructed from durable
+state, guessed, or replayed.
 
 Claude adds one provider-owned protected data plane beside the secret-free
 control plane. The isolated worker opens one operation-scoped lease, sends it

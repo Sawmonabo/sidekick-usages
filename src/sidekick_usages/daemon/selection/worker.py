@@ -116,6 +116,10 @@ class SelectionWorkerGateway:
         self._waiters: dict[_WorkerKey, _SelectionWaiter] = {}
         self._readbacks: dict[_ParentKey, OperationId] = {}
         self._binds: dict[_BindKey, OperationId] = {}
+        self._bind_targets: dict[
+            OperationId,
+            tuple[ParticipantId, int],
+        ] = {}
         self._exchange_children: dict[OperationId, _WorkerKey] = {}
         self._closed = False
 
@@ -258,10 +262,8 @@ class SelectionWorkerGateway:
             if child_id is not None and self._queue.find(child_id) is not None:
                 return
         try:
-            if not self._prepare_exchange(due, target):
-                raise SelectionRequestError(
-                    SelectionCode.SELECTION_RECOVERY_REQUIRED
-                )
+            with self._condition:
+                self._bind_targets[due.operation_id] = target
             effective = self._queue.enqueue(due)
             self._require_effective(effective, due)
             with self._condition:
@@ -283,16 +285,28 @@ class SelectionWorkerGateway:
         due = self._finalized_bind_operation(finalized)
         target = participant_id, connection_generation
         try:
-            if not self._prepare_exchange(due, target):
-                raise SelectionRequestError(
-                    SelectionCode.SELECTION_RECOVERY_REQUIRED
-                )
+            with self._condition:
+                self._bind_targets[due.operation_id] = target
             effective = self._queue.enqueue(due)
             self._require_effective(effective, due)
             self._wake()
         except BaseException:
             self.abort_exchange(due.operation_id)
             raise
+
+    def prepare_operation(self, operation: DueOperation) -> bool:
+        """Prepare one queued exact Claude bind at scheduler capacity."""
+        if (
+            operation.provider_id is not ProviderId.CLAUDE
+            or operation.kind is not OperationKind.CLAUDE_PARTICIPANT_BIND
+        ):
+            return False
+        with self._condition:
+            target = self._bind_targets.get(operation.operation_id)
+            prepared = operation.operation_id in self._exchange_children
+        if target is None:
+            return False
+        return prepared or self._prepare_exchange(operation, target)
 
     def exchange_started(self, operation: DueOperation) -> None:
         """Receive one scheduler-launched protected response."""
@@ -355,6 +369,7 @@ class SelectionWorkerGateway:
             ) from None
         with self._condition:
             self._exchange_children.pop(child_id, None)
+            self._bind_targets.pop(child_id, None)
             self._binds = {
                 key: current
                 for key, current in self._binds.items()
@@ -410,6 +425,7 @@ class SelectionWorkerGateway:
             self._closed = True
             self._readbacks.clear()
             self._binds.clear()
+            self._bind_targets.clear()
             children = tuple(self._exchange_children)
             self._exchange_children.clear()
             self._condition.notify_all()
@@ -493,6 +509,7 @@ class SelectionWorkerGateway:
         """Abort the exact child exchange after scheduler refusal."""
         with self._condition:
             self._exchange_children.pop(child_operation_id, None)
+            self._bind_targets.pop(child_operation_id, None)
             self._binds = {
                 key: current
                 for key, current in self._binds.items()

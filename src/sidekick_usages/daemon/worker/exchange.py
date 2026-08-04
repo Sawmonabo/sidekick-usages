@@ -32,7 +32,7 @@ from sidekick_usages.serialization.framing import (
 MAX_WORKER_EXCHANGE_FRAME_BYTES = 512 * 1024
 WORKER_EXCHANGE_INSTRUCTION_TIMEOUT_SECONDS = 8.0
 WORKER_EXCHANGE_COMPLETION_TAIL_SECONDS = 2.0
-MAX_LIVE_WORKER_EXCHANGES = 2
+MAX_LIVE_WORKER_EXCHANGES = 3
 _READ_CHUNK_BYTES = 64 * 1024
 _CANCELLATION_POLL_SECONDS = 0.1
 
@@ -69,12 +69,19 @@ def operation_requires_provider_preparation(
 ) -> bool:
     """Return whether resident provider state must precede worker launch."""
     return (
-        operation.provider_id is ProviderId.CODEX
-        and operation_requires_worker_exchange(operation)
-        and operation.kind is not OperationKind.CODEX_CALLBACK
-    ) or (
-        operation.provider_id is ProviderId.CODEX
-        and operation.kind is OperationKind.RECONCILE_NATIVE
+        (
+            operation.provider_id is ProviderId.CLAUDE
+            and operation.kind is OperationKind.CLAUDE_PARTICIPANT_BIND
+        )
+        or (
+            operation.provider_id is ProviderId.CODEX
+            and operation_requires_worker_exchange(operation)
+            and operation.kind is not OperationKind.CODEX_CALLBACK
+        )
+        or (
+            operation.provider_id is ProviderId.CODEX
+            and operation.kind is OperationKind.RECONCILE_NATIVE
+        )
     )
 
 

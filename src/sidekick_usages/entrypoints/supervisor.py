@@ -34,7 +34,10 @@ from sidekick_usages.daemon.runtime.diagnostics import (
     SanitizedDiagnosticLog,
 )
 from sidekick_usages.daemon.runtime.recovery import ActivationRecoveryScheduler
-from sidekick_usages.daemon.runtime.scheduler import DurableScheduler
+from sidekick_usages.daemon.runtime.scheduler import (
+    DurableScheduler,
+    ProviderOperationExchangePreparer,
+)
 from sidekick_usages.daemon.runtime.supervisor import (
     SupervisorRuntime,
     WakeupChannel,
@@ -275,7 +278,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             selection_workers,
             selection_recovery,
         ),
-        exchange_preparer=broker,
+        exchange_preparer=ProviderOperationExchangePreparer(
+            {
+                ProviderId.CLAUDE: selection_workers,
+                ProviderId.CODEX: broker,
+            }
+        ),
     )
     request_stop = partial(_request_stop, stop_requested, wakeup)
     dispatcher = SupervisorDispatcher(
